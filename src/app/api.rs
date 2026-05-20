@@ -315,7 +315,8 @@ impl App {
         };
 
         let response = match request.method {
-            Method::ServerStop(_) => {
+            Method::ServerStop(params) => {
+                self.state.server_stop_gracefully_requested = params.gracefully;
                 self.state.should_quit = true;
                 SuccessResponse {
                     id: request.id,

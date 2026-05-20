@@ -92,6 +92,7 @@ pub(crate) struct GhosttyPaneCore {
     pub initial_default_background: Option<crate::ghostty::RgbColor>,
     pub host_terminal_theme: crate::terminal_theme::TerminalTheme,
     pub transient_default_color_owner_pgid: Option<u32>,
+    pub transient_history_note: Option<String>,
     pub default_color_tracker: DefaultColorOscTracker,
     pub osc52_forwarder: Osc52Forwarder,
 }
@@ -175,6 +176,15 @@ impl PaneTerminal {
 
     pub fn recent_unwrapped_ansi(&self, lines: usize) -> String {
         self.ghostty.recent_unwrapped_ansi(lines)
+    }
+
+    pub fn snapshot_history_ansi(&self) -> String {
+        self.ghostty
+            .recent_unwrapped_ansi_without_transient_note(usize::MAX)
+    }
+
+    pub fn clear_transient_history_note(&self) {
+        self.ghostty.clear_transient_history_note();
     }
 
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
@@ -281,6 +291,7 @@ impl GhosttyPaneTerminal {
                 initial_default_background,
                 host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
                 transient_default_color_owner_pgid: None,
+                transient_history_note: None,
                 default_color_tracker: DefaultColorOscTracker::default(),
                 osc52_forwarder: Osc52Forwarder::default(),
             }),
@@ -408,7 +419,7 @@ impl GhosttyPaneTerminal {
         }
     }
 
-    pub fn seed_history_ansi(&self, ansi: &str) {
+    pub fn seed_history_ansi_with_note(&self, ansi: &str, note: Option<&str>) {
         if ansi.is_empty() {
             return;
         }
@@ -416,8 +427,15 @@ impl GhosttyPaneTerminal {
             return;
         };
         core.terminal.write(ansi.as_bytes());
+        core.transient_history_note = note.map(ToOwned::to_owned);
         if let Ok(mut key_encoder) = self.key_encoder.lock() {
             key_encoder.set_from_terminal(&core.terminal);
+        }
+    }
+
+    pub fn clear_transient_history_note(&self) {
+        if let Ok(mut core) = self.core.lock() {
+            core.transient_history_note = None;
         }
     }
 
@@ -638,35 +656,69 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn recent_text(&self, lines: usize) -> String {
-        self.core
+        let text = self
+            .core
             .lock()
             .ok()
             .and_then(|core| ghostty_recent_text(&core, lines).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.append_transient_history_note_text(text)
     }
 
     pub fn recent_ansi(&self, lines: usize) -> String {
-        self.core
+        let ansi = self
+            .core
             .lock()
             .ok()
             .and_then(|core| ghostty_recent_ansi(&core, lines, false).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.append_transient_history_note_ansi(ansi)
     }
 
     pub fn recent_unwrapped_text(&self, lines: usize) -> String {
-        self.core
+        let text = self
+            .core
             .lock()
             .ok()
             .and_then(|core| ghostty_recent_text_unwrapped(&core, lines).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.append_transient_history_note_text(text)
     }
 
     pub fn recent_unwrapped_ansi(&self, lines: usize) -> String {
+        let ansi = self.recent_unwrapped_ansi_without_transient_note(lines);
+        self.append_transient_history_note_ansi(ansi)
+    }
+
+    pub fn recent_unwrapped_ansi_without_transient_note(&self, lines: usize) -> String {
         self.core
             .lock()
             .ok()
             .and_then(|core| ghostty_recent_ansi(&core, lines, true).ok())
             .unwrap_or_default()
+    }
+
+    fn append_transient_history_note_text(&self, mut text: String) -> String {
+        let Some(note) = self.transient_history_note() else {
+            return text;
+        };
+        append_line(&mut text, &note, "\n");
+        text
+    }
+
+    fn append_transient_history_note_ansi(&self, mut ansi: String) -> String {
+        let Some(note) = self.transient_history_note() else {
+            return ansi;
+        };
+        append_line(&mut ansi, &note, "\r\n");
+        ansi
+    }
+
+    fn transient_history_note(&self) -> Option<String> {
+        self.core
+            .lock()
+            .ok()
+            .and_then(|core| core.transient_history_note.clone())
     }
 
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
@@ -709,6 +761,7 @@ impl GhosttyPaneTerminal {
         let host_theme = core.host_terminal_theme;
         let initial_default_foreground = core.initial_default_foreground;
         let initial_default_background = core.initial_default_background;
+        let transient_history_note = core.transient_history_note.clone();
         let GhosttyPaneCore {
             terminal,
             render_state,
@@ -794,6 +847,10 @@ impl GhosttyPaneTerminal {
             }
         }
 
+        if let Some(note) = transient_history_note {
+            draw_transient_history_note(frame, area, &note);
+        }
+
         if show_cursor && render_state.cursor_visible().ok() == Some(true) {
             if let Ok(Some(cursor)) = render_state.cursor_viewport() {
                 if cursor.x < area.width && cursor.y < area.height {
@@ -801,6 +858,53 @@ impl GhosttyPaneTerminal {
                 }
             }
         }
+    }
+}
+
+fn append_line(text: &mut String, line: &str, newline: &str) {
+    if !text.is_empty() && !text.ends_with('\n') && !text.ends_with('\r') {
+        text.push_str(newline);
+    }
+    text.push_str(line);
+}
+
+fn draw_transient_history_note(frame: &mut Frame, area: Rect, note: &str) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let y = area.y + area.height.saturating_sub(1);
+    let style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
+    let mut x = area.x;
+    for ch in note.chars() {
+        if x >= area.x + area.width {
+            break;
+        }
+        let width = unicode_width::UnicodeWidthChar::width(ch)
+            .unwrap_or(1)
+            .max(1) as u16;
+        if x + width > area.x + area.width {
+            break;
+        }
+        let cell = &mut frame.buffer_mut()[(x, y)];
+        cell.reset();
+        cell.set_symbol(&ch.to_string());
+        cell.set_style(style);
+        for offset in 1..width {
+            let padding = &mut frame.buffer_mut()[(x + offset, y)];
+            padding.reset();
+            padding.set_symbol(" ");
+            padding.set_style(style);
+        }
+        x += width;
+    }
+    while x < area.x + area.width {
+        let cell = &mut frame.buffer_mut()[(x, y)];
+        cell.reset();
+        cell.set_symbol(" ");
+        cell.set_style(style);
+        x += 1;
     }
 }
 
@@ -1806,7 +1910,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 100).unwrap();
         let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
-        pane.seed_history_ansi("restored history");
+        pane.seed_history_ansi_with_note("restored history", None);
 
         let backend = ratatui::backend::TestBackend::new(20, 5);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

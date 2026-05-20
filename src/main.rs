@@ -302,7 +302,7 @@ fn main() -> io::Result<()> {
         println!("       herdr --remote <ssh-target> [--session <name>]");
         println!("       herdr session attach <name>");
         println!("       herdr update");
-        println!("       herdr server stop");
+        println!("       herdr server stop [--gracefully]");
         println!("       herdr server reload-config");
         println!("       herdr workspace <subcommand> ...");
         println!("       herdr tab <subcommand> ...");
@@ -322,7 +322,7 @@ fn main() -> io::Result<()> {
             ("herdr update", "Download and install the latest version"),
             (
                 "herdr server stop",
-                "Stop the running server via the API socket",
+                "Stop the running server and wait for shutdown",
             ),
             (
                 "herdr server reload-config",

@@ -899,6 +899,8 @@ pub struct AppState {
     pub selected: usize,
     pub mode: Mode,
     pub should_quit: bool,
+    /// Server stop request should first terminate foreground Claude/Codex jobs.
+    pub server_stop_gracefully_requested: bool,
     /// In persistence mode, client quit actions detach instead of stopping the server.
     pub quit_detaches: bool,
     /// Set when the current client should detach from the persistent session.
@@ -1146,6 +1148,7 @@ impl AppState {
             selected: 0,
             mode: Mode::Navigate,
             should_quit: false,
+            server_stop_gracefully_requested: false,
             quit_detaches: false,
             detach_requested: false,
             request_new_workspace: false,

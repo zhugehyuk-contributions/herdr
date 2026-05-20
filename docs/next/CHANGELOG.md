@@ -6,6 +6,7 @@
 - Added an integrations tab in settings and first-run onboarding so users can install recommended agent integrations from inside Herdr.
 - Added `terminal.default_shell` to choose the executable used for new interactive panes. When unset, Herdr still falls back to `$SHELL`, then `/bin/sh`. (#196)
 - Added native Kiro CLI detection with idle and working state heuristics. (#185)
+- Restored pane history now shows a temporary server stop time note. `herdr server stop` now waits for the server socket to stop accepting connections before returning; pass `--gracefully` to interrupt foreground Claude Code/Codex jobs before saving pane history so pane shells can settle cleanly. (#217)
 
 ### Fixed
 - Remote clients now bridge local clipboard images into the remote pane by staging them as temporary image files and pasting the remote path, so Claude Code image paste works over `herdr --remote`. (#205)

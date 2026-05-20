@@ -338,6 +338,7 @@ impl App {
             selected,
             mode,
             should_quit: false,
+            server_stop_gracefully_requested: false,
             quit_detaches: !no_session,
             detach_requested: false,
             request_new_workspace: false,
@@ -1929,13 +1930,31 @@ mod tests {
         let response = app.handle_api_request(crate::api::schema::Request {
             id: "req_server_stop".into(),
             method: crate::api::schema::Method::ServerStop(
-                crate::api::schema::EmptyParams::default(),
+                crate::api::schema::ServerStopParams::default(),
             ),
         });
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
 
         assert_eq!(response["result"]["type"], "ok");
         assert!(app.state.should_quit);
+        assert!(!app.state.server_stop_gracefully_requested);
+    }
+
+    #[test]
+    fn graceful_server_stop_request_sets_shutdown_mode() {
+        let mut app = test_app();
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_server_stop".into(),
+            method: crate::api::schema::Method::ServerStop(crate::api::schema::ServerStopParams {
+                gracefully: true,
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response["result"]["type"], "ok");
+        assert!(app.state.should_quit);
+        assert!(app.state.server_stop_gracefully_requested);
     }
 
     #[test]

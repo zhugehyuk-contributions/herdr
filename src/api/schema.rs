@@ -13,7 +13,7 @@ pub enum Method {
     #[serde(rename = "ping")]
     Ping(PingParams),
     #[serde(rename = "server.stop")]
-    ServerStop(EmptyParams),
+    ServerStop(ServerStopParams),
     #[serde(rename = "server.reload_config")]
     ServerReloadConfig(EmptyParams),
     #[serde(rename = "workspace.create")]
@@ -92,6 +92,12 @@ pub enum Method {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EmptyParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ServerStopParams {
+    #[serde(default)]
+    pub gracefully: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PingParams {}
@@ -893,13 +899,44 @@ mod tests {
     fn request_round_trips_for_server_stop() {
         let request = Request {
             id: "req_stop".into(),
-            method: Method::ServerStop(EmptyParams::default()),
+            method: Method::ServerStop(ServerStopParams::default()),
         };
 
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["method"], "server.stop");
         let restored: Request = serde_json::from_value(json).unwrap();
         assert_eq!(restored, request);
+    }
+
+    #[test]
+    fn request_round_trips_for_graceful_server_stop() {
+        let request = Request {
+            id: "req_stop".into(),
+            method: Method::ServerStop(ServerStopParams { gracefully: true }),
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["params"]["gracefully"], true);
+        let restored: Request = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, request);
+    }
+
+    #[test]
+    fn server_stop_params_default_gracefully_false_for_empty_params() {
+        let restored: Request = serde_json::from_value(serde_json::json!({
+            "id": "req_stop",
+            "method": "server.stop",
+            "params": {}
+        }))
+        .unwrap();
+
+        assert_eq!(
+            restored,
+            Request {
+                id: "req_stop".into(),
+                method: Method::ServerStop(ServerStopParams { gracefully: false }),
+            }
+        );
     }
 
     #[test]

@@ -80,6 +80,19 @@ pub struct PaneSnapshot {
 pub struct PaneHistorySnapshot {
     pub ansi: String,
     pub lines: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disconnected_at_epoch_seconds: Option<u64>,
+}
+
+impl PaneHistorySnapshot {
+    pub(crate) fn transient_disconnected_note(&self) -> Option<String> {
+        self.disconnected_at_epoch_seconds.map(|seconds| {
+            format!(
+                "[herdr] history restored; disconnected at {}",
+                format_epoch_seconds_utc(seconds)
+            )
+        })
+    }
 }
 
 /// Serializable BSP tree.
@@ -203,6 +216,7 @@ fn first_pane_id_in_layout(layout: &LayoutSnapshot) -> Option<u32> {
 }
 
 /// Capture the current app state into a serializable snapshot.
+#[cfg(test)]
 pub fn capture(
     workspaces: &[Workspace],
     terminals: &std::collections::HashMap<
@@ -219,11 +233,48 @@ pub fn capture(
     sidebar_width: u16,
     sidebar_section_split: f32,
 ) -> SessionSnapshot {
+    capture_with_history_disconnected_at(
+        workspaces,
+        terminals,
+        terminal_runtimes,
+        active,
+        selected,
+        agent_panel_scope,
+        sidebar_width,
+        sidebar_section_split,
+        None,
+    )
+}
+
+pub(crate) fn capture_with_history_disconnected_at(
+    workspaces: &[Workspace],
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+    terminal_runtimes: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalRuntime,
+    >,
+    active: Option<usize>,
+    selected: usize,
+    agent_panel_scope: crate::app::state::AgentPanelScope,
+    sidebar_width: u16,
+    sidebar_section_split: f32,
+    history_disconnected_at_epoch_seconds: Option<u64>,
+) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
         workspaces: workspaces
             .iter()
-            .map(|workspace| capture_workspace(workspace, terminals, terminal_runtimes))
+            .map(|workspace| {
+                capture_workspace(
+                    workspace,
+                    terminals,
+                    terminal_runtimes,
+                    history_disconnected_at_epoch_seconds,
+                )
+            })
             .collect(),
         active,
         selected,
@@ -243,6 +294,7 @@ fn capture_workspace(
         crate::terminal::TerminalId,
         crate::terminal::TerminalRuntime,
     >,
+    history_disconnected_at_epoch_seconds: Option<u64>,
 ) -> WorkspaceSnapshot {
     WorkspaceSnapshot {
         id: Some(ws.id.clone()),
@@ -253,7 +305,14 @@ fn capture_workspace(
         tabs: ws
             .tabs
             .iter()
-            .map(|tab| capture_tab(tab, terminals, terminal_runtimes))
+            .map(|tab| {
+                capture_tab(
+                    tab,
+                    terminals,
+                    terminal_runtimes,
+                    history_disconnected_at_epoch_seconds,
+                )
+            })
             .collect(),
         active_tab: ws.active_tab,
     }
@@ -269,6 +328,7 @@ fn capture_tab(
         crate::terminal::TerminalId,
         crate::terminal::TerminalRuntime,
     >,
+    history_disconnected_at_epoch_seconds: Option<u64>,
 ) -> TabSnapshot {
     let mut panes = HashMap::new();
     for id in tab.panes.keys() {
@@ -291,7 +351,11 @@ fn capture_tab(
                 cwd,
                 label,
                 agent_name,
-                history: capture_pane_history(tab.panes.get(id), terminal_runtimes),
+                history: capture_pane_history(
+                    tab.panes.get(id),
+                    terminal_runtimes,
+                    history_disconnected_at_epoch_seconds,
+                ),
             },
         );
     }
@@ -311,12 +375,45 @@ fn capture_pane_history(
         crate::terminal::TerminalId,
         crate::terminal::TerminalRuntime,
     >,
+    disconnected_at_epoch_seconds: Option<u64>,
 ) -> Option<PaneHistorySnapshot> {
     let ansi = terminal_runtimes
         .get(&pane?.attached_terminal_id)?
         .snapshot_history()?;
     let lines = ansi.lines().count();
-    Some(PaneHistorySnapshot { ansi, lines })
+    Some(PaneHistorySnapshot {
+        ansi,
+        lines,
+        disconnected_at_epoch_seconds,
+    })
+}
+
+fn format_epoch_seconds_utc(seconds: u64) -> String {
+    const SECONDS_PER_DAY: u64 = 86_400;
+    let days = (seconds / SECONDS_PER_DAY) as i64;
+    let seconds_of_day = seconds % SECONDS_PER_DAY;
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3600;
+    let minute = (seconds_of_day % 3600) / 60;
+    let second = seconds_of_day % 60;
+
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+}
+
+fn civil_from_days(days_since_unix_epoch: i64) -> (i64, u32, u32) {
+    let z = days_since_unix_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_phase = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_phase + 2) / 5 + 1;
+    let month = month_phase + if month_phase < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+
+    (year, month as u32, day as u32)
 }
 
 pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
@@ -405,6 +502,23 @@ mod tests {
             state.agent_panel_scope,
             state.sidebar_width,
             state.sidebar_section_split,
+        )
+    }
+
+    fn capture_from_state_with_disconnected_at(
+        state: &AppState,
+        disconnected_at_epoch_seconds: u64,
+    ) -> SessionSnapshot {
+        capture_with_history_disconnected_at(
+            &state.workspaces,
+            &state.terminals,
+            &state.terminal_runtimes,
+            state.active,
+            state.selected,
+            state.agent_panel_scope,
+            state.sidebar_width,
+            state.sidebar_section_split,
+            Some(disconnected_at_epoch_seconds),
         )
     }
 
@@ -811,6 +925,28 @@ mod tests {
         assert!(history.ansi.contains("alpha"));
         assert!(history.ansi.contains("gamma"));
         assert!(history.lines >= 3);
+    }
+
+    #[tokio::test]
+    async fn shutdown_capture_marks_pane_history_disconnected_at() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        state.insert_test_runtime(
+            root,
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(20, 3, 4096, b"alpha\r\n"),
+        );
+
+        let snapshot = capture_from_state_with_disconnected_at(&state, 1_765_670_400);
+        let history = snapshot.workspaces[0].tabs[0].panes[&root.raw()]
+            .history
+            .as_ref()
+            .expect("pane history should be captured");
+
+        assert_eq!(history.disconnected_at_epoch_seconds, Some(1_765_670_400));
+        assert_eq!(
+            history.transient_disconnected_note().as_deref(),
+            Some("[herdr] history restored; disconnected at 2025-12-14 00:00:00 UTC")
+        );
     }
 
     #[tokio::test]

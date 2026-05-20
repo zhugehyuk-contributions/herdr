@@ -512,11 +512,11 @@ fn stop_running_server_for_update(
 }
 
 fn stop_server_via_api_at(socket_path: &Path, timeout: Duration) -> Result<(), String> {
-    use crate::api::schema::{EmptyParams, Method, Request};
+    use crate::api::schema::{Method, Request, ServerStopParams};
 
     let request = Request {
         id: "update:server:stop".into(),
-        method: Method::ServerStop(EmptyParams::default()),
+        method: Method::ServerStop(ServerStopParams::default()),
     };
 
     let mut stream = UnixStream::connect(socket_path)

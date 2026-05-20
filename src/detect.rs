@@ -58,7 +58,7 @@ pub fn parse_agent_label(agent: &str) -> Option<Agent> {
     let name = agent.trim().to_lowercase();
     match name.as_str() {
         "pi" => Some(Agent::Pi),
-        "claude" | "claude-code" => Some(Agent::Claude),
+        "claude" | "claude-code" | "claudecode" => Some(Agent::Claude),
         "codex" => Some(Agent::Codex),
         "gemini" => Some(Agent::Gemini),
         "cursor" => Some(Agent::Cursor),
@@ -82,7 +82,7 @@ pub fn identify_agent(process_name: &str) -> Option<Agent> {
     // Match against known binary names
     match name.as_str() {
         "pi" => Some(Agent::Pi),
-        "claude" | "claude-code" => Some(Agent::Claude),
+        "claude" | "claude-code" | "claudecode" => Some(Agent::Claude),
         "codex" => Some(Agent::Codex),
         "gemini" => Some(Agent::Gemini),
         "cursor" => Some(Agent::Cursor),
@@ -105,8 +105,7 @@ pub fn identify_agent_in_job(job: &crate::platform::ForegroundJob) -> Option<(Ag
         .iter()
         .find(|process| process.pid == job.process_group_id)
     {
-        let candidate = normalized_process_name(process);
-        if let Some(agent) = identify_agent(&candidate) {
+        if let Some((agent, candidate)) = identify_agent_process(process) {
             return Some((agent, candidate));
         }
     }
@@ -114,8 +113,7 @@ pub fn identify_agent_in_job(job: &crate::platform::ForegroundJob) -> Option<(Ag
     let mut best: Option<(u8, Agent, String)> = None;
 
     for process in &job.processes {
-        let candidate = normalized_process_name(process);
-        let Some(agent) = identify_agent(&candidate) else {
+        let Some((agent, candidate)) = identify_agent_process(process) else {
             continue;
         };
         let score = process_priority(process, &candidate);
@@ -127,6 +125,13 @@ pub fn identify_agent_in_job(job: &crate::platform::ForegroundJob) -> Option<(Ag
     }
 
     best.map(|(_, agent, name)| (agent, name))
+}
+
+pub(crate) fn identify_agent_process(
+    process: &crate::platform::ForegroundProcess,
+) -> Option<(Agent, String)> {
+    let candidate = normalized_process_name(process);
+    identify_agent(&candidate).map(|agent| (agent, candidate))
 }
 
 /// Detect the state of an agent from the live terminal tail snapshot.
@@ -799,6 +804,7 @@ mod tests {
         assert_eq!(identify_agent("pi"), Some(Agent::Pi));
         assert_eq!(identify_agent("claude"), Some(Agent::Claude));
         assert_eq!(identify_agent("claude-code"), Some(Agent::Claude));
+        assert_eq!(identify_agent("claudecode"), Some(Agent::Claude));
         assert_eq!(identify_agent("codex"), Some(Agent::Codex));
         assert_eq!(identify_agent("gemini"), Some(Agent::Gemini));
         assert_eq!(identify_agent("cursor"), Some(Agent::Cursor));
@@ -819,6 +825,7 @@ mod tests {
     fn parse_known_agent_labels() {
         assert_eq!(parse_agent_label("pi"), Some(Agent::Pi));
         assert_eq!(parse_agent_label("claude"), Some(Agent::Claude));
+        assert_eq!(parse_agent_label("claudecode"), Some(Agent::Claude));
         assert_eq!(parse_agent_label("copilot"), Some(Agent::GithubCopilot));
         assert_eq!(
             parse_agent_label("github-copilot"),

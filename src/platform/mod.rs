@@ -19,6 +19,7 @@ pub struct ForegroundJob {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
+    Interrupt,
     Hangup,
     Terminate,
     Kill,

@@ -79,7 +79,7 @@ tmux gives you persistence and panes, but it was built before agents existed. gu
 
 ## persistence
 
-start herdr where the work lives. locally, run `herdr`. it starts or attaches to the background session automatically, with no socket setup. run your agents, split panes, do your work. press `ctrl+b q` to detach. close your terminal, close your laptop; your agents keep running. open a new terminal, run `herdr`, you're back. same session, same panes, same agents. if you stop the server and later start herdr again, restored panes bring back their recent screen history too.
+start herdr where the work lives. locally, run `herdr`. it starts or attaches to the background session automatically, with no socket setup. run your agents, split panes, do your work. press `ctrl+b q` to detach. close your terminal, close your laptop; your agents keep running. open a new terminal, run `herdr`, you're back. same session, same panes, same agents. if you stop the server and later start herdr again, restored panes bring back their recent screen history too. `herdr server stop` waits for the server socket to stop accepting connections before returning. use `herdr server stop --gracefully` to interrupt foreground Claude Code/Codex jobs before history is saved so their pane shells can settle cleanly. restored history shows a temporary note with the server stop time; the note disappears on the first pane input and is not saved back into history.
 
 restored screen history is stored in the session's `session.json`, so treat the herdr config/session directory like terminal history for any sensitive pane output.
 

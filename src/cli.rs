@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -10,10 +11,13 @@ use crate::api::schema::{
     AgentTarget, EmptyParams, IntegrationTarget, Method, OutputMatch, PaneAgentState,
     PaneListParams, PaneReadParams, PaneRenameParams, PaneReportAgentParams, PaneSendInputParams,
     PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneTarget, PaneWaitForOutputParams,
-    PingParams, ReadFormat, ReadSource, Request, SplitDirection, Subscription, TabCreateParams,
-    TabListParams, TabRenameParams, TabTarget, WorkspaceCreateParams, WorkspaceRenameParams,
-    WorkspaceTarget,
+    PingParams, ReadFormat, ReadSource, Request, ServerStopParams, SplitDirection, Subscription,
+    TabCreateParams, TabListParams, TabRenameParams, TabTarget, WorkspaceCreateParams,
+    WorkspaceRenameParams, WorkspaceTarget,
 };
+
+const SERVER_STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
+const SERVER_STOP_WAIT_POLL: Duration = Duration::from_millis(25);
 
 pub enum CommandOutcome {
     Handled(i32),
@@ -406,12 +410,85 @@ fn run_session_command(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn server_stop(args: &[String]) -> std::io::Result<i32> {
-    if !args.is_empty() {
-        eprintln!("usage: herdr server stop");
-        return Ok(2);
+    let options = match parse_server_stop_options(args) {
+        Ok(options) => options,
+        Err(()) => {
+            eprintln!("usage: herdr server stop [--gracefully]");
+            return Ok(2);
+        }
+    };
+
+    let response = send_request(&Request {
+        id: "cli:server:stop".into(),
+        method: Method::ServerStop(ServerStopParams {
+            gracefully: options.gracefully,
+        }),
+    })?;
+    if response.get("error").is_some() {
+        eprintln!("{}", serde_json::to_string(&response).unwrap());
+        return Ok(1);
     }
 
-    send_ok_request(Method::ServerStop(EmptyParams::default()))
+    if !wait_for_api_socket_shutdown(&api::socket_path(), SERVER_STOP_WAIT_TIMEOUT)? {
+        eprintln!(
+            "shutdown was requested, but the server is still responding after {} seconds",
+            SERVER_STOP_WAIT_TIMEOUT.as_secs()
+        );
+        return Ok(1);
+    }
+
+    Ok(0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ServerStopOptions {
+    gracefully: bool,
+}
+
+fn parse_server_stop_options(args: &[String]) -> Result<ServerStopOptions, ()> {
+    let mut gracefully = false;
+    for arg in args {
+        match arg.as_str() {
+            "--gracefully" if !gracefully => gracefully = true,
+            _ => return Err(()),
+        }
+    }
+
+    Ok(ServerStopOptions { gracefully })
+}
+
+fn wait_for_api_socket_shutdown(socket_path: &Path, timeout: Duration) -> std::io::Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if api_socket_is_stopped(socket_path)? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(SERVER_STOP_WAIT_POLL);
+    }
+}
+
+fn api_socket_is_stopped(socket_path: &Path) -> std::io::Result<bool> {
+    if !socket_path.exists() {
+        return Ok(true);
+    }
+
+    match UnixStream::connect(socket_path) {
+        Ok(_) => Ok(false),
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            Ok(true)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn server_reload_config(args: &[String]) -> std::io::Result<i32> {
@@ -2060,7 +2137,7 @@ fn print_session_error(code: &str, message: &str) {
 fn print_server_help() {
     eprintln!("herdr server commands:");
     eprintln!("  herdr server                run as headless server");
-    eprintln!("  herdr server stop           stop the running server via the API socket");
+    eprintln!("  herdr server stop [--gracefully]");
     eprintln!("  herdr server reload-config  reload config.toml in the running server");
 }
 
@@ -2166,4 +2243,72 @@ fn print_session_help() {
 
 fn _print_json<T: Serialize>(value: &T) {
     println!("{}", serde_json::to_string(value).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_stop_options_default_to_non_graceful() {
+        let options = parse_server_stop_options(&[]).unwrap();
+
+        assert!(!options.gracefully);
+    }
+
+    #[test]
+    fn server_stop_options_accept_gracefully_flag() {
+        let options = parse_server_stop_options(&["--gracefully".to_owned()]).unwrap();
+
+        assert!(options.gracefully);
+    }
+
+    #[test]
+    fn server_stop_options_reject_unknown_args() {
+        assert!(parse_server_stop_options(&["--now".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn wait_for_api_socket_shutdown_observes_socket_close() {
+        let socket_path = std::path::PathBuf::from(format!(
+            "/private/tmp/hdr-stop-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        let cleanup_path = socket_path.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            drop(listener);
+            let _ = std::fs::remove_file(cleanup_path);
+        });
+
+        let stopped = wait_for_api_socket_shutdown(&socket_path, Duration::from_secs(1)).unwrap();
+
+        handle.join().unwrap();
+        assert!(stopped);
+    }
+
+    #[test]
+    fn wait_for_api_socket_shutdown_times_out_while_socket_accepts() {
+        let socket_path = std::path::PathBuf::from(format!(
+            "/private/tmp/hdr-stop-timeout-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+
+        let stopped =
+            wait_for_api_socket_shutdown(&socket_path, Duration::from_millis(50)).unwrap();
+
+        drop(listener);
+        let _ = std::fs::remove_file(&socket_path);
+        assert!(!stopped);
+    }
 }

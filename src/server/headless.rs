@@ -21,7 +21,7 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
@@ -89,6 +89,9 @@ const SOCKET_PERMISSION_MODE: u32 = 0o600;
 /// Timeout for in-flight API requests during shutdown.
 #[allow(dead_code)]
 const SHUTDOWN_API_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Time for the pane shell to repaint after Herdr interrupts foreground agent jobs.
+const SHUTDOWN_AGENT_SHELL_SETTLE: Duration = Duration::from_millis(500);
 
 /// How often the idle headless loop wakes to poll the std UnixListener for new
 /// client connections.
@@ -360,6 +363,8 @@ pub struct HeadlessServer {
     effective_size: (u16, u16),
     /// Flag set when shutdown is initiated.
     shutting_down: bool,
+    /// Timestamp attached to pane history saved during server shutdown.
+    shutdown_history_disconnected_at: Option<SystemTime>,
     /// Flag set by Ctrl+C or `server stop` signal.
     should_quit: Arc<AtomicBool>,
     /// Channel for receiving server events from client connection threads.
@@ -402,6 +407,7 @@ impl HeadlessServer {
             next_activity_stamp: 1,
             effective_size: (MIN_COLS, MIN_ROWS),
             shutting_down: false,
+            shutdown_history_disconnected_at: None,
             should_quit,
             server_event_rx,
             server_event_tx,
@@ -568,7 +574,9 @@ impl HeadlessServer {
 
         // Save session on exit.
         if !self.app.no_session {
-            self.app.save_session_now();
+            self.app.save_session_now_with_history_disconnected_at(
+                self.shutdown_history_disconnected_at,
+            );
         }
 
         info!("headless server exiting");
@@ -2149,6 +2157,18 @@ impl HeadlessServer {
         }
         info!("server shutdown initiated");
         self.shutting_down = true;
+        self.shutdown_history_disconnected_at = Some(SystemTime::now());
+        if self.app.state.server_stop_gracefully_requested {
+            self.app.state.server_stop_gracefully_requested = false;
+            let interrupted_agent_jobs = self.app.interrupt_agent_jobs_before_shutdown();
+            if interrupted_agent_jobs > 0 {
+                info!(
+                    count = interrupted_agent_jobs,
+                    "interrupted foreground agent jobs before shutdown"
+                );
+                std::thread::sleep(SHUTDOWN_AGENT_SHELL_SETTLE);
+            }
+        }
 
         // Clear client-local host graphics, then send ServerShutdown to all connected clients.
         self.send_all_clients_graphics_cleanup();
@@ -2385,6 +2405,7 @@ mod tests {
             next_activity_stamp: 1,
             effective_size: (MIN_COLS, MIN_ROWS),
             shutting_down: false,
+            shutdown_history_disconnected_at: None,
             should_quit: Arc::new(AtomicBool::new(false)),
             server_event_rx,
             server_event_tx,
@@ -2425,6 +2446,60 @@ mod tests {
             control_rx,
             render_rx,
         )
+    }
+
+    fn server_with_detected_agent(
+        agent: crate::detect::Agent,
+    ) -> (HeadlessServer, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
+        let mut server = test_headless_server();
+        server.app.no_session = false;
+        server.app.state = crate::app::state::AppState::test_new();
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+
+        let mut workspace = crate::workspace::Workspace::test_new("shutdown");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).unwrap().clone();
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        workspace.insert_test_runtime(pane_id, runtime);
+
+        let mut terminal = crate::terminal::TerminalState::new(terminal_id.clone(), "/tmp".into());
+        terminal.set_detected_state(Some(agent), crate::detect::AgentState::Idle);
+        server.app.state.terminals.insert(terminal_id, terminal);
+        server.app.state.workspaces.push(workspace);
+
+        (server, rx)
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_send_ctrl_c_to_detected_agent_panes() {
+        for agent in [crate::detect::Agent::Codex, crate::detect::Agent::Claude] {
+            let (mut server, mut rx) = server_with_detected_agent(agent);
+
+            server.initiate_shutdown();
+
+            assert!(server.shutting_down);
+            assert!(server.shutdown_history_disconnected_at.is_some());
+            assert_eq!(
+                rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_consumes_graceful_stop_flag() {
+        let (mut server, mut rx) = server_with_detected_agent(crate::detect::Agent::Codex);
+        server.app.state.server_stop_gracefully_requested = true;
+
+        server.initiate_shutdown();
+
+        assert!(server.shutting_down);
+        assert!(!server.app.state.server_stop_gracefully_requested);
+        assert_eq!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        );
     }
 
     #[test]

@@ -30,6 +30,9 @@ use crate::terminal::stabilize_agent_state;
 const RELEASE_REACQUIRE_SUPPRESSION: std::time::Duration = std::time::Duration::from_secs(1);
 const PANE_TERM: &str = "xterm-256color";
 const PANE_COLORTERM: &str = "truecolor";
+const AGENT_SHUTDOWN_INTERRUPT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+const AGENT_SHUTDOWN_TERMINATE_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+const AGENT_SHUTDOWN_KILL_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
     // Each pane is rendered by herdr's own terminal layer, not the outer terminal
@@ -171,6 +174,12 @@ pub struct PaneRuntime {
     detect_handle: tokio::task::AbortHandle,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct InitialPaneHistory<'a> {
+    pub(crate) ansi: &'a str,
+    pub(crate) note: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WheelRouting {
     HostScroll,
@@ -272,6 +281,52 @@ impl PaneRuntime {
         shutdown_pane_processes(self.pane_id, self.child_pid.load(Ordering::Acquire));
     }
 
+    pub(crate) fn interrupt_foreground_agent_for_shutdown(&self) -> bool {
+        let child_pid = self.child_pid.load(Ordering::Acquire);
+        if child_pid == 0 {
+            return false;
+        }
+
+        let Some(job) = crate::detect::foreground_job(child_pid) else {
+            return false;
+        };
+        let Some(target) = shutdown_agent_job_target(&job) else {
+            return false;
+        };
+
+        for (signal, grace) in [
+            (
+                crate::platform::Signal::Interrupt,
+                AGENT_SHUTDOWN_INTERRUPT_GRACE,
+            ),
+            (
+                crate::platform::Signal::Terminate,
+                AGENT_SHUTDOWN_TERMINATE_GRACE,
+            ),
+            (crate::platform::Signal::Kill, AGENT_SHUTDOWN_KILL_GRACE),
+        ] {
+            crate::platform::signal_process_group(target.process_group_id, signal);
+            if wait_for_processes_to_exit(&target.pids, grace) {
+                info!(
+                    pane = self.pane_id.raw(),
+                    agent = ?target.agent,
+                    pgid = target.process_group_id,
+                    ?signal,
+                    "foreground agent process group exited before shutdown"
+                );
+                return true;
+            }
+        }
+
+        warn!(
+            pane = self.pane_id.raw(),
+            agent = ?target.agent,
+            pgid = target.process_group_id,
+            "foreground agent process group still alive after forced shutdown"
+        );
+        true
+    }
+
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
         self.terminal.apply_host_terminal_theme(theme);
     }
@@ -311,7 +366,7 @@ impl PaneRuntime {
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         default_shell: &str,
-        initial_history_ansi: Option<&str>,
+        initial_history: Option<InitialPaneHistory<'_>>,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
@@ -333,7 +388,7 @@ impl PaneRuntime {
             render_dirty,
             cmd,
             "failed to spawn shell",
-            initial_history_ansi,
+            initial_history,
         )
     }
 
@@ -427,7 +482,7 @@ impl PaneRuntime {
         render_dirty: Arc<AtomicBool>,
         cmd: CommandBuilder,
         spawn_error_message: &'static str,
-        initial_history_ansi: Option<&str>,
+        initial_history: Option<InitialPaneHistory<'_>>,
     ) -> std::io::Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -453,8 +508,8 @@ impl PaneRuntime {
         }
         let pane_terminal = GhosttyPaneTerminal::new(terminal, input_tx.clone())?;
         pane_terminal.apply_host_terminal_theme(host_terminal_theme);
-        if let Some(ansi) = initial_history_ansi {
-            pane_terminal.seed_history_ansi(ansi);
+        if let Some(history) = initial_history {
+            pane_terminal.seed_history_ansi_with_note(history.ansi, history.note);
         }
         let terminal = Arc::new(PaneTerminal::new(pane_terminal));
         let kitty_keyboard_flags = Arc::new(AtomicU16::new(0));
@@ -912,7 +967,7 @@ impl PaneRuntime {
     }
 
     pub fn snapshot_history(&self) -> Option<String> {
-        let ansi = self.recent_unwrapped_ansi(usize::MAX);
+        let ansi = self.terminal.snapshot_history_ansi();
         (!ansi.trim().is_empty()).then_some(ansi)
     }
 
@@ -952,10 +1007,12 @@ impl PaneRuntime {
     }
 
     pub async fn send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::SendError<Bytes>> {
+        self.terminal.clear_transient_history_note();
         self.sender.send(bytes).await
     }
 
     pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
+        self.terminal.clear_transient_history_note();
         self.sender.try_send(bytes)
     }
 
@@ -1053,6 +1110,48 @@ impl PaneRuntime {
         let pid = self.child_pid.load(Ordering::Relaxed);
         crate::platform::process_cwd(pid)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentShutdownTarget {
+    agent: Agent,
+    process_group_id: u32,
+    pids: Vec<u32>,
+}
+
+fn shutdown_agent_job_target(job: &crate::platform::ForegroundJob) -> Option<AgentShutdownTarget> {
+    let mut target_agent: Option<(u8, u32, Agent)> = None;
+
+    for process in &job.processes {
+        let Some((agent, _)) = crate::detect::identify_agent_process(process) else {
+            continue;
+        };
+        if !matches!(agent, Agent::Claude | Agent::Codex) {
+            continue;
+        }
+
+        let leader_rank = u8::from(process.pid != job.process_group_id);
+        match target_agent {
+            Some((best_rank, best_pid, _))
+                if (best_rank, best_pid) <= (leader_rank, process.pid) => {}
+            _ => target_agent = Some((leader_rank, process.pid, agent)),
+        }
+    }
+
+    let (_, _, agent) = target_agent?;
+
+    let mut pids: Vec<u32> = job.processes.iter().map(|process| process.pid).collect();
+    if pids.is_empty() {
+        pids.push(job.process_group_id);
+    }
+    pids.sort_unstable();
+    pids.dedup();
+
+    Some(AgentShutdownTarget {
+        agent,
+        process_group_id: job.process_group_id,
+        pids,
+    })
 }
 
 #[cfg(test)]
@@ -1273,6 +1372,102 @@ mod tests {
             Some(Agent::OpenCode),
             true
         ));
+    }
+
+    #[test]
+    fn shutdown_target_selects_codex_foreground_process_group() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 4242,
+            processes: vec![
+                crate::platform::ForegroundProcess {
+                    pid: 4242,
+                    name: "codex".to_owned(),
+                    argv0: None,
+                    cmdline: None,
+                },
+                crate::platform::ForegroundProcess {
+                    pid: 4243,
+                    name: "node".to_owned(),
+                    argv0: None,
+                    cmdline: None,
+                },
+            ],
+        };
+
+        let target = shutdown_agent_job_target(&job).expect("codex should be targeted");
+
+        assert_eq!(target.agent, Agent::Codex);
+        assert_eq!(target.process_group_id, 4242);
+        assert_eq!(target.pids, vec![4242, 4243]);
+    }
+
+    #[test]
+    fn shutdown_target_selects_wrapped_claude_foreground_process_group() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 5151,
+            processes: vec![
+                crate::platform::ForegroundProcess {
+                    pid: 5151,
+                    name: "node".to_owned(),
+                    argv0: None,
+                    cmdline: None,
+                },
+                crate::platform::ForegroundProcess {
+                    pid: 5152,
+                    name: "node".to_owned(),
+                    argv0: Some("claude".to_owned()),
+                    cmdline: None,
+                },
+            ],
+        };
+
+        let target = shutdown_agent_job_target(&job).expect("wrapped claude should be targeted");
+
+        assert_eq!(target.agent, Agent::Claude);
+        assert_eq!(target.process_group_id, 5151);
+        assert_eq!(target.pids, vec![5151, 5152]);
+    }
+
+    #[test]
+    fn shutdown_target_ignores_other_foreground_agents() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 6161,
+            processes: vec![crate::platform::ForegroundProcess {
+                pid: 6161,
+                name: "pi".to_owned(),
+                argv0: None,
+                cmdline: None,
+            }],
+        };
+
+        assert!(shutdown_agent_job_target(&job).is_none());
+    }
+
+    #[test]
+    fn shutdown_target_prefers_first_claude_or_codex_process_over_other_agents() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 7171,
+            processes: vec![
+                crate::platform::ForegroundProcess {
+                    pid: 7171,
+                    name: "pi".to_owned(),
+                    argv0: None,
+                    cmdline: None,
+                },
+                crate::platform::ForegroundProcess {
+                    pid: 7172,
+                    name: "codex".to_owned(),
+                    argv0: None,
+                    cmdline: None,
+                },
+            ],
+        };
+
+        let target = shutdown_agent_job_target(&job).expect("codex should still be targeted");
+
+        assert_eq!(target.agent, Agent::Codex);
+        assert_eq!(target.process_group_id, 7171);
+        assert_eq!(target.pids, vec![7171, 7172]);
     }
 
     #[test]

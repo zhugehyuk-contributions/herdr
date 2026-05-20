@@ -118,11 +118,7 @@ pub fn session_processes(child_pid: u32) -> Vec<u32> {
 }
 
 pub fn signal_processes(pids: &[u32], signal: Signal) {
-    let sig = match signal {
-        Signal::Hangup => libc::SIGHUP,
-        Signal::Terminate => libc::SIGTERM,
-        Signal::Kill => libc::SIGKILL,
-    };
+    let sig = raw_signal(signal);
 
     for &pid in pids {
         if pid == 0 {
@@ -131,6 +127,26 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
         unsafe {
             libc::kill(pid as i32, sig);
         }
+    }
+}
+
+pub fn signal_process_group(process_group_id: u32, signal: Signal) {
+    if process_group_id == 0 || process_group_id > i32::MAX as u32 {
+        return;
+    }
+
+    let sig = raw_signal(signal);
+    unsafe {
+        libc::kill(-(process_group_id as libc::pid_t), sig);
+    }
+}
+
+fn raw_signal(signal: Signal) -> libc::c_int {
+    match signal {
+        Signal::Interrupt => libc::SIGINT,
+        Signal::Hangup => libc::SIGHUP,
+        Signal::Terminate => libc::SIGTERM,
+        Signal::Kill => libc::SIGKILL,
     }
 }
 

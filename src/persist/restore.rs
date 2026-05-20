@@ -174,6 +174,8 @@ fn restore_tab(
         let saved_label = saved_pane.and_then(|p| p.label.clone());
         let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
         let saved_history = saved_pane.and_then(|p| p.history.as_ref());
+        let saved_history_note =
+            saved_history.and_then(|history| history.transient_disconnected_note());
 
         match TerminalRuntime::spawn_with_initial_history(
             *id,
@@ -183,7 +185,10 @@ fn restore_tab(
             scrollback_limit_bytes,
             crate::terminal_theme::TerminalTheme::default(),
             default_shell,
-            saved_history.map(|history| history.ansi.as_str()),
+            saved_history.map(|history| crate::pane::InitialPaneHistory {
+                ansi: history.ansi.as_str(),
+                note: saved_history_note.as_deref(),
+            }),
             events.clone(),
             render_notify.clone(),
             render_dirty.clone(),
@@ -418,6 +423,7 @@ mod tests {
                 history: Some(super::super::snapshot::PaneHistorySnapshot {
                     ansi: "RESTORED_HISTORY\r\n".to_string(),
                     lines: 1,
+                    disconnected_at_epoch_seconds: Some(1_765_670_400),
                 }),
             },
         );
@@ -467,6 +473,28 @@ mod tests {
                 .recent_unwrapped_text(10)
                 .contains("RESTORED_HISTORY"),
             "saved history should be visible in the restored terminal backend"
+        );
+        assert!(
+            runtime
+                .recent_unwrapped_text(10)
+                .contains("[herdr] history restored; disconnected at 2025-12-14 00:00:00 UTC"),
+            "saved history should include a transient disconnected-at note"
+        );
+        assert!(
+            !runtime
+                .snapshot_history()
+                .unwrap_or_default()
+                .contains("history restored; disconnected at"),
+            "transient disconnected-at note should not be stored in pane history"
+        );
+        runtime
+            .try_send_bytes(bytes::Bytes::from_static(b"echo ok\n"))
+            .unwrap();
+        assert!(
+            !runtime
+                .recent_unwrapped_text(10)
+                .contains("history restored; disconnected at"),
+            "transient disconnected-at note should clear on first pane input"
         );
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

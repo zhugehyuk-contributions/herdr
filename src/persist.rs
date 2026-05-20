@@ -8,6 +8,9 @@ mod snapshot;
 
 pub use self::io::{clear, load, save};
 pub use self::restore::restore;
+#[cfg(test)]
+pub use self::snapshot::capture;
+pub(crate) use self::snapshot::capture_with_history_disconnected_at;
 pub use self::snapshot::{
-    capture, DirectionSnapshot, LayoutSnapshot, SessionSnapshot, TabSnapshot, WorkspaceSnapshot,
+    DirectionSnapshot, LayoutSnapshot, SessionSnapshot, TabSnapshot, WorkspaceSnapshot,
 };
