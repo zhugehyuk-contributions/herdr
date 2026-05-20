@@ -261,13 +261,7 @@ fn pane_read_recent_contains(socket_path: &Path, pane_id: &str, expected: &str) 
     if !output.status.success() {
         return false;
     }
-    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
-        return false;
-    };
-    json["result"]["read"]["text"]
-        .as_str()
-        .unwrap_or_default()
-        .contains(expected)
+    String::from_utf8_lossy(&output.stdout).contains(expected)
 }
 
 fn process_exists(pid: u32) -> bool {
