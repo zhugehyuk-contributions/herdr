@@ -79,7 +79,9 @@ tmux gives you persistence and panes, but it was built before agents existed. gu
 
 ## persistence
 
-start herdr where the work lives. locally, run `herdr`. it starts or attaches to the background session automatically, with no socket setup. run your agents, split panes, do your work. press `ctrl+b q` to detach. close your terminal, close your laptop; your agents keep running. open a new terminal, run `herdr`, you're back. same session, same panes, same agents.
+start herdr where the work lives. locally, run `herdr`. it starts or attaches to the background session automatically, with no socket setup. run your agents, split panes, do your work. press `ctrl+b q` to detach. close your terminal, close your laptop; your agents keep running. open a new terminal, run `herdr`, you're back. same session, same panes, same agents. if you stop the server and later start herdr again, restored panes bring back their recent screen history too.
+
+restored screen history is stored in the session's `session.json`, so treat the herdr config/session directory like terminal history for any sensitive pane output.
 
 ### from anywhere
 
@@ -138,7 +140,7 @@ not a gui window, not a web dashboard, not electron. herdr runs inside whatever 
 - **mouse-native** — click panes/tabs/workspaces/agents, drag borders, select text to copy, right-click menus; not keyboard-only
 - **notifications** — sounds and toasts for background events; tab-aware suppression
 - **18 built-in themes** — catppuccin, terminal, tokyo night, gruvbox, one, solarized, kanagawa, rosé pine, vesper, and light variants for the main palettes
-- **session persistence** — pane processes survive client detach; sessions restore after full restart
+- **session persistence** — pane processes survive client detach; sessions restore panes and recent screen history after full restart
 
 ## agents can use herdr too
 

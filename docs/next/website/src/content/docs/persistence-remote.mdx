@@ -29,6 +29,10 @@ If you want to end the session and stop its panes, stop the default server:
 herdr server stop
 ```
 
+When Herdr starts again, it restores the saved workspaces, tabs, panes, and each pane's recent screen history.
+
+Restored screen history is stored in the session's `session.json`, so treat the Herdr config/session directory like terminal history for any sensitive pane output.
+
 ## Named sessions
 
 Use named sessions when you want independent Herdr servers.

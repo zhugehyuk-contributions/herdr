@@ -98,7 +98,7 @@ pub fn foreground_process_group_id(pid: u32) -> Option<u32> {
 
     let fg = info.e_tpgid;
     if fg > 0 {
-        Some(fg as u32)
+        Some(fg)
     } else {
         None
     }

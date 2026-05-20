@@ -72,6 +72,14 @@ pub struct PaneSnapshot {
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<PaneHistorySnapshot>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PaneHistorySnapshot {
+    pub ansi: String,
+    pub lines: usize,
 }
 
 /// Serializable BSP tree.
@@ -283,6 +291,7 @@ fn capture_tab(
                 cwd,
                 label,
                 agent_name,
+                history: capture_pane_history(tab.panes.get(id), terminal_runtimes),
             },
         );
     }
@@ -294,6 +303,20 @@ fn capture_tab(
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
     }
+}
+
+fn capture_pane_history(
+    pane: Option<&crate::pane::PaneState>,
+    terminal_runtimes: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalRuntime,
+    >,
+) -> Option<PaneHistorySnapshot> {
+    let ansi = terminal_runtimes
+        .get(&pane?.attached_terminal_id)?
+        .snapshot_history()?;
+    let lines = ansi.lines().count();
+    Some(PaneHistorySnapshot { ansi, lines })
 }
 
 pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
@@ -442,6 +465,7 @@ mod tests {
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
                 label: None,
                 agent_name: None,
+                history: None,
             },
         );
         panes.insert(
@@ -450,6 +474,7 @@ mod tests {
                 cwd: PathBuf::from("/home/can/Projects/website"),
                 label: Some("website".into()),
                 agent_name: None,
+                history: None,
             },
         );
 
@@ -553,6 +578,34 @@ mod tests {
         assert_eq!(restored.agent_panel_scope, AgentPanelScope::AllWorkspaces);
         assert_eq!(restored.sidebar_width, None);
         assert_eq!(restored.sidebar_section_split, None);
+    }
+
+    #[test]
+    fn old_pane_snapshot_defaults_history_to_none() {
+        let json = serde_json::json!({
+            "version": SNAPSHOT_VERSION,
+            "workspaces": [{
+                "id": "wtest",
+                "identity_cwd": "/tmp",
+                "tabs": [{
+                    "layout": { "Pane": 0 },
+                    "panes": {
+                        "0": { "cwd": "/tmp" }
+                    },
+                    "zoomed": false,
+                    "focused": 0,
+                    "root_pane": 0
+                }],
+                "active_tab": 0
+            }],
+            "active": 0,
+            "selected": 0
+        })
+        .to_string();
+
+        let restored = parse_snapshot(&json).unwrap();
+
+        assert!(restored.workspaces[0].tabs[0].panes[&0].history.is_none());
     }
 
     #[test]
@@ -735,6 +788,70 @@ mod tests {
         assert_eq!(tab.panes[&second.raw()].cwd, PathBuf::from("/tmp/herdr"));
     }
 
+    #[tokio::test]
+    async fn capture_contract_tracks_pane_history_from_runtime() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        state.insert_test_runtime(
+            root,
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                20,
+                3,
+                4096,
+                b"alpha\r\nbeta\r\ngamma\r\n",
+            ),
+        );
+
+        let snapshot = capture_from_state(&state);
+        let history = snapshot.workspaces[0].tabs[0].panes[&root.raw()]
+            .history
+            .as_ref()
+            .expect("pane history should be captured");
+
+        assert!(history.ansi.contains("alpha"));
+        assert!(history.ansi.contains("gamma"));
+        assert!(history.lines >= 3);
+    }
+
+    #[tokio::test]
+    async fn capture_contract_tracks_history_for_each_pane() {
+        let mut state = state_with_workspaces(&["one"]);
+        let first = state.workspaces[0].tabs[0].root_pane;
+        let second = state.workspaces[0].test_split(Direction::Horizontal);
+        state.insert_test_runtime(
+            first,
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                20,
+                3,
+                4096,
+                b"first-pane-history\r\n",
+            ),
+        );
+        state.insert_test_runtime(
+            second,
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                20,
+                3,
+                4096,
+                b"second-pane-history\r\n",
+            ),
+        );
+
+        let snapshot = capture_from_state(&state);
+        let tab = &snapshot.workspaces[0].tabs[0];
+        let first_history = tab.panes[&first.raw()]
+            .history
+            .as_ref()
+            .expect("first pane history should be captured");
+        let second_history = tab.panes[&second.raw()]
+            .history
+            .as_ref()
+            .expect("second pane history should be captured");
+
+        assert!(first_history.ansi.contains("first-pane-history"));
+        assert!(second_history.ansi.contains("second-pane-history"));
+    }
+
     #[test]
     fn old_unversioned_snapshot_loads_as_version_0() {
         let json = r#"{"workspaces":[],"active":null,"selected":0}"#;
@@ -764,6 +881,7 @@ mod tests {
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
                 label: None,
                 agent_name: None,
+                history: None,
             },
         );
         panes.insert(
@@ -774,6 +892,7 @@ mod tests {
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),
                 label: None,
                 agent_name: None,
+                history: None,
             },
         );
 

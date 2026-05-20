@@ -147,9 +147,10 @@ fn restore_tab(
     let mut terminals = Vec::new();
     let mut terminal_runtimes = HashMap::new();
     for id in &pane_ids {
-        let saved_cwd = reverse_id_map
+        let saved_pane = reverse_id_map
             .get(id)
-            .and_then(|old_id| snap.panes.get(old_id))
+            .and_then(|old_id| snap.panes.get(old_id));
+        let saved_cwd = saved_pane
             .map(|p| p.cwd.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
 
@@ -170,16 +171,11 @@ fn restore_tab(
             }
         };
 
-        let saved_label = reverse_id_map
-            .get(id)
-            .and_then(|old_id| snap.panes.get(old_id))
-            .and_then(|p| p.label.clone());
-        let saved_agent_name = reverse_id_map
-            .get(id)
-            .and_then(|old_id| snap.panes.get(old_id))
-            .and_then(|p| p.agent_name.clone());
+        let saved_label = saved_pane.and_then(|p| p.label.clone());
+        let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
+        let saved_history = saved_pane.and_then(|p| p.history.as_ref());
 
-        match TerminalRuntime::spawn(
+        match TerminalRuntime::spawn_with_initial_history(
             *id,
             rows,
             cols,
@@ -187,6 +183,7 @@ fn restore_tab(
             scrollback_limit_bytes,
             crate::terminal_theme::TerminalTheme::default(),
             default_shell,
+            saved_history.map(|history| history.ansi.as_str()),
             events.clone(),
             render_notify.clone(),
             render_dirty.clone(),
@@ -406,5 +403,76 @@ mod tests {
             resolve_restored_pane(Some(1), &id_map, &surviving, &pane_ids),
             Some(first)
         );
+    }
+
+    #[tokio::test]
+    async fn restore_seeds_saved_pane_history_into_runtime() {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let mut panes = HashMap::new();
+        panes.insert(
+            0,
+            super::super::snapshot::PaneSnapshot {
+                cwd: cwd.clone(),
+                label: None,
+                agent_name: None,
+                history: Some(super::super::snapshot::PaneHistorySnapshot {
+                    ansi: "RESTORED_HISTORY\r\n".to_string(),
+                    lines: 1,
+                }),
+            },
+        );
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes,
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            agent_panel_scope: crate::app::state::AgentPanelScope::CurrentWorkspace,
+            sidebar_width: Some(26),
+            sidebar_section_split: Some(0.5),
+        };
+        let (events, _events_rx) = mpsc::channel(8);
+        let render_notify = Arc::new(Notify::new());
+        let render_dirty = Arc::new(AtomicBool::new(false));
+
+        let (_workspaces, _terminals, runtimes) = restore(
+            &snapshot,
+            5,
+            40,
+            4096,
+            "/bin/sh",
+            events,
+            render_notify,
+            render_dirty,
+        );
+        let runtime = runtimes
+            .values()
+            .next()
+            .expect("restored runtime should exist");
+
+        assert!(
+            runtime
+                .recent_unwrapped_text(10)
+                .contains("RESTORED_HISTORY"),
+            "saved history should be visible in the restored terminal backend"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while runtime.cwd().is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
     }
 }
