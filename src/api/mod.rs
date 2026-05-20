@@ -173,7 +173,7 @@ pub fn read_runtime_status_at(
 }
 
 pub struct ServerHandle {
-    _thread: std::thread::JoinHandle<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
     running: Arc<AtomicBool>,
 }
@@ -181,6 +181,10 @@ pub struct ServerHandle {
 impl Drop for ServerHandle {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
+
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
 
         if let Err(err) = fs::remove_file(&self.path) {
             if err.kind() != std::io::ErrorKind::NotFound {
@@ -198,15 +202,19 @@ pub fn start_server(
     prepare_socket_path(&path)?;
 
     let listener = UnixListener::bind(&path)?;
+    listener.set_nonblocking(true)?;
     restrict_socket_permissions(&path)?;
     info!(path = %path.display(), "api server listening");
 
     let running = Arc::new(AtomicBool::new(true));
     let listener_running = Arc::clone(&running);
     let thread = std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
+        while listener_running.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _addr)) => {
+                    if !listener_running.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let api_tx = api_tx.clone();
                     let event_hub = event_hub.clone();
                     let connection_running = Arc::clone(&listener_running);
@@ -218,6 +226,9 @@ pub fn start_server(
                         }
                     });
                 }
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(CONNECTION_POLL_INTERVAL);
+                }
                 Err(err) => {
                     error!(err = %err, "api listener accept failed");
                     break;
@@ -228,7 +239,7 @@ pub fn start_server(
     });
 
     Ok(ServerHandle {
-        _thread: thread,
+        thread: Some(thread),
         path,
         running,
     })

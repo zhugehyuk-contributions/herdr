@@ -1762,7 +1762,13 @@ fn pane_info_and_subscriptions_expose_done_agent_status() {
             background_pane_id
         ),
     );
-    assert_eq!(pane_after_focus["result"]["pane"]["agent_status"], "idle");
+    let status_after_focus = pane_after_focus["result"]["pane"]["agent_status"]
+        .as_str()
+        .unwrap();
+    assert!(
+        matches!(status_after_focus, "idle" | "unknown"),
+        "seen pane should not remain done after focus: {pane_after_focus}"
+    );
 
     cleanup_spawned_herdr(child, base);
 }

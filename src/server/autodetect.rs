@@ -251,6 +251,17 @@ mod tests {
         std::path::PathBuf::from(format!("/tmp/ha-{name}-{}-{nanos}", std::process::id()))
     }
 
+    fn wait_until_not_listening(path: &std::path::Path, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if !is_server_listening_at(path) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        !is_server_listening_at(path)
+    }
+
     #[test]
     fn is_server_listening_returns_false_for_nonexistent_path() {
         let dir = unique_test_dir("nonexistent");
@@ -311,7 +322,7 @@ mod tests {
         }
 
         // The socket file exists but nobody is listening.
-        assert!(!is_server_listening_at(&path));
+        assert!(wait_until_not_listening(&path, Duration::from_secs(1)));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -325,7 +336,7 @@ mod tests {
         drop(UnixListener::bind(&path).unwrap());
 
         // Socket is stale — should return false.
-        assert!(!is_server_listening_at(&path));
+        assert!(wait_until_not_listening(&path, Duration::from_secs(1)));
 
         let _ = std::fs::remove_dir_all(dir);
     }

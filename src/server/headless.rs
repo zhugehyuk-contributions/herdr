@@ -726,6 +726,15 @@ impl HeadlessServer {
         }
     }
 
+    fn shutdown_client_streams(&self) {
+        for client in self.clients.values() {
+            let Some(writer) = &client.writer else {
+                continue;
+            };
+            let _ = writer.shutdown_stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
     fn update_client_host_theme_from_events(
         &mut self,
         client_id: u64,
@@ -2207,6 +2216,8 @@ impl HeadlessServer {
         // Drain remaining API requests with server_unavailable.
         self.drain_api_requests_with_shutdown_check();
 
+        self.shutdown_client_streams();
+
         // Close all client connections.
         let staged_files = self
             .clients
@@ -2371,14 +2382,18 @@ mod tests {
     use crate::server::protocol::CursorState;
 
     fn test_headless_server() -> HeadlessServer {
+        static NEXT_TEST_SOCKET_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+
         let config = crate::config::Config::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = crate::app::App::new(&config, true, None, api_rx, api::EventHub::default());
         app.state.local_sound_playback = false;
         app.local_terminal_notifications = false;
 
+        let unique = NEXT_TEST_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "hh-{}-{}",
+            "hh-{}-{unique}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2438,10 +2453,12 @@ mod tests {
     ) {
         let (control_tx, control_rx) = std::sync::mpsc::channel();
         let (render_tx, render_rx) = std::sync::mpsc::sync_channel(1);
+        let (shutdown_stream, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         (
             ClientWriter {
                 control: control_tx,
                 render: render_tx,
+                shutdown_stream: std::sync::Arc::new(shutdown_stream),
             },
             control_rx,
             render_rx,

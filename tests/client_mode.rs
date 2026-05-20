@@ -62,6 +62,47 @@ fn cleanup_spawned_herdr(spawned: SpawnedHerdr, base: PathBuf) {
     cleanup_test_base(&base);
 }
 
+fn wait_for_child_exit(child: &mut dyn Child, timeout: Duration) -> bool {
+    let pid = child.process_id();
+    let deadline = Instant::now() + timeout;
+
+    while Instant::now() < deadline {
+        if let Some(pid) = pid {
+            let mut status = 0;
+            let result = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
+            if result == pid as libc::pid_t {
+                unregister_spawned_herdr_pid(Some(pid));
+                return true;
+            }
+            if result == -1 {
+                return true;
+            }
+        }
+
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(_) => return true,
+        }
+        if pid.is_some_and(|pid| !process_exists_for_test(pid)) {
+            return true;
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    pid.is_some_and(|pid| !process_exists_for_test(pid))
+}
+
+fn process_exists_for_test(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if result == 0 {
+        true
+    } else {
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+}
+
 fn test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -536,8 +577,10 @@ fn server_shutdown_sends_message_to_client() {
         "client should observe ServerShutdown or disconnect during graceful shutdown"
     );
 
-    // Wait for the server to exit after shutdown signal.
-    let _ = spawned.child.wait();
+    drop(stream);
+
+    // Best-effort reap only; cleanup_spawned_herdr handles any lingering PTY child.
+    let _ = wait_for_child_exit(&mut *spawned.child, Duration::from_secs(1));
 
     drop(spawned);
     cleanup_test_base(&base);
@@ -696,8 +739,8 @@ fn server_crash_after_attach_causes_lost_connection_error() {
         "thin client must emit explicit lost-connection message after server crash; output: {crash_output:?}"
     );
 
-    // Ensure server is gone.
-    let _ = spawned.child.wait();
+    // Best-effort reap only; cleanup_spawned_herdr handles any lingering PTY child.
+    let _ = wait_for_child_exit(&mut *spawned.child, Duration::from_secs(1));
 
     cleanup_test_base(&base);
 }
@@ -925,8 +968,10 @@ fn graceful_shutdown_sends_server_shutdown_to_client() {
         }
     }
 
-    // Wait for the server to exit.
-    let _ = spawned.child.wait();
+    drop(stream);
+
+    // Best-effort reap only; cleanup_spawned_herdr handles any lingering PTY child.
+    let _ = wait_for_child_exit(&mut *spawned.child, Duration::from_secs(1));
 
     drop(spawned);
     cleanup_test_base(&base);

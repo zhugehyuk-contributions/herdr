@@ -42,6 +42,8 @@ pub(crate) struct ClientWriter {
     pub(crate) control: std::sync::mpsc::Sender<Vec<u8>>,
     /// Droppable render messages. Capacity is one so slow clients cannot build lag.
     pub(crate) render: std::sync::mpsc::SyncSender<Vec<u8>>,
+    /// Server-owned stream clone used to unblock the client read thread on shutdown.
+    pub(crate) shutdown_stream: Arc<UnixStream>,
 }
 
 /// Internal event sent from client transport threads to the main event loop.
@@ -191,9 +193,11 @@ pub(crate) fn handle_client_handshake(
     // Create separate channels for reliable control messages and droppable renders.
     let (control_tx, control_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let (render_tx, render_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+    let shutdown_stream = Arc::new(stream.try_clone()?);
     let writer = ClientWriter {
         control: control_tx,
         render: render_tx,
+        shutdown_stream,
     };
 
     // Notify the main loop about the new client.

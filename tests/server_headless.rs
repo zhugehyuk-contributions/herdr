@@ -60,6 +60,29 @@ fn cleanup_spawned_herdr(spawned: SpawnedHerdr, base: PathBuf) {
     cleanup_test_base(&base);
 }
 
+fn wait_for_child_exit(child: &mut dyn Child, timeout: Duration) -> bool {
+    let pid = child.process_id();
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Some(pid) = pid {
+            let mut status = 0;
+            let result = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
+            if result == pid as libc::pid_t {
+                unregister_spawned_herdr_pid(Some(pid));
+                return true;
+            }
+            if result == -1 {
+                return true;
+            }
+        }
+        if child.try_wait().ok().flatten().is_some() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
 fn test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -440,7 +463,7 @@ fn server_removes_client_socket_on_exit() {
 
     // Kill the server.
     let _ = spawned.child.kill();
-    let _ = spawned.child.wait();
+    let _ = wait_for_child_exit(&mut *spawned.child, Duration::from_secs(1));
 
     // Give it a moment to clean up.
     thread::sleep(Duration::from_millis(300));
