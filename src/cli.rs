@@ -2270,8 +2270,8 @@ mod tests {
 
     #[test]
     fn wait_for_api_socket_shutdown_observes_socket_close() {
-        let socket_path = std::path::PathBuf::from(format!(
-            "/private/tmp/hdr-stop-{}-{}.sock",
+        let socket_path = std::env::temp_dir().join(format!(
+            "hdr-stop-{}-{}.sock",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2294,8 +2294,8 @@ mod tests {
 
     #[test]
     fn wait_for_api_socket_shutdown_times_out_while_socket_accepts() {
-        let socket_path = std::path::PathBuf::from(format!(
-            "/private/tmp/hdr-stop-timeout-{}-{}.sock",
+        let socket_path = std::env::temp_dir().join(format!(
+            "hdr-stop-timeout-{}-{}.sock",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
