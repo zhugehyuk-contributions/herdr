@@ -1782,12 +1782,15 @@ mod tests {
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
 
         let cards = &app.state.view.workspace_card_areas;
-        let bottom_slot = crate::ui::workspace_drop_indicator_row(
+        // The viewport clips the third workspace's card, so the bottom-most slot targets
+        // Before(2) (the first off-screen workspace), drawn just below the last VISIBLE card —
+        // never at the footer.
+        let (_, bottom_slot) = *crate::ui::workspace_drop_slots(
             &app.state,
             cards,
             app.state.workspace_list_rect(),
-            crate::app::state::WorkspaceDropTarget::End,
         )
+        .last()
         .unwrap();
 
         let last = cards.last().unwrap().rect;
