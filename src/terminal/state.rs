@@ -5960,6 +5960,13 @@ mod tests {
     #[test]
     fn stale_release_sequence_is_ignored_for_same_source() {
         let mut terminal = test_terminal();
+        anchor_full_lifecycle_session(
+            &mut terminal,
+            Agent::Pi,
+            "herdr:pi",
+            "pi",
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).unwrap(),
+        );
         terminal.set_hook_authority(
             "herdr:pi".into(),
             "pi".into(),
@@ -5978,6 +5985,13 @@ mod tests {
     #[test]
     fn rejected_release_does_not_advance_sequence() {
         let mut terminal = test_terminal();
+        anchor_full_lifecycle_session(
+            &mut terminal,
+            Agent::Pi,
+            "herdr:pi",
+            "pi",
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).unwrap(),
+        );
         terminal.set_hook_authority(
             "herdr:pi".into(),
             "pi".into(),
@@ -6026,6 +6040,13 @@ mod tests {
     #[test]
     fn rejected_clear_does_not_advance_sequence() {
         let mut terminal = test_terminal();
+        anchor_full_lifecycle_session(
+            &mut terminal,
+            Agent::Pi,
+            "herdr:pi",
+            "pi",
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).unwrap(),
+        );
         terminal.set_hook_authority(
             "herdr:pi".into(),
             "pi".into(),

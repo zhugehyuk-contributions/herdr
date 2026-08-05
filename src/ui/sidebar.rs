@@ -1220,9 +1220,10 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
                 } else {
                     workspace_row_height(app, ws)
                 };
-                let gap = u16::from(
-                    !(*indented && next_entry_is_indented_workspace(&entries, entry_idx)),
-                );
+                // Upstream 7db744ab: worktree parents and children stay PACKED — no gap
+                // whenever the next entry is an indented child (parent->first child and
+                // child->child alike); the gap returns after the group's last member.
+                let gap = u16::from(!next_entry_is_indented_workspace(&entries, entry_idx));
                 row_height.saturating_add(gap)
             }
             // item 4 / item 2: each non-selectable layout row consumes exactly one row.
@@ -1419,9 +1420,10 @@ pub(crate) fn compute_workspace_list_areas_full(
                 } else {
                     workspace_row_height(app, ws)
                 };
-                let gap = u16::from(
-                    !(*indented && next_entry_is_indented_workspace(&entries, entry_idx)),
-                );
+                // Upstream 7db744ab: worktree parents and children stay PACKED — no gap
+                // whenever the next entry is an indented child (parent->first child and
+                // child->child alike); the gap returns after the group's last member.
+                let gap = u16::from(!next_entry_is_indented_workspace(&entries, entry_idx));
                 if row_y.saturating_add(row_height).saturating_add(gap) > body_bottom {
                     break;
                 }
