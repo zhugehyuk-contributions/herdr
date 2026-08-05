@@ -8917,9 +8917,11 @@ next_tab = ""
         server.sync_foreground_client_state();
         server.resize_shared_runtime_to_effective_size();
         server.render_and_stream();
-        let _initial_frame = client_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("initial frame");
+        let initial_frame = read_server_frame(
+            client_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("initial frame"),
+        );
 
         let runtime = server
             .app
@@ -8946,7 +8948,9 @@ next_tab = ""
 
         server.app.state.workspaces[0].switch_tab(background_tab);
         server.render_and_stream();
-        let visible_frame = read_server_frame(
+        // mx #13: the encoder may stream a FrameDelta against the initial frame; reconstruct.
+        let visible_frame = read_server_frame_after(
+            &initial_frame,
             client_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("frame after tab switch"),
