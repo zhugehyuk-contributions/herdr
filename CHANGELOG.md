@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## [0.7.5-mx.1] - 2026-08-05
+
+First stable herdr-mx release. Ships upstream herdr 0.7.5 plus the mx layer — see [DIVERGENCE.md](DIVERGENCE.md) for the full standing diff.
+
+### Added
+- Added mixed remote headless server support: the thin client can manage secondary local or SSH-backed Herdr servers from the sidebar, persist the remote registry on the main server, show combined workspace and agent summaries, route workspace creation/focus to the selected server, and keep secondary disconnects isolated from the main session.
+
+### Fixed
+- Fixed mixed remote client sidebar wheel scrolling so overflowed remote spaces can be reached and clicked.
+- Fixed SSH-backed mixed remote sidebar actions timing out too aggressively, so clicking remote spaces can route focus over slower remote API bridges.
+
 ## [0.7.5] - 2026-07-21
 
 ### Breaking Changes

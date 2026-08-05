@@ -181,6 +181,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # Deploy key with write access to 2lab-ai/homebrew-tap (repo-scoped; NOT a personal
+      # token). Present -> the tap step below pushes the rendered stable formula
+      # immediately after publishing. Absent -> the step no-ops and the tap's 6h cron
+      # catches up from the latest non-prerelease release.
+      TAP_PUSH_KEY: ${{ secrets.TAP_PUSH_KEY }}
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -231,6 +237,48 @@ jobs:
             fat/herdr-macos-x86_64
             fat/herdr-macos-aarch64
           body_path: RELEASE_NOTES.md
+
+      - name: Bump Homebrew tap to this release
+        # Event-driven tap update mirroring the preview flow: render Formula/herdr-mx.rb
+        # from the fat bundles just published (same sha256s brew will download) and push
+        # it to the tap over the deploy key, so `brew install herdr-mx` sees this build
+        # immediately instead of waiting on the tap's 6h cron (which stays as backstop
+        # and no-ops on "formula already at VERSION").
+        if: ${{ env.TAP_PUSH_KEY != '' && contains(github.ref_name, '-mx.') }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          eval "$(ssh-agent -s)" >/dev/null
+          ssh-add - <<< "$TAP_PUSH_KEY"
+
+          git clone --depth 1 git@github.com:2lab-ai/homebrew-tap.git tap-bump
+
+          declare -A SHAS
+          for name in herdr-macos-aarch64 herdr-macos-x86_64 herdr-linux-aarch64 herdr-linux-x86_64; do
+            SHAS[$name]=$(sha256sum "fat/$name" | cut -d' ' -f1)
+          done
+          sed -e "s/@VERSION@/$VERSION/g" \
+              -e "s/@SHA_MACOS_AARCH64@/${SHAS[herdr-macos-aarch64]}/" \
+              -e "s/@SHA_MACOS_X86_64@/${SHAS[herdr-macos-x86_64]}/" \
+              -e "s/@SHA_LINUX_AARCH64@/${SHAS[herdr-linux-aarch64]}/" \
+              -e "s/@SHA_LINUX_X86_64@/${SHAS[herdr-linux-x86_64]}/" \
+              tap-bump/Formula/herdr-mx.rb.tmpl > tap-bump/Formula/herdr-mx.rb
+          ruby -c tap-bump/Formula/herdr-mx.rb
+
+          cd tap-bump
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/herdr-mx.rb
+          git diff --cached --quiet && { echo "tap already current"; exit 0; }
+          git commit -m "herdr-mx v$VERSION"
+          # Commit before pulling (an unstaged render breaks --rebase), then rebase over
+          # anything the cron/other repos pushed meanwhile.
+          git pull --rebase
+          git push
+          echo "tap bumped to v$VERSION"
 
   close-released-issues:
     needs: release
