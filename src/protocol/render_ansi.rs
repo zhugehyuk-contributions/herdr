@@ -34,6 +34,13 @@ use unicode_width::UnicodeWidthStr;
 use crate::protocol::{underline_style_from_modifier, CellData, FrameData};
 
 const REVERSED_MODIFIER: u16 = 1 << 6;
+const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
+
+pub(crate) fn final_sync_output_end(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(SYNC_OUTPUT_END.len())
+        .rposition(|window| window == SYNC_OUTPUT_END)
+}
 
 /// Bytes produced by a [`BlitEncoder`] for one terminal frame.
 pub(crate) struct EncodedBlit {
@@ -58,8 +65,8 @@ impl BlitEncoder {
         Self::default()
     }
 
-    pub(crate) fn encode(&self, frame: &FrameData, force_full: bool) -> EncodedBlit {
-        self.encode_inner(frame, force_full, false)
+    pub(crate) fn encode(&self, frame: &FrameData, repaint: bool) -> EncodedBlit {
+        self.encode_inner(frame, repaint, false)
     }
 
     // Upstream drawn-cursor path; unused until the mx client ports host_cursor (follow-up).
@@ -67,37 +74,37 @@ impl BlitEncoder {
     pub(crate) fn encode_with_suppressed_visible_cursor(
         &self,
         frame: &FrameData,
-        force_full: bool,
+        repaint: bool,
     ) -> EncodedBlit {
-        self.encode_inner(frame, force_full, true)
+        self.encode_inner(frame, repaint, true)
     }
 
     fn encode_inner(
         &self,
         frame: &FrameData,
-        force_full: bool,
+        repaint: bool,
         suppress_visible_cursor: bool,
     ) -> EncodedBlit {
-        let prev = if force_full {
-            None
-        } else {
-            self.last_frame.as_ref()
-        };
-        let full = force_full
+        let previous_frame = self.last_frame.as_ref();
+        let prev = if repaint { None } else { previous_frame };
+        let full = repaint
             || prev.is_none()
             || prev.is_some_and(|p| p.width != frame.width || p.height != frame.height);
+        let clear_before_full_redraw = previous_frame.is_none();
         let prof_stats =
             crate::render_prof::enabled().then(|| compute_prof_blit_stats(frame, prev, full));
         let prof_started = crate::render_prof::timer();
         let mut bytes = Vec::new();
         let mut next_last_visible_cursor = self.last_visible_cursor;
         let mut next_last_cursor_shape = self.last_cursor_shape;
-        blit_frame_to_with_cursor_memory(
+        blit_frame_to_with_cursor_memory_and_clear_policy(
             &mut bytes,
             frame,
             prev,
             &mut next_last_visible_cursor,
             &mut next_last_cursor_shape,
+            repeat_ime_anchor_after_sync(),
+            clear_before_full_redraw,
             suppress_visible_cursor,
         );
         if let Some(stats) = prof_stats {
@@ -399,8 +406,9 @@ fn blit_frame_to(writer: impl Write, frame: &FrameData, prev: Option<&FrameData>
     );
 }
 
+#[cfg(test)]
 fn blit_frame_to_with_cursor_memory(
-    mut writer: impl Write,
+    writer: impl Write,
     frame: &FrameData,
     prev: Option<&FrameData>,
     last_visible_cursor: &mut Option<(u16, u16)>,
@@ -408,7 +416,7 @@ fn blit_frame_to_with_cursor_memory(
     suppress_visible_cursor: bool,
 ) {
     blit_frame_to_with_cursor_memory_and_policy(
-        &mut writer,
+        writer,
         frame,
         prev,
         last_visible_cursor,
@@ -418,13 +426,36 @@ fn blit_frame_to_with_cursor_memory(
     );
 }
 
+#[cfg(test)]
 fn blit_frame_to_with_cursor_memory_and_policy(
+    writer: impl Write,
+    frame: &FrameData,
+    prev: Option<&FrameData>,
+    last_visible_cursor: &mut Option<(u16, u16)>,
+    last_cursor_shape: &mut u8,
+    repeat_ime_anchor: bool,
+    suppress_visible_cursor: bool,
+) {
+    blit_frame_to_with_cursor_memory_and_clear_policy(
+        writer,
+        frame,
+        prev,
+        last_visible_cursor,
+        last_cursor_shape,
+        repeat_ime_anchor,
+        true,
+        suppress_visible_cursor,
+    );
+}
+
+fn blit_frame_to_with_cursor_memory_and_clear_policy(
     mut writer: impl Write,
     frame: &FrameData,
     prev: Option<&FrameData>,
     last_visible_cursor: &mut Option<(u16, u16)>,
     last_cursor_shape: &mut u8,
     repeat_ime_anchor: bool,
+    clear_before_full_redraw: bool,
     suppress_visible_cursor: bool,
 ) {
     // On first frame or size change, do a full redraw.
@@ -446,8 +477,9 @@ fn blit_frame_to_with_cursor_memory_and_policy(
     let _ = writer.write_all(b"\x1b]8;;\x1b\\");
 
     if full_redraw {
-        // Clear the screen and write all cells.
-        let _ = writer.write_all(b"\x1b[2J\x1b[H");
+        if clear_before_full_redraw {
+            let _ = writer.write_all(b"\x1b[2J");
+        }
         write_all_cells(&mut writer, frame);
     } else {
         // Diff-based update: only write changed cells.
@@ -1463,19 +1495,34 @@ mod tests {
     }
 
     #[test]
-    fn blit_frame_size_change_triggers_full_redraw() {
+    fn encoder_size_change_repaints_without_clearing() {
         let prev = make_frame(2, 2, vec![make_cell("A", 0, 0, 0); 4]);
-
         let curr = make_frame(3, 2, vec![make_cell("B", 0, 0, 0); 6]);
+        let mut encoder = BlitEncoder::new();
+        let initial = encoder.encode(&prev, false);
+        encoder.commit(prev, initial);
 
-        let mut output = Vec::new();
-        blit_frame_to(&mut output, &curr, Some(&prev));
+        let encoded = encoder.encode(&curr, false);
+        assert!(encoded.full);
+        let output = String::from_utf8(encoded.bytes).unwrap();
 
-        let output_str = String::from_utf8(output).unwrap();
-        assert!(
-            output_str.contains("\x1b[2J"),
-            "size change should trigger full redraw"
-        );
+        assert!(!output.contains("\x1b[2J"));
+        assert!(output.bytes().filter(|byte| *byte == b'B').count() >= 6);
+    }
+
+    #[test]
+    fn encoder_forced_repaint_writes_all_cells_without_clearing() {
+        let frame = make_frame(3, 2, vec![make_cell("A", 0, 0, 0); 6]);
+        let mut encoder = BlitEncoder::new();
+        let initial = encoder.encode(&frame, false);
+        encoder.commit(frame.clone(), initial);
+
+        let encoded = encoder.encode(&frame, true);
+        assert!(encoded.full);
+        let output = String::from_utf8(encoded.bytes).unwrap();
+
+        assert!(!output.contains("\x1b[2J"));
+        assert!(output.bytes().filter(|byte| *byte == b'A').count() >= 6);
     }
 
     #[test]

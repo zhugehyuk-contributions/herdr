@@ -135,10 +135,10 @@ A workspace is the top-level project or work context. Creating one also creates 
 ## Worktrees
 
 ```bash
-herdr worktree list [--workspace ID | --cwd PATH] [--json]
-herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json]
-herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]
-herdr worktree remove --workspace ID [--force] [--json]
+herdr worktree list [--workspace ID | --cwd PATH]
+herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus]
+herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus]
+herdr worktree remove --workspace ID [--force]
 ```
 
 Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree create` creates a Git worktree checkout, opens it as a workspace, and groups it with the parent repo workspace. If `--branch` names an existing local branch, Herdr checks it out; otherwise it creates the branch from `--base` or `HEAD`. Without `--path`, Herdr creates the checkout under `<worktrees.directory>/<repo>/<branch-slug>`.
@@ -156,7 +156,7 @@ herdr tab rename <tab_id> <label>
 herdr tab close <tab_id>
 ```
 
-A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`.
+A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action; when `confirm_close` is enabled and that would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
 
 Workspace and tab creation, and pane splitting, leave focus unchanged by default. `--focus` selects the new layout; `--no-focus` states the default explicitly. Without `--cwd`, new terminals follow the configured `terminal.new_cwd` policy, which follows the source pane or workspace by default. Each `--env KEY=VALUE` adds or replaces that variable in the new root shell.
 
@@ -367,6 +367,7 @@ herdr integration install hermes
 herdr integration install qodercli
 herdr integration install cursor
 herdr integration install mastracode
+herdr integration install grok
 herdr integration uninstall pi
 herdr integration uninstall omp
 herdr integration uninstall claude
@@ -381,6 +382,7 @@ herdr integration uninstall hermes
 herdr integration uninstall qodercli
 herdr integration uninstall cursor
 herdr integration uninstall mastracode
+herdr integration uninstall grok
 herdr integration status [--outdated-only]
 ```
 
@@ -477,6 +479,7 @@ These meanings apply to reads. For `pane wait-output` only, both `recent` and `r
 | `HERDR_CONFIG_PATH` | Override the config file path. |
 | `HERDR_SESSION` | Select a named session for CLI commands. |
 | `HERDR_SOCKET_PATH` | Low-level socket path override. |
+| `HERDR_PROCESS_DETECTION` | Linux process detection strategy: `native` (default) or opt-in `child-groups`. |
 | `HERDR_ENV` | Set to `1` inside Herdr-managed pane processes. |
 | `HERDR_PANE_ID` | Public pane id for the running pane process. |
 | `HERDR_TAB_ID` | Public tab id for the running pane process. |

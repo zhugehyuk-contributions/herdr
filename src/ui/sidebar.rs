@@ -1476,6 +1476,19 @@ pub(crate) fn compute_workspace_card_areas(
     compute_workspace_list_areas(app, area).0
 }
 
+pub(crate) fn workspace_group_chevron_rect(card: &crate::app::state::WorkspaceCardArea) -> Rect {
+    if card.rect.width == 0 || card.rect.height == 0 {
+        return Rect::default();
+    }
+
+    Rect::new(
+        card.rect.x + card.rect.width.saturating_sub(1),
+        card.rect.y,
+        1,
+        1,
+    )
+}
+
 /// Auto-scale sidebar width based on workspace identity + agent summary.
 pub(crate) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<u16>, Rect) {
     // #9: reserve the bottom row for the collapse/expand toggle button (height − 1).
@@ -1627,35 +1640,100 @@ pub(crate) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
     render_sidebar_toggle(app, frame, area, true, p);
 }
 
-pub(crate) fn workspace_drop_indicator_row(
+pub(crate) fn workspace_drop_slots(
+    app: &AppState,
     cards: &[crate::app::state::WorkspaceCardArea],
     area: Rect,
-    insert_idx: usize,
-) -> Option<u16> {
-    if area.height == 0 {
-        return None;
+) -> Vec<(crate::app::state::WorkspaceDropTarget, u16)> {
+    if area.height == 0 || cards.is_empty() {
+        return Vec::new();
     }
     let list_bottom = area.y + area.height.saturating_sub(1);
+    let entries = workspace_list_entries(app);
+    let entry_position = |ws_idx| {
+        entries.iter().position(|entry| {
+            matches!(
+                entry,
+                WorkspaceListEntry::Workspace {
+                    ws_idx: entry_ws_idx,
+                    ..
+                } if *entry_ws_idx == ws_idx
+            )
+        })
+    };
+    let block_root_at = |entry_idx: usize| {
+        entries[..=entry_idx]
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                WorkspaceListEntry::Workspace {
+                    ws_idx,
+                    indented: false,
+                } => Some(*ws_idx),
+                _ => None,
+            })
+    };
 
-    let first = cards.first()?;
-    if insert_idx == first.ws_idx {
-        return first.rect.y.checked_sub(1).filter(|y| *y < list_bottom);
+    let mut slots = Vec::new();
+    let mut previous_root = None;
+    for card in cards {
+        let Some(entry_idx) = entry_position(card.ws_idx) else {
+            continue;
+        };
+        let Some(root_idx) = block_root_at(entry_idx) else {
+            continue;
+        };
+        if previous_root == Some(root_idx) {
+            continue;
+        }
+        previous_root = Some(root_idx);
+        if let Some(row) = card.rect.y.checked_sub(1).filter(|row| *row < list_bottom) {
+            slots.push((
+                crate::app::state::WorkspaceDropTarget::Before(root_idx),
+                row,
+            ));
+        }
     }
 
-    if let Some(row) = cards
-        .last()
-        .filter(|card| insert_idx == card.ws_idx.saturating_add(1))
-        .map(|card| card.rect.y.saturating_add(card.rect.height))
-        .filter(|y| *y < list_bottom)
+    let Some(last) = cards.last() else {
+        return slots;
+    };
+    let Some(last_entry_idx) = entry_position(last.ws_idx) else {
+        return slots;
+    };
+    let next_entry = entries.get(last_entry_idx.saturating_add(1));
+    if matches!(
+        next_entry,
+        Some(WorkspaceListEntry::Workspace { indented: true, .. })
+    ) {
+        return slots;
+    }
+    let target = match next_entry {
+        Some(WorkspaceListEntry::Workspace { ws_idx, .. }) => {
+            crate::app::state::WorkspaceDropTarget::Before(*ws_idx)
+        }
+        _ => crate::app::state::WorkspaceDropTarget::End,
+    };
+    let row = last.rect.y.saturating_add(last.rect.height);
+    if row < list_bottom
+        && slots
+            .last()
+            .is_none_or(|(last_target, _)| *last_target != target)
     {
-        return Some(row);
+        slots.push((target, row));
     }
+    slots
+}
 
-    if let Some(card) = cards.iter().find(|card| card.ws_idx == insert_idx) {
-        return card.rect.y.checked_sub(1).filter(|y| *y < list_bottom);
-    }
-
-    None
+pub(crate) fn workspace_drop_indicator_row(
+    app: &AppState,
+    cards: &[crate::app::state::WorkspaceCardArea],
+    area: Rect,
+    target: crate::app::state::WorkspaceDropTarget,
+) -> Option<u16> {
+    workspace_drop_slots(app, cards, area)
+        .into_iter()
+        .find_map(|(candidate, row)| (candidate == target).then_some(row))
 }
 
 /// #19 (host half): resolve a host insert position (`0..=banners.len()`) to the screen row the
@@ -1734,9 +1812,9 @@ fn render_workspace_list(
     };
     let insertion_row = match app.drag.as_ref().map(|drag| &drag.target) {
         Some(crate::app::state::DragTarget::WorkspaceReorder {
-            insert_idx: Some(insert_idx),
+            drop_target: Some(drop_target),
             ..
-        }) => workspace_drop_indicator_row(&app.view.workspace_card_areas, area, *insert_idx),
+        }) => workspace_drop_indicator_row(app, &app.view.workspace_card_areas, area, *drop_target),
         // #19 (host half): a host drag draws the SAME accent drop line, but at a host boundary
         // computed from the banner rects only (never inside a space block).
         Some(crate::app::state::DragTarget::HostReorder {
@@ -1948,6 +2026,16 @@ fn render_workspace_list(
                 Rect::new(card.rect.x, y, card.rect.width, 1),
             );
         }
+
+        if let Some((_, collapsed)) = parent_group {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    if collapsed { "▸" } else { "▾" },
+                    Style::default().fg(p.accent),
+                )),
+                workspace_group_chevron_rect(card),
+            );
+        }
     }
 
     // item 2 (C3): draw each host banner at its rect from `app.view.host_banner_areas` (the
@@ -2050,6 +2138,7 @@ fn render_workspace_list(
                 Rect::new(banner_area.rect.x, sub_y, banner_area.rect.width, 1),
             );
         }
+
     }
 
     // item 4: draw the local→remote divider rule at each `y` from `app.view.divider_rows`.
@@ -3196,11 +3285,12 @@ mod tests {
             live_cwd.clone(),
             0,
             crate::terminal_theme::TerminalTheme::default(),
+            None,
             crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
             &crate::pane::PaneLaunchEnv::default(),
             events,
             std::sync::Arc::new(tokio::sync::Notify::new()),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
         )
         .unwrap();
 
@@ -4563,12 +4653,13 @@ lines = [
         ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
             key: key.into(),
             checkout_key: format!("/repo/{name}"),
-            label: "herdr".into(),
+            repo_name: "herdr".into(),
             repo_root: std::path::PathBuf::from(format!("/repo/{name}")),
             is_linked_worktree: false,
         });
         ws
     }
+
 
     #[test]
     fn parent_workspace_row_stays_clickable_when_grouped() {
@@ -4585,7 +4676,7 @@ lines = [
         assert!(!cards[0].indented);
         assert_eq!(cards[1].ws_idx, 1);
         assert!(cards[1].indented);
-        assert_eq!(cards[1].rect.y, cards[0].rect.y + cards[0].rect.height + 1);
+        assert_eq!(cards[1].rect.y, cards[0].rect.y + cards[0].rect.height);
     }
 
     #[test]

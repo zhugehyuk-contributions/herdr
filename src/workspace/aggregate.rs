@@ -114,10 +114,6 @@ impl Workspace {
             .unwrap_or((AgentState::Unknown, true))
     }
 
-    pub fn has_working_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
-        self.tabs.iter().any(|tab| tab.has_working_pane(terminals))
-    }
-
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
         self.pane_details_at(terminals, Instant::now())
     }

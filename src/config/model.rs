@@ -790,6 +790,14 @@ pub struct WorktreesConfig {
     pub directory: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TabBarPositionConfig {
+    #[default]
+    Top,
+    Bottom,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -824,12 +832,16 @@ pub struct UiConfig {
     pub prompt_new_workspace_name: bool,
     /// Draw borders around split panes. Default: true.
     pub pane_borders: bool,
+    /// Draw interactive scrollbars beside terminal panes. Default: true.
+    pub pane_scrollbars: bool,
     /// Keep split panes visually separated instead of sharing divider borders. Default: true.
     pub pane_gaps: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
     /// Hide the tab row when the workspace has one tab. Default: false.
     pub hide_tab_bar_when_single_tab: bool,
+    /// Desktop tab row placement. Default: top.
+    pub tab_bar_position: TabBarPositionConfig,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
     /// herdr-mx: agent sidebar scope. Saved values are "current" or "all". Default: "all".
@@ -1419,11 +1431,15 @@ pub struct ExperimentalConfig {
     /// Cursor shape rendered for the IME anchor when
     /// `reveal_hidden_cursor_for_cjk_ime` is enabled. Default: "steady_block".
     pub cjk_ime_cursor_shape: ImeCursorShape,
-    /// While prefix mode is active, temporarily switch the macOS host input
-    /// source to an ASCII-capable keyboard layout so prefix commands are read
-    /// as ASCII even when a CJK IME is active, then restore the previous input
-    /// source when prefix mode exits. macOS only; a no-op elsewhere and a
-    /// best-effort no-op if the switch fails. Default: false.
+    /// While prefix mode is active, temporarily switch the host input source
+    /// to an ASCII-capable mode so prefix commands are read as ASCII even when
+    /// an IME is active, then restore the previous input source when prefix
+    /// mode exits. On macOS this selects the ASCII-capable keyboard layout; on
+    /// Windows it switches the IME to English (ASCII) input. Windows support is
+    /// currently limited to the Korean IME; with an IME for any other language,
+    /// the input source is left unchanged. macOS and Windows only; a no-op
+    /// elsewhere and a best-effort no-op if the switch fails.
+    /// Default: false.
     pub switch_ascii_input_source_in_prefix: bool,
 }
 
@@ -1517,9 +1533,11 @@ impl Default for UiConfig {
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
             pane_borders: true,
+            pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
+            tab_bar_position: TabBarPositionConfig::Top,
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             agent_panel_scope: AgentPanelScopeConfig::All,
             accent: "cyan".into(),
@@ -1788,22 +1806,31 @@ agent_panel_scope = "current"
     fn pane_appearance_defaults_and_parse() {
         let default_config = Config::default();
         assert!(default_config.ui.pane_borders);
+        assert!(default_config.ui.pane_scrollbars);
         assert!(default_config.ui.pane_gaps);
         assert!(!default_config.ui.show_agent_labels_on_pane_borders);
         assert!(!default_config.ui.hide_tab_bar_when_single_tab);
+        assert_eq!(
+            default_config.ui.tab_bar_position,
+            TabBarPositionConfig::Top
+        );
 
         let toml = r#"
 [ui]
 pane_borders = false
+pane_scrollbars = false
 pane_gaps = true
 show_agent_labels_on_pane_borders = true
 hide_tab_bar_when_single_tab = true
+tab_bar_position = "bottom"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.pane_borders);
+        assert!(!config.ui.pane_scrollbars);
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);
         assert!(config.ui.hide_tab_bar_when_single_tab);
+        assert_eq!(config.ui.tab_bar_position, TabBarPositionConfig::Bottom);
     }
 
     #[test]

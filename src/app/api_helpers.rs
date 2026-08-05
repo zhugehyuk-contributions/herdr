@@ -48,17 +48,25 @@ pub(super) fn encode_api_keys(
     Ok(encoded_keys)
 }
 
-pub(super) fn encode_api_submission(
+pub(super) fn encode_api_submission_parts(
     runtime: &crate::terminal::TerminalRuntime,
     text: &str,
-) -> Vec<u8> {
-    let mut bytes = encode_api_text(runtime, text);
+) -> (Vec<u8>, Vec<u8>) {
+    let text = encode_api_text(runtime, text);
     let enter = crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Enter,
         crossterm::event::KeyModifiers::NONE,
     );
-    bytes.extend_from_slice(&runtime.encode_terminal_key(enter.into()));
-    bytes
+    (text, runtime.encode_terminal_key(enter.into()))
+}
+
+pub(super) fn encode_api_submission(
+    runtime: &crate::terminal::TerminalRuntime,
+    text: &str,
+) -> Vec<u8> {
+    let (mut text, enter) = encode_api_submission_parts(runtime, text);
+    text.extend_from_slice(&enter);
+    text
 }
 
 pub(super) fn encode_api_input(
@@ -106,50 +114,80 @@ pub(super) fn read_terminal_snapshot(
     source: crate::api::schema::ReadSource,
     format: crate::api::schema::ReadFormat,
     lines: Option<u32>,
-) -> String {
+) -> crate::pane::TerminalReadSnapshot {
     use crate::api::schema::{ReadFormat, ReadSource};
 
-    let requested_lines = lines.unwrap_or(80).min(1000) as usize;
-    let text = match (format, source) {
-        (ReadFormat::Text, ReadSource::Visible) => terminal.visible_text(),
-        (ReadFormat::Text, ReadSource::Recent) => terminal.recent_text(requested_lines),
+    let line_limit = lines.map(|lines| lines.min(1000) as usize);
+    let recent_lines = line_limit.unwrap_or(80);
+    match (format, source) {
+        (ReadFormat::Text, ReadSource::Visible) => {
+            limit_snapshot_lines(terminal.visible_text(), line_limit)
+        }
+        (ReadFormat::Text, ReadSource::Recent) => terminal.recent_text_snapshot(recent_lines),
         (ReadFormat::Text, ReadSource::RecentUnwrapped) => {
-            terminal.recent_unwrapped_text(requested_lines)
+            terminal.recent_unwrapped_text_snapshot(recent_lines)
         }
-        (ReadFormat::Text, ReadSource::Detection) => terminal.detection_text(),
-        (ReadFormat::Ansi, ReadSource::Visible) => terminal.visible_ansi(),
-        (ReadFormat::Ansi, ReadSource::Recent) => terminal.recent_ansi(requested_lines),
+        (ReadFormat::Text, ReadSource::Detection) => {
+            limit_snapshot_lines(terminal.detection_text(), line_limit)
+        }
+        (ReadFormat::Ansi, ReadSource::Visible) => {
+            limit_snapshot_lines(terminal.visible_ansi(), line_limit)
+        }
+        (ReadFormat::Ansi, ReadSource::Recent) => terminal.recent_ansi_snapshot(recent_lines),
         (ReadFormat::Ansi, ReadSource::RecentUnwrapped) => {
-            terminal.recent_unwrapped_ansi(requested_lines)
+            terminal.recent_unwrapped_ansi_snapshot(recent_lines)
         }
-        (ReadFormat::Ansi, ReadSource::Detection) => terminal.detection_text(),
-    };
-
-    if lines.is_some() && matches!(source, ReadSource::Visible | ReadSource::Detection) {
-        last_lines(&text, requested_lines)
-    } else {
-        text
+        (ReadFormat::Ansi, ReadSource::Detection) => {
+            limit_snapshot_lines(terminal.detection_text(), line_limit)
+        }
     }
 }
 
-fn last_lines(text: &str, count: usize) -> String {
-    if text.is_empty() || count == 0 {
-        return String::new();
-    }
+pub(crate) fn limit_snapshot_lines(
+    text: String,
+    limit: Option<usize>,
+) -> crate::pane::TerminalReadSnapshot {
+    let Some(limit) = limit else {
+        return crate::pane::TerminalReadSnapshot {
+            text,
+            truncated: false,
+        };
+    };
     let lines: Vec<_> = text.split_inclusive('\n').collect();
-    lines[lines.len().saturating_sub(count)..].concat()
+    crate::pane::TerminalReadSnapshot {
+        text: lines[lines.len().saturating_sub(limit)..].concat(),
+        truncated: lines.len() > limit,
+    }
 }
 
 #[cfg(test)]
 mod read_snapshot_tests {
-    use super::last_lines;
+    use super::limit_snapshot_lines;
 
     #[test]
-    fn last_lines_preserves_real_line_endings_and_unicode() {
-        assert_eq!(last_lines("one\ntwø\n三\n", 2), "twø\n三\n");
-        assert_eq!(last_lines("one\ntwo\nthree", 1), "three");
-        assert_eq!(last_lines("one\ntwo", 0), "");
-        assert_eq!(last_lines("", 2), "");
+    fn line_limit_preserves_endings_and_reports_omitted_lines() {
+        let snapshot = limit_snapshot_lines("one\ntwø\n三\n".into(), Some(2));
+        assert_eq!(snapshot.text, "twø\n三\n");
+        assert!(snapshot.truncated);
+
+        let snapshot = limit_snapshot_lines("one\ntwo\nthree".into(), Some(1));
+        assert_eq!(snapshot.text, "three");
+        assert!(snapshot.truncated);
+
+        let snapshot = limit_snapshot_lines("one\ntwo".into(), Some(0));
+        assert_eq!(snapshot.text, "");
+        assert!(snapshot.truncated);
+
+        let snapshot = limit_snapshot_lines("".into(), Some(2));
+        assert_eq!(snapshot.text, "");
+        assert!(!snapshot.truncated);
+    }
+
+    #[test]
+    fn omitted_line_limit_returns_the_complete_snapshot() {
+        let snapshot = limit_snapshot_lines("one\ntwo\n".into(), None);
+        assert_eq!(snapshot.text, "one\ntwo\n");
+        assert!(!snapshot.truncated);
     }
 }
 

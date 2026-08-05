@@ -145,6 +145,11 @@ impl ActiveSubscription {
                 filter: ActiveEventFilter::None,
                 last_sequence: 0,
             })),
+            Subscription::WorkspaceReordered {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::WorkspaceReordered,
+                filter: ActiveEventFilter::None,
+                last_sequence: 0,
+            })),
             Subscription::WorkspaceClosed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::WorkspaceClosed,
                 filter: ActiveEventFilter::None,
@@ -609,6 +614,7 @@ fn pane_read(
                 lines,
                 format: crate::api::schema::ReadFormat::Text,
                 strip_ansi,
+                intent: crate::api::schema::ReadIntent::Passive,
             }),
         },
         api_tx,

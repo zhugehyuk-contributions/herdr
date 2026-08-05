@@ -4,12 +4,14 @@
   "type": "module",
   "scripts": {
     "prepare-docs": "node scripts/prepare-docs.mjs",
-    "dev": "node scripts/prepare-docs.mjs && astro dev",
-    "test": "bun test src/docs-path.test.ts",
-    "build": "bun run test && node scripts/prepare-docs.mjs && astro build",
+    "dev": "node scripts/prepare-docs.mjs --draft && astro dev",
+    "test": "bun test",
+    "build": "bun run test && node scripts/prepare-docs.mjs && astro build && node scripts/check-built-docs.mjs",
+    "build:draft": "node scripts/prepare-docs.mjs --draft && astro build && node scripts/check-built-docs.mjs",
     "preview": "astro preview"
   },
   "dependencies": {
+    "@astrojs/sitemap": "^3.7.2",
     "@astrojs/starlight": "^0.36.0",
     "astro": "^5.0.0"
   }

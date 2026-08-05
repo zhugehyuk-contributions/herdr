@@ -18,6 +18,7 @@ pub(super) fn command() -> Command {
         )
         .arg(flag("handoff").help("Opt into live handoff for update or remote attach"))
         .arg(flag("default-config").help("Print default configuration and exit"))
+        .arg(flag("skill").help("Print the agent skill file and exit"))
         .arg(
             Arg::new("version")
                 .short('V')
@@ -228,8 +229,7 @@ fn worktree_command() -> Command {
             Command::new("list")
                 .about("List worktree workspaces")
                 .arg(option("workspace", "ID"))
-                .arg(path_option("cwd", "PATH"))
-                .arg(json_flag()),
+                .arg(path_option("cwd", "PATH")),
         )
         .subcommand(
             Command::new("create")
@@ -241,8 +241,7 @@ fn worktree_command() -> Command {
                 .arg(path_option("path", "PATH"))
                 .arg(option("label", "TEXT"))
                 .arg(flag("focus"))
-                .arg(flag("no-focus"))
-                .arg(json_flag()),
+                .arg(flag("no-focus")),
         )
         .subcommand(
             Command::new("open")
@@ -253,15 +252,13 @@ fn worktree_command() -> Command {
                 .arg(option("branch", "NAME"))
                 .arg(option("label", "TEXT"))
                 .arg(flag("focus"))
-                .arg(flag("no-focus"))
-                .arg(json_flag()),
+                .arg(flag("no-focus")),
         )
         .subcommand(
             Command::new("remove")
                 .about("Remove a worktree checkout")
                 .arg(option("workspace", "ID"))
-                .arg(flag("force"))
-                .arg(json_flag()),
+                .arg(flag("force")),
         )
 }
 
@@ -426,7 +423,7 @@ fn agent_command() -> Command {
                         .last(true),
                 )
                 .after_help(
-                    "The pane must be at its interactive shell prompt. Success means the expected agent was detected in the same terminal and is ready for input.",
+                    "The pane must be at its interactive shell prompt. Success means the expected agent was detected in the same terminal and is ready for input.\n\nnext: herdr agent prompt <TARGET> <TEXT> --wait",
                 ),
         )
         .subcommand(
@@ -568,7 +565,10 @@ fn pane_command() -> Command {
             Command::new("send-text")
                 .about("Send literal text to a pane")
                 .arg(required("pane_id", "PANE_ID"))
-                .arg(required("text", "TEXT")),
+                .arg(required("text", "TEXT"))
+                .after_help(
+                    "next: herdr pane run <PANE_ID> <COMMAND> sends text and Enter in one call",
+                ),
         )
         .subcommand(
             Command::new("send-keys")
@@ -1188,6 +1188,18 @@ mod tests {
     }
 
     #[test]
+    fn worktree_json_compatibility_flag_stays_out_of_public_spec() {
+        let cmd = super::command();
+        for subcommand in ["list", "create", "open", "remove"] {
+            let worktree_command = command_path(&cmd, &["worktree", subcommand]);
+            assert!(
+                !has_option(worktree_command, "json"),
+                "herdr worktree {subcommand} should not advertise --json"
+            );
+        }
+    }
+
+    #[test]
     fn spec_includes_nested_plugin_pane_open_options() {
         let cmd = super::command();
         let open = command_path(&cmd, &["plugin", "pane", "open"]);
@@ -1267,6 +1279,40 @@ mod tests {
         assert!(agent_start
             .get_arguments()
             .any(|arg| arg.get_id() == "agent_args"));
+    }
+
+    fn long_help(path: &[&str]) -> String {
+        let mut args = vec!["herdr".to_string()];
+        args.extend(path.iter().map(|segment| segment.to_string()));
+        args.push("--help".to_string());
+        let mut output = Vec::new();
+        assert!(
+            super::write_requested_help(&args, &mut output).unwrap(),
+            "help was not handled for herdr {}",
+            path.join(" ")
+        );
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn next_step_hints_render_without_replacing_existing_after_help() {
+        let agent_start = long_help(&["agent", "start"]);
+        assert!(
+            agent_start.contains("The pane must be at its interactive shell prompt."),
+            "agent start dropped its existing after_help: {agent_start}"
+        );
+        assert!(
+            agent_start.contains("next: herdr agent prompt <TARGET> <TEXT> --wait"),
+            "agent start is missing its next-step hint: {agent_start}"
+        );
+
+        let pane_send_text = long_help(&["pane", "send-text"]);
+        assert!(
+            pane_send_text.contains(
+                "next: herdr pane run <PANE_ID> <COMMAND> sends text and Enter in one call"
+            ),
+            "pane send-text is missing its next-step hint: {pane_send_text}"
+        );
     }
 
     #[test]

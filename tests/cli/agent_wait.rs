@@ -26,7 +26,7 @@ fn agent_wait_exits_immediately_when_status_already_matches() {
     let reported = send_request(
         &socket_path,
         &format!(
-            r#"{{"id":"req_cli_immediate_2","method":"pane.report_agent","params":{{"pane_id":"{}","source":"herdr:pi","agent":"pi","state":"idle"}}}}"#,
+            r#"{{"id":"req_cli_immediate_2","method":"pane.report_agent","params":{{"pane_id":"{}","source":"custom:test","agent":"pi","state":"idle"}}}}"#,
             pane_id
         ),
     );
@@ -78,7 +78,7 @@ fn agent_wait_times_out_when_status_does_not_match() {
     let reported = send_request(
         &socket_path,
         &format!(
-            r#"{{"id":"req_cli_timeout_2","method":"pane.report_agent","params":{{"pane_id":"{}","source":"herdr:pi","agent":"pi","state":"working"}}}}"#,
+            r#"{{"id":"req_cli_timeout_2","method":"pane.report_agent","params":{{"pane_id":"{}","source":"custom:test","agent":"pi","state":"working"}}}}"#,
             pane_id
         ),
     );

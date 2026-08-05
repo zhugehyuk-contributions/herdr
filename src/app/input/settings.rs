@@ -39,7 +39,6 @@ pub(super) enum SettingsAction {
     InstallRecommendedIntegrations,
 }
 
-/// Map an Experiments row index to the toggle action that flips it.
 fn experiment_toggle_action(state: &AppState, idx: usize) -> Option<SettingsAction> {
     match ExperimentSetting::ALL.get(idx).copied()? {
         ExperimentSetting::PaneHistory => Some(SettingsAction::SavePaneHistory(
@@ -52,6 +51,7 @@ fn experiment_toggle_action(state: &AppState, idx: usize) -> Option<SettingsActi
         }
     }
 }
+
 
 impl App {
     pub(crate) fn handle_settings_key(&mut self, key: KeyEvent) {
@@ -1572,19 +1572,7 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
         );
-        assert_eq!(state.settings.section, SettingsSection::Experiments);
-
-        update_settings_state(
-            &mut state,
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
-        );
         assert_eq!(state.settings.section, SettingsSection::Theme);
-
-        update_settings_state(
-            &mut state,
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
-        );
-        assert_eq!(state.settings.section, SettingsSection::Experiments);
 
         update_settings_state(
             &mut state,

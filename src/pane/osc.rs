@@ -314,88 +314,6 @@ fn parse_default_color_set_events(body: &[u8]) -> Vec<DefaultColorEvent> {
         .collect()
 }
 
-/// 256 KiB of base64 ≈ 192 KiB of text — enough for real source-file copies
-/// while still bounding memory against stream garbage.
-const OSC52_MAX_PAYLOAD_BYTES: usize = 256 * 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Osc52ForwarderState {
-    #[default]
-    Ground,
-    Escape,
-    OscBody,
-    OscEscape,
-}
-
-/// Reconstructs OSC 52 clipboard-write sequences from raw PTY bytes so the
-/// main loop can re-emit them. `libghostty-vt` drops `.clipboard_contents`,
-/// so child clipboard writes never reach the host terminal unless we forward
-/// them ourselves.
-#[derive(Debug, Default)]
-pub(super) struct Osc52Forwarder {
-    state: Osc52ForwarderState,
-    body: Vec<u8>,
-    pending: Vec<Vec<u8>>,
-}
-
-impl Osc52Forwarder {
-    pub(super) fn observe(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            match self.state {
-                Osc52ForwarderState::Ground => {
-                    if byte == 0x1b {
-                        self.state = Osc52ForwarderState::Escape;
-                    }
-                }
-                Osc52ForwarderState::Escape => {
-                    if byte == b']' {
-                        self.body.clear();
-                        self.state = Osc52ForwarderState::OscBody;
-                    } else if byte == 0x1b {
-                        self.state = Osc52ForwarderState::Escape;
-                    } else {
-                        self.state = Osc52ForwarderState::Ground;
-                    }
-                }
-                Osc52ForwarderState::OscBody => match byte {
-                    0x07 => {
-                        self.finalize();
-                        self.state = Osc52ForwarderState::Ground;
-                    }
-                    0x1b => self.state = Osc52ForwarderState::OscEscape,
-                    _ => self.body.push(byte),
-                },
-                Osc52ForwarderState::OscEscape => {
-                    if byte == b'\\' {
-                        self.finalize();
-                        self.state = Osc52ForwarderState::Ground;
-                    } else {
-                        self.body.push(0x1b);
-                        self.body.push(byte);
-                        self.state = Osc52ForwarderState::OscBody;
-                    }
-                }
-            }
-
-            if self.body.len() > OSC52_MAX_PAYLOAD_BYTES {
-                self.body.clear();
-                self.state = Osc52ForwarderState::Ground;
-            }
-        }
-    }
-
-    fn finalize(&mut self) {
-        if let Some(content) = parse_osc52_clipboard_write(&self.body) {
-            self.pending.push(content);
-        }
-        self.body.clear();
-    }
-
-    pub(super) fn drain_pending(&mut self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.pending)
-    }
-}
-
 pub(super) fn parse_reported_cwd(value: &[u8]) -> Option<PathBuf> {
     let value = std::str::from_utf8(value).ok()?.trim();
     if value.starts_with("file://") {
@@ -403,6 +321,126 @@ pub(super) fn parse_reported_cwd(value: &[u8]) -> Option<PathBuf> {
     }
     let path = value.trim_matches('"');
     (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// Collects complete OSC bodies from a raw byte stream. Consumers receive only
+/// bodies, keeping the framing state machine independent from OSC commands.
+#[derive(Debug, Default)]
+struct OscStreamCollector {
+    state: OscStreamState,
+    body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum OscStreamState {
+    #[default]
+    Ground,
+    Escape,
+    Body,
+    BodyEscape,
+    IgnoringString,
+    IgnoringStringEscape,
+    Discarding,
+    DiscardingEscape,
+}
+
+impl OscStreamCollector {
+    const MAX_BODY_BYTES: usize = 4096;
+
+    fn observe(&mut self, bytes: &[u8], mut receive: impl FnMut(&[u8])) {
+        for &byte in bytes {
+            match self.state {
+                OscStreamState::Ground => {
+                    if byte == 0x1b {
+                        self.state = OscStreamState::Escape;
+                    }
+                }
+                OscStreamState::Escape => match byte {
+                    b']' => {
+                        self.body.clear();
+                        self.state = OscStreamState::Body;
+                    }
+                    0x1b => self.state = OscStreamState::Escape,
+                    byte if is_ignored_string_intro(byte) => {
+                        self.state = OscStreamState::IgnoringString;
+                    }
+                    _ => self.state = OscStreamState::Ground,
+                },
+                OscStreamState::Body => match byte {
+                    0x07 => self.finish(&mut receive),
+                    0x1b => self.state = OscStreamState::BodyEscape,
+                    _ => self.push(byte),
+                },
+                OscStreamState::BodyEscape => match byte {
+                    b'\\' => self.finish(&mut receive),
+                    0x07 => {
+                        self.push(0x1b);
+                        if matches!(self.state, OscStreamState::Body) {
+                            self.finish(&mut receive);
+                        } else {
+                            self.state = OscStreamState::Ground;
+                        }
+                    }
+                    0x1b => {
+                        self.push(0x1b);
+                        self.state = match self.state {
+                            OscStreamState::Body => OscStreamState::BodyEscape,
+                            OscStreamState::Discarding => OscStreamState::DiscardingEscape,
+                            state => state,
+                        };
+                    }
+                    _ => {
+                        self.push(0x1b);
+                        if matches!(self.state, OscStreamState::Body) {
+                            self.push(byte);
+                        }
+                    }
+                },
+                OscStreamState::IgnoringString => {
+                    if byte == 0x1b {
+                        self.state = OscStreamState::IgnoringStringEscape;
+                    }
+                }
+                OscStreamState::IgnoringStringEscape => {
+                    if byte == b'\\' {
+                        self.state = OscStreamState::Ground;
+                    } else if byte != 0x1b {
+                        self.state = OscStreamState::IgnoringString;
+                    }
+                }
+                OscStreamState::Discarding => {
+                    if byte == 0x07 {
+                        self.state = OscStreamState::Ground;
+                    } else if byte == 0x1b {
+                        self.state = OscStreamState::DiscardingEscape;
+                    }
+                }
+                OscStreamState::DiscardingEscape => {
+                    if byte == b'\\' {
+                        self.state = OscStreamState::Ground;
+                    } else if byte != 0x1b {
+                        self.state = OscStreamState::Discarding;
+                    }
+                }
+            }
+        }
+    }
+
+    fn push(&mut self, byte: u8) {
+        self.body.push(byte);
+        if self.body.len() > Self::MAX_BODY_BYTES {
+            self.body.clear();
+            self.state = OscStreamState::Discarding;
+        } else {
+            self.state = OscStreamState::Body;
+        }
+    }
+
+    fn finish(&mut self, receive: &mut impl FnMut(&[u8])) {
+        receive(&self.body);
+        self.body.clear();
+        self.state = OscStreamState::Ground;
+    }
 }
 
 /// Maximum retained string length for agent OSC title and progress payloads.
@@ -419,8 +457,7 @@ const AGENT_OSC_MAX_CHARS: usize = 256;
 ///   as-is after sanitization. E.g. `"4;3;"` or `"4;0;"`.
 #[derive(Debug, Default)]
 pub(super) struct AgentOscStateTracker {
-    state: Osc52ForwarderState,
-    body: Vec<u8>,
+    collector: OscStreamCollector,
     latest_title: Option<String>,
     terminal_title: Option<String>,
     latest_progress: Option<String>,
@@ -428,71 +465,29 @@ pub(super) struct AgentOscStateTracker {
 
 impl AgentOscStateTracker {
     pub(super) fn observe(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            match self.state {
-                Osc52ForwarderState::Ground => {
-                    if byte == 0x1b {
-                        self.state = Osc52ForwarderState::Escape;
-                    }
-                }
-                Osc52ForwarderState::Escape => {
-                    if byte == b']' {
-                        self.body.clear();
-                        self.state = Osc52ForwarderState::OscBody;
-                    } else if byte == 0x1b {
-                        self.state = Osc52ForwarderState::Escape;
-                    } else {
-                        self.state = Osc52ForwarderState::Ground;
-                    }
-                }
-                Osc52ForwarderState::OscBody => match byte {
-                    0x07 => {
-                        self.finalize();
-                        self.state = Osc52ForwarderState::Ground;
-                    }
-                    0x1b => self.state = Osc52ForwarderState::OscEscape,
-                    _ => self.body.push(byte),
-                },
-                Osc52ForwarderState::OscEscape => {
-                    if byte == b'\\' {
-                        self.finalize();
-                        self.state = Osc52ForwarderState::Ground;
-                    } else {
-                        self.body.push(0x1b);
-                        self.body.push(byte);
-                        self.state = Osc52ForwarderState::OscBody;
-                    }
-                }
-            }
-
-            if self.body.len() > 4096 {
-                self.body.clear();
-                self.state = Osc52ForwarderState::Ground;
-            }
-        }
-    }
-
-    fn finalize(&mut self) {
-        if let Some((command, payload)) = parse_agent_osc_body(&self.body) {
+        let (collector, latest_title, terminal_title, latest_progress) = (
+            &mut self.collector,
+            &mut self.latest_title,
+            &mut self.terminal_title,
+            &mut self.latest_progress,
+        );
+        collector.observe(bytes, |body| {
+            let Some((command, payload)) = parse_agent_osc_body(body) else {
+                return;
+            };
             match command {
                 b"0" | b"2" => {
-                    let title = if payload.is_empty() {
-                        None
-                    } else {
-                        let title = sanitize_agent_osc_string(payload, AGENT_OSC_MAX_CHARS);
-                        (!title.is_empty()).then_some(title)
-                    };
-                    self.latest_title.clone_from(&title);
-                    self.terminal_title = title;
+                    let title = sanitize_agent_osc_string(payload, AGENT_OSC_MAX_CHARS);
+                    *terminal_title = (!title.is_empty()).then_some(title.clone());
+                    *latest_title = (!title.is_empty()).then_some(title);
                 }
                 b"9" => {
-                    self.latest_progress =
+                    *latest_progress =
                         Some(sanitize_agent_osc_string(payload, AGENT_OSC_MAX_CHARS));
                 }
                 _ => {}
             }
-        }
-        self.body.clear();
+        });
     }
 
     pub(super) fn terminal_title(&self) -> Option<&str> {
@@ -549,8 +544,7 @@ fn sanitize_agent_osc_string(payload: &[u8], max_chars: usize) -> String {
 #[derive(Debug)]
 pub(super) struct OscDebugTracker {
     enabled: bool,
-    state: Osc52ForwarderState,
-    body: Vec<u8>,
+    collector: OscStreamCollector,
     pending: Vec<OscDebugEvent>,
 }
 
@@ -564,8 +558,7 @@ impl OscDebugTracker {
     pub(super) fn from_env() -> Self {
         Self {
             enabled: osc_debug_enabled_from_env(),
-            state: Osc52ForwarderState::Ground,
-            body: Vec::new(),
+            collector: OscStreamCollector::default(),
             pending: Vec::new(),
         }
     }
@@ -574,56 +567,12 @@ impl OscDebugTracker {
         if !self.enabled {
             return;
         }
-
-        for &byte in bytes {
-            match self.state {
-                Osc52ForwarderState::Ground => {
-                    if byte == 0x1b {
-                        self.state = Osc52ForwarderState::Escape;
-                    }
-                }
-                Osc52ForwarderState::Escape => {
-                    if byte == b']' {
-                        self.body.clear();
-                        self.state = Osc52ForwarderState::OscBody;
-                    } else if byte == 0x1b {
-                        self.state = Osc52ForwarderState::Escape;
-                    } else {
-                        self.state = Osc52ForwarderState::Ground;
-                    }
-                }
-                Osc52ForwarderState::OscBody => match byte {
-                    0x07 => {
-                        self.finalize();
-                        self.state = Osc52ForwarderState::Ground;
-                    }
-                    0x1b => self.state = Osc52ForwarderState::OscEscape,
-                    _ => self.body.push(byte),
-                },
-                Osc52ForwarderState::OscEscape => {
-                    if byte == b'\\' {
-                        self.finalize();
-                        self.state = Osc52ForwarderState::Ground;
-                    } else {
-                        self.body.push(0x1b);
-                        self.body.push(byte);
-                        self.state = Osc52ForwarderState::OscBody;
-                    }
-                }
+        let (collector, pending) = (&mut self.collector, &mut self.pending);
+        collector.observe(bytes, |body| {
+            if let Some(event) = parse_osc_debug_event(body) {
+                pending.push(event);
             }
-
-            if self.body.len() > 4096 {
-                self.body.clear();
-                self.state = Osc52ForwarderState::Ground;
-            }
-        }
-    }
-
-    fn finalize(&mut self) {
-        if let Some(event) = parse_osc_debug_event(&self.body) {
-            self.pending.push(event);
-        }
-        self.body.clear();
+        });
     }
 
     pub(super) fn drain_pending(&mut self) -> Vec<OscDebugEvent> {
@@ -731,22 +680,6 @@ fn hex_value(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
-}
-
-/// Accepts `52;c;<base64>` and `52;;<base64>`.
-/// Queries (`?`) are rejected because herdr has no reply path.
-/// The payload must decode as base64 before it is forwarded.
-fn parse_osc52_clipboard_write(body: &[u8]) -> Option<Vec<u8>> {
-    use base64::Engine;
-
-    let rest = body.strip_prefix(b"52;")?;
-    let sep = rest.iter().position(|b| *b == b';')?;
-    let selector = &rest[..sep];
-    let data = &rest[sep + 1..];
-    if !(selector.is_empty() || selector == b"c") || data == b"?" {
-        return None;
-    }
-    base64::engine::general_purpose::STANDARD.decode(data).ok()
 }
 
 fn foreground_job_is_shell(job: &crate::platform::ForegroundJob, shell_pid: u32) -> bool {
@@ -958,6 +891,7 @@ mod tests {
                 g: colors.background.g,
                 b: colors.background.b,
             }),
+            ..Default::default()
         }
     }
 
@@ -983,10 +917,23 @@ mod tests {
     fn enabled_osc_debug_tracker() -> OscDebugTracker {
         OscDebugTracker {
             enabled: true,
-            state: Osc52ForwarderState::Ground,
-            body: Vec::new(),
+            collector: OscStreamCollector::default(),
             pending: Vec::new(),
         }
+    }
+
+    #[test]
+    fn osc_stream_collector_ignores_strings_and_preserves_escaped_bytes() {
+        let mut collector = OscStreamCollector::default();
+        let mut bodies = Vec::new();
+
+        collector.observe(
+            b"\x1bPignored\x1b]0;not-osc\x07\x1b\\\x1b]9;a\x1b",
+            |body| bodies.push(body.to_vec()),
+        );
+        collector.observe(b"\x1b\\\x1b]2;b\x1b\x07", |body| bodies.push(body.to_vec()));
+
+        assert_eq!(bodies, vec![b"9;a\x1b".to_vec(), b"2;b\x1b".to_vec()]);
     }
 
     #[test]
@@ -1400,151 +1347,6 @@ mod tests {
     }
 
     #[test]
-    fn osc52_forwarder_detects_write_with_bel() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;c;aGVsbG8=\x07");
-        let pending = fw.drain_pending();
-        assert_eq!(pending, vec![b"hello".to_vec()]);
-    }
-
-    #[test]
-    fn osc52_forwarder_detects_write_with_st() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;c;aGVsbG8=\x1b\\");
-        let pending = fw.drain_pending();
-        assert_eq!(pending, vec![b"hello".to_vec()]);
-    }
-
-    #[test]
-    fn osc52_forwarder_detects_empty_selector_form() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;;aGVsbG8=\x07");
-        let pending = fw.drain_pending();
-        assert_eq!(pending, vec![b"hello".to_vec()]);
-    }
-
-    #[test]
-    fn osc52_forwarder_accepts_clear_clipboard() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;c;\x07");
-        let pending = fw.drain_pending();
-        assert_eq!(pending, vec![Vec::<u8>::new()]);
-    }
-
-    #[test]
-    fn osc52_forwarder_ignores_query() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;c;?\x07");
-        assert!(fw.drain_pending().is_empty());
-    }
-
-    #[test]
-    fn osc52_forwarder_ignores_empty_selector_query() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;;?\x07");
-        assert!(fw.drain_pending().is_empty());
-    }
-
-    #[test]
-    fn osc52_forwarder_ignores_other_kinds() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;p;aGk=\x07");
-        fw.observe(b"\x1b]52;s;aGk=\x07");
-        fw.observe(b"\x1b]52;q;aGk=\x07");
-        fw.observe(b"\x1b]52;0;aGk=\x07");
-        fw.observe(b"\x1b]52;7;aGk=\x07");
-        assert!(fw.drain_pending().is_empty());
-    }
-
-    #[test]
-    fn osc52_forwarder_ignores_invalid_base64() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;c;%%%\x07");
-        fw.observe(b"\x1b]52;c;aGVs\x1b[bG8=\x07");
-        assert!(fw.drain_pending().is_empty());
-    }
-
-    #[test]
-    fn osc52_forwarder_ignores_non_osc52() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]11;?\x07");
-        fw.observe(b"\x1b]0;title\x07");
-        fw.observe(b"\x1b]8;;https://example.com\x1b\\");
-        assert!(fw.drain_pending().is_empty());
-    }
-
-    #[test]
-    fn osc52_forwarder_handles_split_sequence_mid_payload() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;c;aGVs");
-        assert!(fw.drain_pending().is_empty());
-        fw.observe(b"bG8gd29y");
-        assert!(fw.drain_pending().is_empty());
-        fw.observe(b"bGQ=\x07");
-        let pending = fw.drain_pending();
-        assert_eq!(pending, vec![b"hello world".to_vec()]);
-    }
-
-    #[test]
-    fn osc52_forwarder_handles_split_before_bel() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;c;aGk=");
-        assert!(fw.drain_pending().is_empty());
-        fw.observe(b"\x07");
-        let pending = fw.drain_pending();
-        assert_eq!(pending, vec![b"hi".to_vec()]);
-    }
-
-    #[test]
-    fn osc52_forwarder_handles_split_between_esc_and_backslash() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;c;aGk=\x1b");
-        assert!(fw.drain_pending().is_empty());
-        fw.observe(b"\\");
-        let pending = fw.drain_pending();
-        assert_eq!(pending, vec![b"hi".to_vec()]);
-    }
-
-    #[test]
-    fn osc52_forwarder_payload_size_limit() {
-        let mut fw = Osc52Forwarder::default();
-        let mut huge = Vec::with_capacity(OSC52_MAX_PAYLOAD_BYTES + 32);
-        huge.extend_from_slice(b"\x1b]52;c;");
-        huge.extend(std::iter::repeat_n(b'A', OSC52_MAX_PAYLOAD_BYTES + 16));
-        huge.push(0x07);
-        fw.observe(&huge);
-        assert!(fw.drain_pending().is_empty());
-
-        fw.observe(b"\x1b]52;c;aGk=\x07");
-        let pending = fw.drain_pending();
-        assert_eq!(pending, vec![b"hi".to_vec()]);
-    }
-
-    #[test]
-    fn osc52_forwarder_recovers_after_garbage() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x01\x02random\x7fbytes\x1b]52;c;aGk=\x07tail");
-        let pending = fw.drain_pending();
-        assert_eq!(pending, vec![b"hi".to_vec()]);
-    }
-
-    #[test]
-    fn osc52_forwarder_multiple_in_one_chunk() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;c;aGk=\x07\x1b]52;c;Ynll\x07");
-        let pending = fw.drain_pending();
-        assert_eq!(pending, vec![b"hi".to_vec(), b"bye".to_vec()]);
-    }
-
-    #[test]
-    fn osc52_forwarder_drain_clears_pending() {
-        let mut fw = Osc52Forwarder::default();
-        fw.observe(b"\x1b]52;c;aGk=\x07");
-        assert_eq!(fw.drain_pending(), vec![b"hi".to_vec()]);
-        assert!(fw.drain_pending().is_empty());
-    }
-
-    #[test]
     fn droid_scrollback_compat_matches_process_name_and_cmdline() {
         let name_only = crate::platform::ForegroundJob {
             process_group_id: 42,
@@ -1685,6 +1487,7 @@ mod tests {
                 g: 0x22,
                 b: 0x33,
             }),
+            ..Default::default()
         };
 
         pane.apply_host_terminal_theme(host_theme);

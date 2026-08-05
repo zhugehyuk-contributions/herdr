@@ -260,6 +260,22 @@ mod tests {
     }
 
     #[test]
+    fn state_dots_use_aligned_static_workspace_marks() {
+        let palette = Palette::catppuccin();
+        for (state, seen, symbol, color) in [
+            (AgentState::Blocked, true, "●", palette.red),
+            (AgentState::Working, true, "●", palette.yellow),
+            (AgentState::Idle, false, "●", palette.teal),
+            (AgentState::Idle, true, "○", palette.green),
+            (AgentState::Unknown, true, "·", palette.overlay0),
+        ] {
+            let (actual_symbol, style) = state_dot(state, seen, &palette);
+            assert_eq!(actual_symbol, symbol);
+            assert_eq!(style.fg, Some(color));
+        }
+    }
+
+    #[test]
     fn toast_rect_uses_configured_corner() {
         let area = Rect::new(10, 20, 100, 40);
         let toast = toast();

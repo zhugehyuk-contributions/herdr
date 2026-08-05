@@ -39,11 +39,16 @@ pub fn stdin_reader_loop(
     event_tx: mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
     host_color_query_sent: bool,
+    host_cell_size_query_sent: bool,
     host_mouse_capture_active: Arc<AtomicBool>,
 ) {
     #[cfg(windows)]
     {
-        let _ = (host_color_query_sent, host_mouse_capture_active);
+        let _ = (
+            host_color_query_sent,
+            host_cell_size_query_sent,
+            host_mouse_capture_active,
+        );
         windows_stdin_reader_loop(event_tx, should_quit);
     }
 
@@ -52,6 +57,7 @@ pub fn stdin_reader_loop(
         event_tx,
         should_quit,
         host_color_query_sent,
+        host_cell_size_query_sent,
         host_mouse_capture_active,
     );
 }
@@ -61,6 +67,7 @@ fn unix_stdin_reader_loop(
     event_tx: mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
     host_color_query_sent: bool,
+    host_cell_size_query_sent: bool,
     host_mouse_capture_active: Arc<AtomicBool>,
 ) {
     let stdin = io::stdin();
@@ -71,18 +78,21 @@ fn unix_stdin_reader_loop(
         framer.host_color_query_sent();
         framer.enable_host_color_scheme_change_tracking();
     }
+    if host_cell_size_query_sent {
+        framer.host_cell_size_query_sent();
+    }
+    let mut pending_palette = Vec::new();
 
     while !should_quit.load(Ordering::Acquire) {
         match reader.read(&mut scratch) {
             Ok(0) => break,
             Ok(n) => {
-                for data in framer.push(&scratch[..n]) {
-                    if event_tx
-                        .blocking_send(ClientLoopEvent::StdinInput(data))
-                        .is_err()
-                    {
-                        return;
-                    }
+                if !send_unix_input_chunks(
+                    framer.push(&scratch[..n]),
+                    &event_tx,
+                    &mut pending_palette,
+                ) {
+                    return;
                 }
 
                 let timeout_ms = idle_flush_timeout_ms(
@@ -93,28 +103,23 @@ fn unix_stdin_reader_loop(
                     let had_pending = framer.has_pending_input();
                     let chunks = framer.flush_timeout();
                     let held_escape = had_pending && chunks.is_empty();
-                    for data in chunks {
-                        if event_tx
-                            .blocking_send(ClientLoopEvent::StdinInput(data))
-                            .is_err()
-                        {
-                            return;
-                        }
+                    if !send_unix_input_chunks(chunks, &event_tx, &mut pending_palette)
+                        || !flush_unix_palette_input(&event_tx, &mut pending_palette)
+                    {
+                        return;
                     }
                     if held_escape
                         && stdin_read_ready(
                             &reader,
                             crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
                         ) == Some(false)
+                        && !send_unix_input_chunks(
+                            framer.flush_timeout(),
+                            &event_tx,
+                            &mut pending_palette,
+                        )
                     {
-                        for data in framer.flush_timeout() {
-                            if event_tx
-                                .blocking_send(ClientLoopEvent::StdinInput(data))
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
+                        return;
                     }
                 }
             }
@@ -126,6 +131,56 @@ fn unix_stdin_reader_loop(
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn send_unix_input_chunks(
+    chunks: Vec<Vec<u8>>,
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+    pending_palette: &mut Vec<Vec<u8>>,
+) -> bool {
+    for data in chunks {
+        let palette_response = std::str::from_utf8(&data)
+            .ok()
+            .and_then(crate::terminal_theme::parse_palette_color_response)
+            .is_some();
+        if palette_response {
+            pending_palette.push(data);
+            if pending_palette.len() == 256 && !flush_unix_palette_input(event_tx, pending_palette)
+            {
+                return false;
+            }
+            continue;
+        }
+        let default_color_response = std::str::from_utf8(&data)
+            .ok()
+            .and_then(crate::terminal_theme::parse_default_color_response)
+            .is_some();
+        if !default_color_response && !flush_unix_palette_input(event_tx, pending_palette) {
+            return false;
+        }
+        if event_tx
+            .blocking_send(ClientLoopEvent::StdinInput(data))
+            .is_err()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(unix)]
+fn flush_unix_palette_input(
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+    pending_palette: &mut Vec<Vec<u8>>,
+) -> bool {
+    if pending_palette.is_empty() {
+        return true;
+    }
+    let data = std::mem::take(pending_palette).concat();
+    event_tx
+        .blocking_send(ClientLoopEvent::StdinInput(data))
+        .is_ok()
 }
 
 #[cfg(unix)]
@@ -210,7 +265,7 @@ fn windows_crossterm_reader_loop(
             tracing::debug!(event = ?event, "windows control key forwarded as semantic input");
         }
 
-        let Some(event) = crate::protocol::ClientInputEvent::from_crossterm(event) else {
+        let Some(event) = windows_crossterm_input_event(event) else {
             continue;
         };
         if event_tx
@@ -223,6 +278,30 @@ fn windows_crossterm_reader_loop(
 
     if framer.has_pending_input() {
         let _ = send_windows_raw_events(framer.flush_timeout(), &event_tx);
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_crossterm_input_event(
+    event: crossterm::event::Event,
+) -> Option<crate::protocol::ClientInputEvent> {
+    let event = crate::protocol::ClientInputEvent::from_crossterm(event)?;
+    match event {
+        crate::protocol::ClientInputEvent::Key {
+            code: crate::protocol::ClientKeyCode::Char(codepoint),
+            modifiers: 0,
+            kind: crate::protocol::ClientKeyKind::Press,
+            source,
+            ..
+        } => Some(crate::protocol::ClientInputEvent::Key {
+            code: crate::protocol::ClientKeyCode::Char(codepoint),
+            modifiers: 0,
+            kind: crate::protocol::ClientKeyKind::Press,
+            repeat_count: 1,
+            generated_text: Some(codepoint.to_string()),
+            source,
+        }),
+        event => Some(event),
     }
 }
 
@@ -308,11 +387,31 @@ fn windows_client_input_event_from_raw(
     event: crate::raw_input::RawInputEvent,
 ) -> Option<crate::protocol::ClientInputEvent> {
     match event {
-        crate::raw_input::RawInputEvent::Key(key) => Some(crate::protocol::ClientInputEvent::Key {
-            code: crate::protocol::ClientKeyCode::from_crossterm(key.code)?,
-            modifiers: key.modifiers.bits(),
-            kind: crate::protocol::ClientKeyKind::from_crossterm(key.kind),
-        }),
+        crate::raw_input::RawInputEvent::Text(text) => Some(
+            crate::protocol::ClientInputEvent::TextCommit(text.into_string()),
+        ),
+        crate::raw_input::RawInputEvent::Key(key) => {
+            let code = crate::protocol::ClientKeyCode::from_crossterm(key.code)?;
+            let modifiers = key.modifiers.bits();
+            let kind = crate::protocol::ClientKeyKind::from_crossterm(key.kind);
+            let source = if let Some(bytes) = key.vt_bytes() {
+                crate::protocol::ClientKeySource::Vt {
+                    bytes: bytes.to_vec(),
+                }
+            } else if let Some(record) = key.windows_record() {
+                crate::protocol::ClientKeySource::WindowsConsole { record }
+            } else {
+                crate::protocol::ClientKeySource::Synthesized
+            };
+            Some(crate::protocol::ClientInputEvent::Key {
+                code,
+                modifiers,
+                kind,
+                repeat_count: key.repeat_count,
+                generated_text: key.generated_text.clone(),
+                source,
+            })
+        }
         crate::raw_input::RawInputEvent::Mouse(mouse) => {
             Some(crate::protocol::ClientInputEvent::Mouse {
                 kind: crate::protocol::ClientMouseKind::from_crossterm(mouse.kind)?,
@@ -331,7 +430,9 @@ fn windows_client_input_event_from_raw(
             Some(crate::protocol::ClientInputEvent::FocusLost)
         }
         crate::raw_input::RawInputEvent::HostDefaultColor { .. }
+        | crate::raw_input::RawInputEvent::HostPaletteColors { .. }
         | crate::raw_input::RawInputEvent::HostColorSchemeChanged(_)
+        | crate::raw_input::RawInputEvent::HostCellSizeReport { .. }
         | crate::raw_input::RawInputEvent::Unsupported => None,
     }
 }
@@ -391,6 +492,33 @@ mod tests {
             ClientLoopEvent::StdinInput(d) => assert_eq!(d, data),
             _ => panic!("expected StdinInput event"),
         }
+    }
+
+    #[test]
+    fn palette_replies_are_forwarded_as_one_input_batch() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut pending = Vec::new();
+        assert!(send_unix_input_chunks(
+            vec![
+                b"\x1b]4;0;rgb:1111/2222/3333\x1b\\".to_vec(),
+                b"\x1b]4;1;rgb:4444/5555/6666\x1b\\".to_vec(),
+            ],
+            &tx,
+            &mut pending,
+        ));
+        assert!(rx.try_recv().is_err());
+
+        assert!(flush_unix_palette_input(&tx, &mut pending));
+        let ClientLoopEvent::StdinInput(data) = rx.try_recv().unwrap() else {
+            panic!("expected palette input batch");
+        };
+        assert_eq!(
+            data.windows(4)
+                .filter(|window| *window == b"\x1b]4;")
+                .count(),
+            2
+        );
+        assert!(pending.is_empty());
     }
 
     #[test]
@@ -470,6 +598,23 @@ mod windows_tests {
         assert_eq!(
             windows_key_raw_bytes(&pending_arrow_tail, true).as_deref(),
             Some(b"[".as_slice())
+        );
+    }
+
+    #[test]
+    fn windows_crossterm_printable_press_keeps_key_semantics_and_text() {
+        let event = Event::Key(KeyEvent::new(KeyCode::Char('你'), KeyModifiers::empty()));
+
+        assert_eq!(
+            windows_crossterm_input_event(event),
+            Some(crate::protocol::ClientInputEvent::Key {
+                code: crate::protocol::ClientKeyCode::Char('你'),
+                modifiers: 0,
+                kind: crate::protocol::ClientKeyKind::Press,
+                repeat_count: 1,
+                generated_text: Some("你".to_string()),
+                source: crate::protocol::ClientKeySource::Synthesized,
+            })
         );
     }
 
@@ -564,6 +709,9 @@ mod windows_tests {
                 code: crate::protocol::ClientKeyCode::Char('d'),
                 modifiers: KeyModifiers::CONTROL.bits(),
                 kind: crate::protocol::ClientKeyKind::Press,
+                repeat_count: 1,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Vt { bytes: vec![4] },
             }
         );
     }
@@ -584,6 +732,11 @@ mod windows_tests {
                 code: crate::protocol::ClientKeyCode::Up,
                 modifiers: 0,
                 kind: crate::protocol::ClientKeyKind::Press,
+                repeat_count: 1,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Vt {
+                    bytes: b"\x1b[A".to_vec()
+                },
             }
         );
     }
@@ -603,6 +756,9 @@ mod windows_tests {
                 code: crate::protocol::ClientKeyCode::Esc,
                 modifiers: 0,
                 kind: crate::protocol::ClientKeyKind::Press,
+                repeat_count: 1,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Vt { bytes: vec![0x1b] },
             }
         );
     }

@@ -10,6 +10,10 @@ __pycache__/
 /docs/*
 !/docs/next/
 !/docs/next/**
+!/docs/preview/
+!/docs/preview/**
+!/docs/versions/
+!/docs/versions/**
 /.local/
 /backlog
 

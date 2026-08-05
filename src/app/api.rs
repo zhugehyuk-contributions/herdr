@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 mod agent_view;
@@ -60,6 +59,44 @@ impl App {
         response_rx.try_recv().ok()
     }
 
+    pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
+        match ev {
+            AppEvent::GitStatusRefreshed {
+                results,
+                cache_updates,
+            } => self.handle_git_status_refreshed(results, cache_updates),
+            ev => {
+                self.handle_internal_event(ev);
+                true
+            }
+        }
+    }
+
+    fn handle_git_status_refreshed(
+        &mut self,
+        results: Vec<crate::workspace::WorkspaceGitStatus>,
+        cache_updates: Vec<(std::path::PathBuf, crate::workspace::GitStatusCacheEntry)>,
+    ) -> bool {
+        self.git_refresh_in_flight = false;
+        for (key, entry) in cache_updates {
+            self.git_status_cache.insert(key, entry);
+        }
+        if self.git_refresh_due_after_in_flight {
+            self.mark_git_status_refresh_due(Instant::now());
+            self.git_refresh_due_after_in_flight = false;
+        } else {
+            self.last_git_remote_status_refresh = Instant::now();
+        }
+        let changed = self
+            .state
+            .apply_workspace_git_statuses(&self.terminal_runtimes, results);
+        if changed {
+            self.render_dirty.request_generic();
+            self.render_notify.notify_one();
+        }
+        changed
+    }
+
     pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
         if let AppEvent::ClipboardWrite { content } = ev {
             #[cfg(not(test))]
@@ -91,23 +128,7 @@ impl App {
             cache_updates,
         } = ev
         {
-            self.git_refresh_in_flight = false;
-            for (key, entry) in cache_updates {
-                self.git_status_cache.insert(key, entry);
-            }
-            if self.git_refresh_due_after_in_flight {
-                self.mark_git_status_refresh_due(Instant::now());
-                self.git_refresh_due_after_in_flight = false;
-            } else {
-                self.last_git_remote_status_refresh = Instant::now();
-            }
-            if self
-                .state
-                .apply_workspace_git_statuses(&self.terminal_runtimes, results)
-            {
-                self.render_dirty.store(true, Ordering::Release);
-                self.render_notify.notify_one();
-            }
+            self.handle_git_status_refreshed(results, cache_updates);
             return;
         }
 
@@ -173,7 +194,7 @@ impl App {
                 && self.respawn_shell_for_launch_pane(*pane_id)
             {
                 self.overlay_panes.remove(pane_id);
-                self.render_dirty.store(true, Ordering::Release);
+                self.render_dirty.request_generic();
                 self.render_notify.notify_one();
                 return;
             }
@@ -271,8 +292,8 @@ impl App {
         }
         self.sync_full_lifecycle_authority_detection_pauses();
         if terminal_cwd_reported {
-            self.mark_git_status_refresh_due(Instant::now());
-            self.render_dirty.store(true, Ordering::Release);
+            self.request_git_identity_refresh(Instant::now());
+            self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
         for update in &pane_updates {
@@ -525,6 +546,7 @@ impl App {
             cwd,
             self.state.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
+            self.state.host_terminal_appearance,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
             &launch_env,
             self.event_tx.clone(),
@@ -982,6 +1004,9 @@ impl App {
             }
             Method::WorkspaceMove(params) => {
                 return self.handle_workspace_move(request.id, params);
+            }
+            Method::WorkspaceMoveBlock(params) => {
+                return self.handle_workspace_move_block(request.id, params);
             }
             Method::WorkspaceReportMetadata(params) => {
                 return self.handle_workspace_report_metadata(request.id, params);
@@ -1571,7 +1596,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_explain_reports_hook_only_full_lifecycle_authority() {
+    async fn agent_explain_rejects_hook_only_full_lifecycle_authority() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &crate::config::Config::default(),
@@ -1609,17 +1634,7 @@ mod tests {
         });
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
 
-        assert_eq!(response["result"]["type"], "agent_explain");
-        assert_eq!(response["result"]["explain"]["agent"], "omp");
-        assert_eq!(response["result"]["explain"]["state"], "working");
-        assert_eq!(
-            response["result"]["explain"]["screen_detection_skip_reason"],
-            "full_lifecycle_hook_authority"
-        );
-        assert_eq!(
-            response["result"]["explain"]["matched_rule"],
-            serde_json::Value::Null
-        );
+        assert_eq!(response["error"]["code"], "agent_not_found");
     }
 
     #[tokio::test]
@@ -1740,11 +1755,12 @@ mod tests {
             live_cwd.clone(),
             0,
             crate::terminal_theme::TerminalTheme::default(),
+            None,
             crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
             &crate::pane::PaneLaunchEnv::default(),
             events,
             std::sync::Arc::new(tokio::sync::Notify::new()),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
         )
         .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1832,11 +1848,12 @@ mod tests {
             live_cwd.clone(),
             0,
             crate::terminal_theme::TerminalTheme::default(),
+            None,
             crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
             &crate::pane::PaneLaunchEnv::default(),
             events,
             std::sync::Arc::new(tokio::sync::Notify::new()),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
         )
         .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1983,7 +2000,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_detector_exit_does_not_release_a_newer_hook_owned_agent() {
+    fn process_exit_releases_a_newer_hook_owned_agent() {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
@@ -2025,9 +2042,9 @@ mod tests {
         });
 
         let terminal = &app.state.terminals[&terminal_id];
-        assert_eq!(terminal.state, AgentState::Working);
-        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
-        assert!(!event_hub.events_after(0).iter().any(|(_, event)| matches!(
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.agent_name.is_none());
+        assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
             event.data,
             crate::api::schema::EventData::PaneAgentDetected { released: true, .. }
         )));

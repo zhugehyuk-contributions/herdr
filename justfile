@@ -3,7 +3,7 @@
 # Run tests
 test:
     cargo nextest run --locked --status-level fail --final-status-level fail --failure-output final --success-output never
-    python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_preview scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
+    python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
     just integration-assets-test
     just plugin-marketplace-test
 
@@ -12,25 +12,39 @@ test-one filter:
     cargo nextest run --locked "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
 
 # Run fast local lint checks
+[unix]
 lint:
     cargo fmt --check
     cargo clippy --all-targets --locked -- -D warnings
 
+[script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
+[windows]
+lint:
+    & .\scripts\windows_check.ps1 -Mode lint
+
 # Run PR CI checks
+[unix]
 ci filter='all()': lint
     cargo nextest run --locked -E "{{filter}}" --status-level fail --final-status-level slow --failure-output final --success-output never
     just integration-assets-test
     just plugin-marketplace-test
 
 # Run Windows target lint from Unix/macOS to catch cfg(windows) compile and clippy failures before CI
+[unix]
 windows-lint:
     rustup target add x86_64-pc-windows-msvc
     LIBGHOSTTY_VT_SIMD=false cargo clippy --bin herdr --locked --target x86_64-pc-windows-msvc -- -D warnings
 
 # Check formatting + run unit tests + Windows target lint + maintenance script tests
+[unix]
 check: ci windows-lint
-    python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_preview scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
+    python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
     @echo "docs reminder: if this changes user-facing behavior, make sure the relevant release docs are updated or called out before release."
+
+[script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
+[windows]
+check:
+    & .\scripts\windows_check.ps1 -Mode check
 
 # Install repo-local git hooks
 install-hooks:
@@ -78,16 +92,14 @@ build-libghostty-vt:
 release-docs-check:
     python3 scripts/agent_detection_manifest_check.py --require-website
     python3 scripts/config_reference_check.py
-    @if ! diff -u website/src/data/config-reference.json docs/next/website/src/data/config-reference.json; then \
-        echo "error: stable config reference differs from docs/next; finalize it before releasing"; \
+    node website/scripts/docs-versions.mjs check
+    node website/scripts/docs-preview.mjs check
+    @test -f docs/next/README.md
+    @test -f docs/next/README.zh-CN.md
+    @if ! diff -u CHANGELOG.md docs/next/CHANGELOG.md; then \
+        echo "error: CHANGELOG.md differs from docs/next/CHANGELOG.md; finalize release notes before releasing"; \
         exit 1; \
     fi
-    @for file in README.md CHANGELOG.md; do \
-        if ! diff -u "$file" "docs/next/$file"; then \
-            echo "error: $file differs from docs/next/$file; finalize release docs before releasing"; \
-            exit 1; \
-        fi; \
-    done
     @for file in CONFIGURATION.md INTEGRATIONS.md SOCKET_API.md; do \
         if [ -e "$file" ]; then \
             echo "error: $file was replaced by website docs; remove the root copy"; \
@@ -95,43 +107,25 @@ release-docs-check:
         fi; \
     done
     @test -d docs/next/website/src/content/docs
-    @for file in $(find website/src/content/docs -path '*/preview' -prune -o -type f -name '*.mdx' -print); do \
-        relative="${file#website/src/content/docs/}"; \
-        staged="docs/next/website/src/content/docs/$relative"; \
-        if [ ! -f "$staged" ]; then \
-            echo "error: $staged is missing; docs/next/website/src/content/docs must mirror website/src/content/docs"; \
-            exit 1; \
-        fi; \
-        if ! diff -u "$file" "$staged"; then \
-            echo "error: $file differs from $staged; finalize website docs before releasing"; \
-            exit 1; \
-        fi; \
-    done
-    @for file in $(find docs/next/website/src/content/docs -type f -name '*.mdx' -print); do \
-        relative="${file#docs/next/website/src/content/docs/}"; \
-        released="website/src/content/docs/$relative"; \
-        if [ ! -f "$released" ]; then \
-            echo "error: $file has no matching released website doc"; \
-            exit 1; \
-        fi; \
-    done
-    @for file in website/src/content/docs/*.mdx; do \
+    @for file in docs/next/website/src/content/docs/*.mdx; do \
         for locale in ja zh-cn; do \
-            translated="website/src/content/docs/$locale/$(basename "$file")"; \
+            translated="docs/next/website/src/content/docs/$locale/$(basename "$file")"; \
             if [ ! -f "$translated" ]; then \
-                echo "error: $translated is missing; translate stable docs before releasing"; \
+                echo "error: $translated is missing; translate next docs before releasing"; \
                 exit 1; \
             fi; \
         done; \
     done
-    @for file in website/src/content/docs/ja/*.mdx website/src/content/docs/zh-cn/*.mdx; do \
-        released="website/src/content/docs/$(basename "$file")"; \
-        if [ ! -f "$released" ]; then \
+    @for file in docs/next/website/src/content/docs/ja/*.mdx docs/next/website/src/content/docs/zh-cn/*.mdx; do \
+        staged="docs/next/website/src/content/docs/$(basename "$file")"; \
+        if [ ! -f "$staged" ]; then \
             echo "error: $file has no matching english doc; remove the stale translation"; \
             exit 1; \
         fi; \
     done
-    python3 scripts/docs_translation_parity.py --docs-root website/src/content/docs
+    python3 scripts/docs_translation_parity.py --docs-root docs/next/website/src/content/docs
+    just website-build
+    cd website && bun run build:draft
 
 # Prepare the release commit without tagging or pushing (usage: just release-prepare 0.1.1)
 release-prepare version:
