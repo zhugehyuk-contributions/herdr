@@ -239,6 +239,7 @@ impl App {
             cwd,
             self.state.pane_scrollback_limit_bytes,
             host_terminal_theme,
+            self.state.host_terminal_appearance,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
             &launch_env,
             self.event_tx.clone(),
@@ -410,6 +411,7 @@ mod tests {
                 g: 20,
                 b: 20,
             }),
+            ..Default::default()
         };
 
         assert!(app.start_pending_agent_resumes(false));
@@ -511,6 +513,7 @@ mod tests {
                 g: 20,
                 b: 20,
             }),
+            ..Default::default()
         };
         for terminal_id in [&active_terminal, &hidden_terminal] {
             app.state
@@ -575,6 +578,7 @@ mod tests {
                 g: 20,
                 b: 20,
             }),
+            ..Default::default()
         };
         app.state
             .terminals
@@ -635,6 +639,7 @@ mod tests {
                 g: 20,
                 b: 20,
             }),
+            ..Default::default()
         };
         app.state
             .terminals
@@ -692,6 +697,7 @@ mod tests {
                 g: 20,
                 b: 20,
             }),
+            ..Default::default()
         };
         app.state
             .terminals
@@ -752,6 +758,7 @@ mod tests {
                 g: 20,
                 b: 20,
             }),
+            ..Default::default()
         };
         app.state
             .terminals

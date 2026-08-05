@@ -256,6 +256,8 @@ Color values accept hex, named colors, `rgb(r,g,b)`, or reset aliases like `rese
 
 The sidebar is the main Herdr dashboard. Search `ui.` in the [Config reference](/docs/config-reference/) for sizing, collapsed mode, Agent panel ordering, mouse behavior, pane borders, and other presentation settings.
 
+Set `tab_bar_position = "bottom"` under `[ui]` to place the desktop tab row below the terminal panes. Prefix, Navigate, Copy, and Resize mode bars temporarily replace the bottom tab row while active. The default is `"top"`.
+
 ### Sidebar row layouts
 
 The expanded desktop sidebar renders each inner array in `rows` as one line. These are the complete default layouts:
@@ -432,14 +434,18 @@ Restricting `cjk_ime_agents` avoids showing an extra hardware cursor in unrelate
 
 ## Prefix input source switching
 
-On macOS, Herdr can temporarily switch to the system ASCII-capable input source while prefix commands and prefix-launched modes are active:
+On macOS and Windows, Herdr can temporarily switch to an ASCII-capable input source while prefix commands and prefix-launched modes are active:
 
 ```toml
 [experimental]
 switch_ascii_input_source_in_prefix = true
 ```
 
-Herdr restores the previous input source when returning to terminal input or entering a text field. This setting has no effect on other platforms.
+On macOS this switches to the current ASCII-capable keyboard layout; on Windows it switches the IME to English (ASCII) input. Herdr restores the previous input source when returning to terminal input or entering a text field. This setting has no effect on other platforms.
+
+:::caution[Windows support is Korean IME only]
+On Windows, support is currently limited to the Korean IME. With an IME for any other language, this setting leaves the input source unchanged.
+:::
 
 ## Environment variables
 
@@ -448,6 +454,7 @@ Herdr restores the previous input source when returning to terminal input or ent
 | `HERDR_CONFIG_PATH` | Override the config file path. |
 | `HERDR_SESSION` | Select a named session for CLI commands. |
 | `HERDR_SOCKET_PATH` | Low-level socket path override. |
+| `HERDR_PROCESS_DETECTION` | Linux process detection strategy: `native` (default) or opt-in `child-groups`. |
 | `HERDR_LOG` | Set log filtering, for example `HERDR_LOG=herdr=debug`. |
 | `HERDR_DISABLE_SOUND` | Disable sound playback even when `[ui.sound] enabled = true`. |
 

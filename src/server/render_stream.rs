@@ -14,7 +14,11 @@ pub(crate) enum ClientRenderState {
     /// Semantic clients compare full frame data and skip identical frames.
     Semantic { last_frame: Option<FrameData> },
     /// Terminal-ANSI clients keep a terminal diff encoder and sequence number.
-    TerminalAnsi { blit_encoder: BlitEncoder, seq: u64 },
+    TerminalAnsi {
+        blit_encoder: BlitEncoder,
+        seq: u64,
+        repaint_pending: bool,
+    },
 }
 
 impl ClientRenderState {
@@ -24,6 +28,7 @@ impl ClientRenderState {
             RenderEncoding::TerminalAnsi => Self::TerminalAnsi {
                 blit_encoder: BlitEncoder::new(),
                 seq: 0,
+                repaint_pending: false,
             },
         }
     }
@@ -31,7 +36,23 @@ impl ClientRenderState {
     pub(crate) fn reset_baseline(&mut self) {
         match self {
             Self::Semantic { last_frame } => *last_frame = None,
-            Self::TerminalAnsi { blit_encoder, .. } => *blit_encoder = BlitEncoder::new(),
+            Self::TerminalAnsi {
+                blit_encoder,
+                repaint_pending,
+                ..
+            } => {
+                *blit_encoder = BlitEncoder::new();
+                *repaint_pending = false;
+            }
+        }
+    }
+
+    pub(crate) fn request_repaint(&mut self) {
+        match self {
+            Self::Semantic { last_frame } => *last_frame = None,
+            Self::TerminalAnsi {
+                repaint_pending, ..
+            } => *repaint_pending = true,
         }
     }
 
@@ -68,12 +89,16 @@ impl ClientRenderState {
                     frame,
                 })
             }
-            Self::TerminalAnsi { blit_encoder, seq } => {
-                if blit_encoder.is_current(&frame) {
+            Self::TerminalAnsi {
+                blit_encoder,
+                seq,
+                repaint_pending,
+            } => {
+                if !*repaint_pending && blit_encoder.is_current(&frame) {
                     crate::render_prof::event("prepare_frame.ansi.skip_current");
                     return None;
                 }
-                let mut encoded = blit_encoder.encode(&frame, false);
+                let mut encoded = blit_encoder.encode(&frame, *repaint_pending);
                 crate::render_prof::event("prepare_frame.ansi.changed");
                 crate::render_prof::counter("prepare_frame.ansi.bytes", encoded.bytes.len() as u64);
                 if encoded.full {
@@ -114,7 +139,11 @@ impl ClientRenderState {
                 *last_frame = Some(frame)
             }
             (
-                Self::TerminalAnsi { blit_encoder, seq },
+                Self::TerminalAnsi {
+                    blit_encoder,
+                    seq,
+                    repaint_pending,
+                },
                 PreparedRender::TerminalAnsi {
                     frame,
                     encoded: Some(encoded),
@@ -123,6 +152,7 @@ impl ClientRenderState {
             ) => {
                 blit_encoder.commit(frame, encoded);
                 *seq += 1;
+                *repaint_pending = false;
             }
             _ => {}
         }
@@ -137,28 +167,16 @@ impl ClientRenderState {
     }
 }
 
-const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
-
 fn insert_graphics_before_sync_end(encoded: &mut Vec<u8>, graphics: &[u8]) {
     if graphics.is_empty() {
         return;
     }
 
-    if let Some(sync_end) = rfind_subslice(encoded, SYNC_OUTPUT_END) {
+    if let Some(sync_end) = crate::protocol::render_ansi::final_sync_output_end(encoded) {
         encoded.splice(sync_end..sync_end, graphics.iter().copied());
     } else {
         encoded.extend_from_slice(graphics);
     }
-}
-
-fn rfind_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-
-    haystack
-        .windows(needle.len())
-        .rposition(|window| window == needle)
 }
 
 /// A prepared client render message plus any baseline state needed after send.

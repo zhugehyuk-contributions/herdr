@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=kilo
-// HERDR_INTEGRATION_VERSION=3
+// HERDR_INTEGRATION_VERSION=4
 
 import net from "node:net";
 
@@ -88,7 +88,10 @@ function reportSession(sessionID) {
   if (!sessionID) {
     return Promise.resolve();
   }
-  return request("pane.report_agent_session", { agent_session_id: sessionID });
+  return request("pane.report_agent_session", {
+    agent_session_id: sessionID,
+    session_start_source: "startup",
+  });
 }
 
 function reportState(state, sessionID) {

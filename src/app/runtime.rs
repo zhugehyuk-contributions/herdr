@@ -3,41 +3,9 @@ use std::time::{Duration, Instant};
 use crossterm::terminal;
 
 use super::{
-    background_update_check_enabled, repeat_key_identity, App, Mode, ANIMATION_INTERVAL,
-    AUTO_UPDATE_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL, MIN_RENDER_INTERVAL,
-    RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
+    background_update_check_enabled, App, AUTO_UPDATE_CHECK_INTERVAL, MIN_RENDER_INTERVAL,
+    ANIMATION_INTERVAL, RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
 };
-use crate::events::AppEvent;
-use crate::workspace::{GitStatusCacheEntry, Workspace, WorkspaceGitStatus};
-use std::collections::HashMap;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorkspaceGitRefreshItem {
-    pub(crate) workspace_id: String,
-    pub(crate) resolved_identity_cwd: std::path::PathBuf,
-    pub(crate) cache_key: std::path::PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorkspaceGitRefreshTarget {
-    pub(crate) workspace_id: String,
-    pub(crate) resolved_identity_cwd: std::path::PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorkspaceGitRefreshJob {
-    pub(crate) cache_key: std::path::PathBuf,
-    pub(crate) status_cwd: std::path::PathBuf,
-    pub(crate) cached: Option<GitStatusCacheEntry>,
-    pub(crate) targets: Vec<WorkspaceGitRefreshTarget>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorkspaceGitRefreshOutput {
-    pub(crate) results: Vec<WorkspaceGitStatus>,
-    pub(crate) cache_updates: Vec<(std::path::PathBuf, GitStatusCacheEntry)>,
-}
-
 fn retain_custom_command_after_wait(
     pid: u32,
     result: std::io::Result<Option<std::process::ExitStatus>>,
@@ -59,12 +27,20 @@ impl App {
             .retain_mut(|child| retain_custom_command_after_wait(child.id(), child.try_wait()));
     }
 
+    pub(crate) fn shutdown_terminal_runtime(&mut self, terminal_id: crate::terminal::TerminalId) {
+        let target = super::TerminalInputTarget {
+            terminal_id: terminal_id.clone(),
+        };
+        self.release_input_target_headless(&target);
+        if let Some(runtime) = self.terminal_runtimes.remove(&terminal_id) {
+            runtime.shutdown();
+        }
+    }
+
     pub(crate) fn shutdown_detached_terminal_runtimes(&mut self) {
         let terminal_ids = std::mem::take(&mut self.state.terminal_runtime_shutdowns);
         for terminal_id in terminal_ids {
-            if let Some(runtime) = self.terminal_runtimes.remove(&terminal_id) {
-                runtime.shutdown();
-            }
+            self.shutdown_terminal_runtime(terminal_id);
         }
     }
 
@@ -132,6 +108,65 @@ impl App {
         changed
     }
 
+    async fn execute_repeat_plan(
+        &mut self,
+        lease_key: super::input::InputLeaseKey,
+        key: crate::input::TerminalKey,
+        plan: super::input::RepeatPlan,
+    ) -> bool {
+        match plan {
+            super::input::RepeatPlan::Forwarded(target) => {
+                if !self.forward_terminal_key_to_target(&target, key).await {
+                    self.input_leases.remove(&lease_key);
+                }
+                true
+            }
+            super::input::RepeatPlan::Reprocess {
+                context,
+                repetitions,
+                tracked,
+            } => {
+                let key = key
+                    .with_kind(crossterm::event::KeyEventKind::Repeat)
+                    .with_repeat_count(1);
+                let mut forwarded_target = None;
+                for _ in 0..repetitions {
+                    if let Some(target) = &forwarded_target {
+                        if !self
+                            .forward_terminal_key_to_target(target, key.clone())
+                            .await
+                        {
+                            self.input_leases.remove(&lease_key);
+                            break;
+                        }
+                        continue;
+                    }
+                    let current_context = self.terminal_input_context();
+                    if !self.input_leases.reprocess_allowed(
+                        lease_key,
+                        &context,
+                        current_context.as_ref(),
+                        tracked,
+                    ) {
+                        break;
+                    }
+                    if let Some(target) = self.handle_key(key.clone()).await {
+                        if tracked {
+                            self.input_leases.insert_forwarded(
+                                lease_key,
+                                target.clone(),
+                                key.clone(),
+                            );
+                            forwarded_target = Some(target);
+                        }
+                    }
+                }
+                true
+            }
+            super::input::RepeatPlan::Ignore => false,
+        }
+    }
+
     pub(super) async fn handle_raw_input_event(
         &mut self,
         event: crate::raw_input::RawInputEvent,
@@ -139,56 +174,72 @@ impl App {
         let previous_mode = self.state.mode;
         let changed = match event {
             crate::raw_input::RawInputEvent::Key(key) => {
-                let key_id = repeat_key_identity(&key);
+                let lease_key = super::input::InputLeaseKey::new(super::LOCAL_INPUT_SOURCE, &key);
+                let key = self.input_leases.normalize_press(&lease_key, key);
                 match key.kind {
                     crossterm::event::KeyEventKind::Press => {
-                        if self.state.popup_pane.is_some() || self.state.mode == Mode::Terminal {
-                            self.suppressed_repeat_keys.remove(&key_id);
-                        } else {
-                            self.suppressed_repeat_keys.insert(key_id);
-                        }
-                        self.handle_key(key).await;
+                        let initial_context = self.terminal_input_context();
+                        let target = self.handle_key(key.clone()).await;
+                        let resulting_context = self.terminal_input_context();
+                        let plan = self.input_leases.complete_press(
+                            lease_key,
+                            &key,
+                            initial_context.as_ref(),
+                            resulting_context.as_ref(),
+                            target,
+                        );
+                        self.execute_repeat_plan(lease_key, key, plan).await;
                         true
                     }
                     crossterm::event::KeyEventKind::Repeat => {
-                        if (self.state.popup_pane.is_some() || self.state.mode == Mode::Terminal)
-                            && !self.suppressed_repeat_keys.contains(&key_id)
-                        {
-                            self.handle_key(key).await;
-                            true
-                        } else {
-                            false
-                        }
+                        let current_context = self.terminal_input_context();
+                        let plan = self.input_leases.plan_repeat(
+                            lease_key,
+                            &key,
+                            current_context.as_ref(),
+                        );
+                        self.execute_repeat_plan(lease_key, key, plan).await
                     }
                     crossterm::event::KeyEventKind::Release => {
-                        self.suppressed_repeat_keys.remove(&key_id);
+                        if let Some(lease) = self.input_leases.remove_forwarded(&lease_key) {
+                            let _ = self
+                                .forward_terminal_key_to_target(&lease.target, key)
+                                .await;
+                        }
                         false
                     }
                 }
+            }
+            crate::raw_input::RawInputEvent::Text(text) => {
+                self.handle_text_commit(text.into_string()).await;
+                true
             }
             crate::raw_input::RawInputEvent::Paste(text) => {
                 self.handle_paste(text).await;
                 true
             }
             crate::raw_input::RawInputEvent::Mouse(mouse) => {
+                let changes_view = !matches!(mouse.kind, crossterm::event::MouseEventKind::Moved)
+                    || self.state.mode.mouse_motion_changes_view();
                 if self.state.popup_pane.is_some() || self.state.mouse_capture {
                     self.handle_mouse(mouse);
                 } else {
                     self.state
                         .handle_pane_mouse_only(&self.terminal_runtimes, mouse);
                 }
-                true
+                changes_view
             }
             crate::raw_input::RawInputEvent::OuterFocusGained => {
                 self.send_outer_focus_event(crate::ghostty::FocusEvent::Gained);
                 if self.state.redraw_on_focus_gained {
-                    self.request_full_redraw();
+                    self.request_repaint();
                 }
                 self.state.outer_terminal_focus = Some(true);
                 self.state.mark_active_tab_seen();
                 true
             }
             crate::raw_input::RawInputEvent::OuterFocusLost => {
+                self.release_input_source(super::LOCAL_INPUT_SOURCE).await;
                 self.send_outer_focus_event(crate::ghostty::FocusEvent::Lost);
                 self.state.outer_terminal_focus = Some(false);
                 false
@@ -196,10 +247,15 @@ impl App {
             crate::raw_input::RawInputEvent::HostDefaultColor { kind, color } => {
                 self.update_host_terminal_theme(kind, color)
             }
+            crate::raw_input::RawInputEvent::HostPaletteColors { colors } => {
+                self.update_host_terminal_palette_colors(&colors)
+            }
             crate::raw_input::RawInputEvent::HostColorSchemeChanged(appearance) => {
                 self.query_host_terminal_theme();
                 self.set_host_terminal_appearance(appearance, true)
             }
+            // Cell size reports are consumed by the thin client, not the runtime.
+            crate::raw_input::RawInputEvent::HostCellSizeReport { .. } => false,
             crate::raw_input::RawInputEvent::Unsupported => false,
         };
         self.sync_prefix_input_source(previous_mode);
@@ -531,50 +587,6 @@ impl App {
         std::thread::spawn(move || crate::detect::manifest_update::auto_update(manifest_update_tx));
     }
 
-    pub(crate) fn start_git_status_refresh_if_due(&mut self, now: Instant) {
-        let Some(deadline) = self.git_refresh_deadline() else {
-            return;
-        };
-
-        if now < deadline {
-            return;
-        }
-
-        let workspaces = self.workspace_git_refresh_items();
-
-        if workspaces.is_empty() {
-            self.last_git_remote_status_refresh = now;
-            return;
-        }
-
-        self.git_refresh_in_flight = true;
-        let event_tx = self.event_tx.clone();
-        let cache = self.git_status_cache.clone();
-        std::thread::spawn(move || {
-            let output = refresh_workspace_git_statuses_with_cache(workspaces, &cache);
-            let _ = event_tx.blocking_send(AppEvent::GitStatusRefreshed {
-                results: output.results,
-                cache_updates: output.cache_updates,
-            });
-        });
-    }
-
-    pub(crate) fn mark_git_status_refresh_due(&mut self, now: Instant) {
-        if self.git_refresh_in_flight {
-            self.git_refresh_due_after_in_flight = true;
-            return;
-        }
-        self.last_git_remote_status_refresh = now
-            .checked_sub(GIT_REMOTE_STATUS_REFRESH_INTERVAL)
-            .unwrap_or(now);
-        self.git_refresh_due_after_in_flight = false;
-    }
-
-    pub(crate) fn git_refresh_deadline(&self) -> Option<Instant> {
-        (!self.git_refresh_in_flight && !self.state.workspaces.is_empty())
-            .then_some(self.last_git_remote_status_refresh + GIT_REMOTE_STATUS_REFRESH_INTERVAL)
-    }
-
     pub(crate) fn next_loop_deadline(&self, now: Instant, needs_render: bool) -> Option<Instant> {
         self.next_loop_deadline_with_resize_poll(now, needs_render, true, true)
     }
@@ -628,103 +640,35 @@ impl App {
         .min()
     }
 
-    fn workspace_git_refresh_items(&self) -> Vec<WorkspaceGitRefreshItem> {
-        self.state
-            .workspaces
-            .iter()
-            .filter_map(|ws| {
-                let cwd =
-                    ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)?;
-                let git_key = crate::workspace::git_status_cache_key(&cwd);
-                let cache_key = git_key.unwrap_or_else(|| cwd.clone());
-                Some(WorkspaceGitRefreshItem {
-                    workspace_id: ws.id.clone(),
-                    resolved_identity_cwd: cwd,
-                    cache_key,
-                })
-            })
-            .collect()
-    }
-
     pub(crate) fn drain_internal_events(&mut self) -> bool {
         self.drain_internal_events_up_to(super::APP_EVENT_DRAIN_LIMIT)
+            .1
     }
 
     pub(crate) fn drain_all_internal_events(&mut self) -> bool {
-        let mut had_event = false;
-        while self.drain_internal_events_up_to(super::APP_EVENT_DRAIN_LIMIT) {
-            had_event = true;
+        let mut changed = false;
+        loop {
+            let (had_event, batch_changed) =
+                self.drain_internal_events_up_to(super::APP_EVENT_DRAIN_LIMIT);
+            changed |= batch_changed;
+            if !had_event {
+                break;
+            }
         }
-        had_event
+        changed
     }
 
-    fn drain_internal_events_up_to(&mut self, limit: usize) -> bool {
+    fn drain_internal_events_up_to(&mut self, limit: usize) -> (bool, bool) {
         let mut had_event = false;
+        let mut changed = false;
         for _ in 0..limit {
             let Ok(ev) = self.event_rx.try_recv() else {
                 break;
             };
             had_event = true;
-            self.handle_internal_event_with_prefix_sync(ev);
+            changed |= self.handle_internal_event_with_prefix_sync(ev);
         }
-        had_event
-    }
-}
-
-pub(crate) fn deduplicate_git_refresh_items(
-    items: Vec<WorkspaceGitRefreshItem>,
-    cache: &HashMap<std::path::PathBuf, GitStatusCacheEntry>,
-) -> Vec<WorkspaceGitRefreshJob> {
-    let mut indexes = HashMap::<std::path::PathBuf, usize>::new();
-    let mut jobs = Vec::<WorkspaceGitRefreshJob>::new();
-
-    for item in items {
-        let target = WorkspaceGitRefreshTarget {
-            workspace_id: item.workspace_id,
-            resolved_identity_cwd: item.resolved_identity_cwd.clone(),
-        };
-        if let Some(&index) = indexes.get(&item.cache_key) {
-            jobs[index].targets.push(target);
-            continue;
-        }
-
-        let status_cwd = item.cache_key.clone();
-        let cached = cache.get(&item.cache_key).cloned();
-        indexes.insert(item.cache_key, jobs.len());
-        jobs.push(WorkspaceGitRefreshJob {
-            cache_key: status_cwd.clone(),
-            status_cwd,
-            cached,
-            targets: vec![target],
-        });
-    }
-
-    jobs
-}
-
-pub(crate) fn refresh_workspace_git_statuses_with_cache(
-    items: Vec<WorkspaceGitRefreshItem>,
-    cache: &HashMap<std::path::PathBuf, GitStatusCacheEntry>,
-) -> WorkspaceGitRefreshOutput {
-    let mut results = Vec::new();
-    let mut cache_updates = Vec::new();
-
-    for job in deduplicate_git_refresh_items(items, cache) {
-        let (snapshot, cache_entry) =
-            Workspace::git_status_snapshot_for_cwd_with_cache(&job.status_cwd, job.cached.as_ref());
-        if let Some(cache_entry) = cache_entry {
-            cache_updates.push((job.cache_key.clone(), cache_entry));
-        }
-        results.extend(job.targets.into_iter().map(move |target| {
-            snapshot
-                .clone()
-                .into_workspace_status(target.workspace_id, target.resolved_identity_cwd)
-        }));
-    }
-
-    WorkspaceGitRefreshOutput {
-        results,
-        cache_updates,
+        (had_event, changed)
     }
 }
 
@@ -733,7 +677,6 @@ mod tests {
     use super::*;
     use crate::app::state;
     use crate::workspace::Workspace;
-    use std::path::PathBuf;
 
     #[test]
     fn interrupted_custom_command_wait_keeps_child_for_retry() {
@@ -763,131 +706,6 @@ mod tests {
             is_focused: true,
         });
         (app, pane_id)
-    }
-
-    #[test]
-    fn git_refresh_deduplicates_workspaces_with_same_cache_key() {
-        let repo =
-            std::env::temp_dir().join(format!("herdr-git-refresh-dedupe-{}", std::process::id()));
-        let nested = repo.join("nested");
-        let other = repo.join("other");
-        std::fs::create_dir_all(&nested).expect("create nested dir");
-        std::fs::create_dir_all(&other).expect("create other dir");
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .arg("init")
-            .output()
-            .expect("run git init");
-
-        let output = refresh_workspace_git_statuses_with_cache(
-            vec![
-                WorkspaceGitRefreshItem {
-                    workspace_id: "one".into(),
-                    resolved_identity_cwd: nested.clone(),
-                    cache_key: repo.clone(),
-                },
-                WorkspaceGitRefreshItem {
-                    workspace_id: "two".into(),
-                    resolved_identity_cwd: other.clone(),
-                    cache_key: repo.clone(),
-                },
-            ],
-            &HashMap::new(),
-        );
-
-        assert_eq!(output.cache_updates.len(), 1);
-        assert_eq!(output.cache_updates[0].0, repo);
-        assert_eq!(output.results.len(), 2);
-        assert_eq!(output.results[0].workspace_id, "one");
-        assert_eq!(
-            output.results[0].resolved_identity_cwd,
-            PathBuf::from(&nested)
-        );
-        assert_eq!(output.results[1].workspace_id, "two");
-        assert_eq!(
-            output.results[1].resolved_identity_cwd,
-            PathBuf::from(&other)
-        );
-
-        let _ = std::fs::remove_dir_all(repo);
-    }
-
-    #[test]
-    fn git_refresh_items_use_cwd_cache_key_for_non_git_cwd() {
-        let mut app = super::super::App::new(
-            &crate::config::Config::default(),
-            true,
-            None,
-            tokio::sync::mpsc::unbounded_channel().1,
-            crate::api::EventHub::default(),
-        );
-        let cwd = std::env::temp_dir().join(format!("herdr-non-git-cwd-{}", std::process::id()));
-        std::fs::create_dir_all(&cwd).expect("create temp cwd");
-        let mut ws = Workspace::test_new("test");
-        ws.identity_cwd = cwd.clone();
-        ws.tabs.clear();
-        app.state.workspaces.push(ws);
-
-        let items = app.workspace_git_refresh_items();
-
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].cache_key, cwd);
-        let _ = std::fs::remove_dir_all(&cwd);
-    }
-
-    #[test]
-    fn headless_deadline_can_suppress_git_refresh_timer() {
-        let mut app = super::super::App::new(
-            &crate::config::Config::default(),
-            true,
-            None,
-            tokio::sync::mpsc::unbounded_channel().1,
-            crate::api::EventHub::default(),
-        );
-        app.state.workspaces.push(Workspace::test_new("test"));
-        let now = Instant::now();
-        app.last_git_remote_status_refresh = now - super::super::GIT_REMOTE_STATUS_REFRESH_INTERVAL;
-
-        assert_eq!(
-            app.next_headless_loop_deadline_with_git_refresh(now, false, false),
-            None
-        );
-        assert_eq!(
-            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
-            Some(now)
-        );
-    }
-
-    #[test]
-    fn git_refresh_due_request_survives_in_flight_refresh() {
-        let mut app = super::super::App::new(
-            &crate::config::Config::default(),
-            true,
-            None,
-            tokio::sync::mpsc::unbounded_channel().1,
-            crate::api::EventHub::default(),
-        );
-        let now = Instant::now();
-        app.git_refresh_in_flight = true;
-
-        app.mark_git_status_refresh_due(now);
-        assert!(app.git_refresh_due_after_in_flight);
-
-        app.handle_internal_event(crate::events::AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
-            cache_updates: Vec::new(),
-        });
-
-        assert!(!app.git_refresh_in_flight);
-        assert!(!app.git_refresh_due_after_in_flight);
-        assert_eq!(app.git_refresh_deadline(), None);
-
-        app.state.workspaces.push(Workspace::test_new("test"));
-        let deadline = app
-            .git_refresh_deadline()
-            .expect("refresh should be due once a workspace exists");
-        assert!(deadline <= Instant::now());
     }
 
     #[test]
@@ -1047,6 +865,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn passive_mouse_motion_does_not_request_monolithic_render() {
+        let (mut app, _) = test_app_with_pane();
+        app.state.mode = crate::app::Mode::Terminal;
+        let motion = || {
+            crate::raw_input::RawInputEvent::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Moved,
+                column: 10,
+                row: 5,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            })
+        };
+
+        assert!(!app.handle_raw_input_event(motion()).await);
+        app.state.mode = crate::app::Mode::GlobalMenu;
+        assert!(app.handle_raw_input_event(motion()).await);
+    }
+
+    #[tokio::test]
     async fn raw_input_batch_does_not_start_pending_agent_resume_before_render() {
         let (mut app, pane_id) = test_app_with_pane();
         app.state.ensure_test_terminals();
@@ -1103,6 +939,7 @@ mod tests {
                 g: 20,
                 b: 20,
             }),
+            ..Default::default()
         };
         let terminal_id = app.state.workspaces[0]
             .terminal_id(pane_id)

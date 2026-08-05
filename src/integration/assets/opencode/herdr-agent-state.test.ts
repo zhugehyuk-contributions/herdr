@@ -114,6 +114,57 @@ test("suppresses redundant same-session updates", async () => {
   expect(requests.map(requestSessionID)).toEqual(["root-session", "replacement-session"]);
 });
 
+test("reports retry status as working", async () => {
+  const plugin = await loadPlugin();
+
+  await plugin.event({
+    event: {
+      type: "session.status",
+      properties: { sessionID: "root-session", status: { type: "retry" } },
+    },
+  });
+
+  expect(requests.map(requestMethod)).toEqual(["pane.report_agent"]);
+  expect(requests.map(requestState)).toEqual(["working"]);
+  expect(requests.map(requestSessionID)).toEqual(["root-session"]);
+});
+
+test("reports child prompts without replacing the root session", async () => {
+  const plugin = await loadPlugin();
+
+  await plugin.event({
+    event: {
+      type: "session.created",
+      properties: {
+        sessionID: "child-session",
+        info: { id: "child-session", parentID: "root-session" },
+      },
+    },
+  });
+
+  for (const type of ["permission.asked", "question.asked"]) {
+    await plugin.event({ event: { type, properties: { sessionID: "child-session" } } });
+  }
+  for (const type of ["permission.replied", "question.replied", "question.rejected"]) {
+    await plugin.event({ event: { type, properties: { sessionID: "child-session" } } });
+  }
+
+  expect(requests.map(requestState)).toEqual([
+    "blocked",
+    "blocked",
+    "working",
+    "working",
+    "working",
+  ]);
+  expect(requests.map(requestSessionID)).toEqual([
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+  ]);
+});
+
 function requestMethod(request: unknown): unknown {
   return isRecord(request) ? request.method : undefined;
 }

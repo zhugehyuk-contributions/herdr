@@ -35,6 +35,13 @@ pub(crate) fn pane_custom_command_pty_builder(command: &str) -> portable_pty::Co
     pane_custom_command_pty_builder_platform(command)
 }
 
+pub(crate) fn apply_pane_runtime_marker(command: &mut portable_pty::CommandBuilder) {
+    apply_pane_runtime_marker_platform(command);
+}
+
+#[cfg(not(windows))]
+fn apply_pane_runtime_marker_platform(_command: &mut portable_pty::CommandBuilder) {}
+
 pub(crate) fn configure_background_command(command: &mut std::process::Command) {
     configure_background_command_platform(command);
 }
@@ -59,6 +66,11 @@ pub(crate) const fn capabilities() -> PlatformCapabilities {
     }
 }
 
+#[cfg(not(windows))]
+pub fn launch_server_daemon_command(command: &mut std::process::Command) -> std::io::Result<u32> {
+    command.spawn().map(|child| child.id())
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn detach_server_daemon_command(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
@@ -76,6 +88,45 @@ pub fn detach_server_daemon_command(command: &mut std::process::Command) {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn current_process_is_detached_server_daemon() -> bool {
     unsafe { libc::getsid(0) == libc::getpid() }
+}
+
+/// Raised by the SIGWINCH handler, consumed by the host resize watcher.
+#[cfg(unix)]
+static TERMINAL_RESIZE_SIGNALLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn record_terminal_resize_signal(_signal: libc::c_int) {
+    TERMINAL_RESIZE_SIGNALLED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Records SIGWINCH events that size polling can miss.
+#[cfg(unix)]
+pub(crate) fn watch_terminal_resize_signal() {
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction =
+        record_terminal_resize_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    // Keep blocking stdin and socket reads from failing with EINTR.
+    action.sa_flags = libc::SA_RESTART;
+    unsafe {
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGWINCH, &action, std::ptr::null_mut());
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn watch_terminal_resize_signal() {}
+
+/// Returns whether a terminal size change was signalled since the last call.
+#[cfg(unix)]
+pub(crate) fn take_terminal_resize_signal() -> bool {
+    TERMINAL_RESIZE_SIGNALLED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+/// Windows relies on size polling.
+#[cfg(not(unix))]
+pub(crate) fn take_terminal_resize_signal() -> bool {
+    false
 }
 
 #[cfg(unix)]
@@ -259,16 +310,16 @@ pub(crate) fn parse_agent_env_hint(environ: &[u8]) -> Option<crate::detect::Agen
     None
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[derive(Debug)]
 pub(crate) struct InputSourceRestore;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub(crate) fn switch_to_ascii_input_source() -> Option<InputSourceRestore> {
     None
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub(crate) fn pump_input_source_runloop() {}
 
 /// Switches the host keyboard input source while prefix mode is active.
@@ -311,6 +362,19 @@ impl PrefixInputSource for RealPrefixInputSource {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_resize_signal_is_recorded_once_per_delivery() {
+        watch_terminal_resize_signal();
+        assert!(!take_terminal_resize_signal());
+
+        unsafe {
+            libc::raise(libc::SIGWINCH);
+        }
+
+        assert!(take_terminal_resize_signal());
+        assert!(!take_terminal_resize_signal());
+    }
 
     #[test]
     fn pane_shell_process_names_reject_exec_replacement_programs() {

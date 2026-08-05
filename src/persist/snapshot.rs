@@ -1202,18 +1202,24 @@ mod tests {
         let terminal_id = state.workspaces[0].tabs[0].panes[&root]
             .attached_terminal_id
             .clone();
-        state
-            .terminals
-            .get_mut(&terminal_id)
-            .unwrap()
-            .set_hook_authority_with_session_ref(
-                "herdr:pi".into(),
-                "pi".into(),
-                crate::detect::AgentState::Working,
-                None,
-                crate::agent_resume::AgentSessionRef::path(session_path.clone()),
-                Some(20),
-            );
+        let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_detected_state(
+            Some(crate::detect::Agent::Pi),
+            crate::detect::AgentState::Idle,
+        );
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::path(session_path.clone()).unwrap(),
+        });
+        terminal.set_hook_authority_with_session_ref(
+            "herdr:pi".into(),
+            "pi".into(),
+            crate::detect::AgentState::Working,
+            None,
+            crate::agent_resume::AgentSessionRef::path(session_path.clone()),
+            Some(20),
+        );
 
         let snapshot = capture_from_state(&state);
         let agent_session = snapshot.workspaces[0].tabs[0].panes[&root.raw()]

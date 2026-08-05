@@ -2285,10 +2285,17 @@ impl ClientSidebarSnapshot {
                     // even under worktree grouping (#22, render order != storage order) or a
                     // scrolled list.
                     if let Some(insert_idx) = block_insert_global_index(&server_cards, drop_row) {
+                        // The shared renderer keys the indicator off `WorkspaceDropTarget` now:
+                        // a global insert slot i maps to Before(i), past the end maps to End.
+                        let drop_target = if insert_idx >= app.workspaces.len() {
+                            crate::app::state::WorkspaceDropTarget::End
+                        } else {
+                            crate::app::state::WorkspaceDropTarget::Before(insert_idx)
+                        };
                         app.drag = Some(crate::app::state::DragState {
                             target: crate::app::state::DragTarget::WorkspaceReorder {
                                 source_ws_idx,
-                                insert_idx: Some(insert_idx),
+                                drop_target: Some(drop_target),
                             },
                         });
                     }
@@ -4713,12 +4720,15 @@ mod tests {
         match dragging.app.drag.as_ref().map(|d| &d.target) {
             Some(crate::app::state::DragTarget::WorkspaceReorder {
                 source_ws_idx,
-                insert_idx,
+                drop_target,
             }) => {
                 // ws-2 is global index 1; dropping past ws-3 (the third, single-server card) lands
-                // at global insert position 3 (after the whole block).
+                // at global insert position 3 (after the whole block) = End of the 3-space list.
                 assert_eq!(*source_ws_idx, 1);
-                assert_eq!(*insert_idx, Some(3));
+                assert_eq!(
+                    *drop_target,
+                    Some(crate::app::state::WorkspaceDropTarget::End)
+                );
             }
             _ => panic!("expected a WorkspaceReorder drag preview"),
         }
@@ -4847,11 +4857,16 @@ mod tests {
         match dragging.app.drag.as_ref().map(|d| &d.target) {
             Some(crate::app::state::DragTarget::WorkspaceReorder {
                 source_ws_idx,
-                insert_idx,
+                drop_target,
             }) => {
                 assert_eq!(*source_ws_idx, local_base);
                 // Clamped to the local block: the insert slot never points into the remote block.
-                let insert = insert_idx.expect("preview carries an insert slot");
+                let insert = match drop_target.expect("preview carries an insert slot") {
+                    crate::app::state::WorkspaceDropTarget::Before(idx) => idx,
+                    crate::app::state::WorkspaceDropTarget::End => {
+                        dragging.app.workspaces.len()
+                    }
+                };
                 assert!(
                     insert <= local_block_end,
                     "insert {insert} escaped local block end {local_block_end}"

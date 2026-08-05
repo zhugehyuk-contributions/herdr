@@ -2,7 +2,7 @@
 
 herdr-mx = upstream [herdr](https://github.com/ogulcancelik/herdr) + the changes on this page. nothing else.
 
-currently tracking: **upstream v0.7.5** (released 2026-07-21). note: `docs/next/CHANGELOG.md` version sections are upstream's release notes preserved verbatim (they may mention upstream features this fork rejects — e.g. sidebar token styling); THIS page is the SSOT for what herdr-mx actually ships. policy: every upstream release is merged within days, mx releases are tagged `v<upstream>-mx.<n>`, and anything on this page is offered upstream when it fits — when a feature lands upstream it leaves this page. when *everything* lands upstream, herdr-mx retires.
+currently tracking: **upstream v0.8.0** (released 2026-08-03; PROTOCOL_VERSION 20 = union past mx 18 / upstream 19). note: `docs/next/CHANGELOG.md` version sections are upstream's release notes preserved verbatim (they may mention upstream features this fork rejects — e.g. sidebar token styling); THIS page is the SSOT for what herdr-mx actually ships. policy: every upstream release is merged within days, mx releases are tagged `v<upstream>-mx.<n>`, and anything on this page is offered upstream when it fits — when a feature lands upstream it leaves this page. when *everything* lands upstream, herdr-mx retires.
 
 ## the big one: multi-remote client
 
@@ -36,3 +36,28 @@ upstream herdr attaches to one server at a time (`herdr --remote <host>` per ter
 
 - cline phantom-working guard (#37): upstream's new manifest-based detection defaults cline to "working" again; the mx fix needs a `manifests/cline.toml` override.
 - deferred remote refinements from the #60→#62 merge: upstream keepalive (#355), fish-shell remote bootstrap (#396), mise+preview remote seeding.
+
+## deferred from the v0.8.0 merge
+
+upstream v0.8.0 features whose wiring lives inside the multi-remote client loop (which herdr-mx
+rewrites) — the shared helpers merged in, but the client-loop integration is not yet ported:
+
+- host-drawn cursor mode (`draw_host_cursor` / `repaint_pending` blit semantics) and the
+  host-repaint kitty-graphics preservation path (#1628). (the host cell-size query fallback for
+  ConPTY/WSL #2146/#2160 WAS ported — it is loop-peripheral.)
+- kitty report-all keyboard routing (`ServerMessage::KittyKeyboardReportAll` is accepted and
+  ignored by the mx client; version parity makes this safe).
+- configurable remote image-paste key (mx client still hardcodes Ctrl+V for the clipboard-image
+  bridge).
+- sh fallback for remote path discovery on non-POSIX login shells (#1201) — mx keeps its own
+  multi-path probe (`remote_path_probe_any_command`); fold upstream's fallback into it later.
+- upstream's settings-TUI removal of the experiments section was NOT adopted: the mx settings TUI
+  keeps its sidebar + experiments sections (the config knobs still exist upstream; only their TUI
+  rows were removed there).
+- upstream's sidebar token styling (`[ui.sidebar.spaces]` rows/`row_gap`, `src/config/sidebar.rs`)
+  remains rejected; its multi-row card rendering and worktree tree-connector polish (7db744ab)
+  are therefore not picked up. (the group-collapse chevron and the `WorkspaceDropTarget`-based
+  drag-reorder subsystem WERE adopted — mx's host-reorder rides alongside them.)
+- upstream's "static workspace marks" change (no continuous spinner) was NOT adopted: mx restored
+  its `spinner_frame`/`agent_icon` and the server/headless animation timer machinery upstream
+  removed.
