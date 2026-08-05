@@ -1510,13 +1510,14 @@ mod tests {
             ],
         };
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
-        // Freeze the protocol 19 input envelope before it is published.
+        // Freeze the protocol 20 input envelope (mx): `TextCommit` rides at the enum TAIL
+        // (tag 5) so the pre-merge mx wire tags (Mouse = 1, ...) stay stable.
         assert_eq!(
             encoded,
             vec![
                 7, 5, 0, 15, 78, 1, 0, 1, 0, 0, 0, 0, 0, 0, 3, 0, 1, 8, 27, 91, 49, 50, 55, 59, 49,
-                117, 0, 14, 0, 2, 1, 0, 2, 0, 1, 27, 1, 27, 0, 1, 7, 228, 189, 160, 240, 159, 153,
-                130, 2, 0, 0, 3, 4, 0,
+                117, 0, 14, 0, 2, 1, 0, 2, 0, 1, 27, 1, 27, 0, 5, 7, 228, 189, 160, 240, 159, 153,
+                130, 1, 0, 0, 3, 4, 0,
             ]
         );
         let (decoded, _): (ClientMessage, _) =
