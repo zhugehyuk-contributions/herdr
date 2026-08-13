@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## [0.8.0-mx.1] - 2026-08-14
+
+Ships upstream herdr 0.8.0 plus the mx layer — see [DIVERGENCE.md](DIVERGENCE.md) for the full standing diff. First mx release on the upstream 0.8.0 base (PROTOCOL_VERSION 20; upstream highlights — bottom tab bar, pane scrollbar toggle, `herdr --skill`, Grok/Antigravity session restore, workspace drag-reorder, Apache-2.0 relicense — are listed under [0.8.0] below).
+
+### Changed
+- Rebased the mx layer onto upstream herdr 0.8.0 (129 upstream commits since 0.7.5).
+- Adopted upstream's workspace drop-target drag-reorder subsystem; the mx client host-reorder preview now maps onto upstream drop targets, including packed worktree groups.
+- Kept mx wire compatibility across the merge: upstream wire-enum variants that were inserted mid-enum moved to the enum tail so existing mx peers keep their exact bincode tags, frozen by protocol-20 golden-byte tests.
+
 ## [0.7.5-mx.1] - 2026-08-05
 
 First stable herdr-mx release. Ships upstream herdr 0.7.5 plus the mx layer — see [DIVERGENCE.md](DIVERGENCE.md) for the full standing diff.
