@@ -14,6 +14,10 @@
  * `(version=20, cols=80, rows=24, encoding=0, launch=0)` is `00 14 50 18 08 10 00 00 00 00`,
  * byte-identical to `HELLO_SEMANTIC_APP_80X24`.
  *
+ * `REQUEST_FULL_FRAME` and `TERMINAL_SMALL_DIFF` came out of the same generator run as everything
+ * else here; that run reproduced every pre-existing vector below byte for byte, which is what makes
+ * the two new ones trustworthy rather than hand-typed.
+ *
  * `OBSERVE_TERMINAL_W1_P1` was likewise reconciled against
  * `tests/support/mod.rs::send_observe_terminal(stream, "w1:p1")`, which builds
  * `encode_varint_u32(12) ++ encode_varint_u32(target.len()) ++ target.as_bytes()`. Note
@@ -23,6 +27,13 @@
 export const HELLO_SEMANTIC_APP_80X24 = "00145018081000000000";
 export const HELLO_ANSI_ATTACH_300X100 = "0014fb2c0164081001000001";
 export const HELLO_ANSI_ATTACH_65535_NO_CELLPX = "0014fbfffffbffff000001000001";
+
+/**
+ * `ClientMessage::RequestFullFrame` — a UNIT variant (`src/protocol/wire.rs:462-467`), so the whole
+ * message is the tag byte. Its neighbours all carry fields, which is exactly the copy-paste hazard
+ * this vector exists to pin: `ObserveTerminal` below is `0c 00` even for an *empty* target.
+ */
+export const REQUEST_FULL_FRAME = "0b";
 
 /** `ClientMessage::ObserveTerminal { target: "w1:p1" }` — tag 0x0c, len 0x05, then the ASCII. */
 export const OBSERVE_TERMINAL_W1_P1 = "0c0577313a7031";
@@ -46,6 +57,14 @@ export const WELCOME_ERROR_UTF8 = "0014000112eab1b0ebb6803a20ed959ceab88020e29c8
 export const WELCOME_ERROR_UTF8_TEXT = "거부: 한글 ✅";
 
 export const TERMINAL_SMALL_FULL = "0d01641e010a1b5b324a1b5b313b3148";
+/**
+ * The same geometry with `full: false` — a diff (seq 2, `ESC[1;1Hhi`).
+ *
+ * A diff is only correct against the baseline the frame before it left behind, which is why losing
+ * one is a *screen* problem and not a framing problem: the length prefix keeps the wire in sync
+ * while the rendered cells drift permanently.
+ */
+export const TERMINAL_SMALL_DIFF = "0d02641e00081b5b313b31486869";
 export const TERMINAL_SEQ_VARINT_U16 = "0dfbfb00fbfb00fbffff0000";
 /** seq = 2^32 (needs the 253/u64 marker), 300 payload bytes (needs the 251/u16 length marker). */
 export const TERMINAL_SEQ_U64 =

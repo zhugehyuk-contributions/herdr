@@ -43,9 +43,13 @@ import {
   type JsonApiConnection,
 } from "./jsonApi.js";
 import { FrameReader, type FrameReaderOptions } from "./framing.js";
-import { decodeServerMessage, type ServerMessage } from "./messages.js";
+import {
+  decodeServerMessage,
+  encodeRequestFullFrameFrame,
+  type ServerMessage,
+} from "./messages.js";
 import { utf8Encode } from "./utf8.js";
-import type { WireError } from "./errors.js";
+import { desynchronizesScreen, type WireError } from "./errors.js";
 
 /**
  * What a channel is for. Not decoration: the kind decides the **remote command** and, more
@@ -647,6 +651,23 @@ export interface ServerMessageChannelOptions {
  * {@link FrameReader}, whereas `push` returns an array and reports the rest out of band. Folding
  * one into the other would buy a dozen lines and cost that per-frame ordering.
  *
+ * ## Screen resynchronization (this class recovers; {@link ServerMessageReader} only reports)
+ *
+ * "An undecodable frame costs exactly that frame" is true of the *wire* and false of the *screen*.
+ * `ServerMessage::Terminal` is a diff stream — `TerminalFrame.full` (`src/protocol/wire.rs:771-780`)
+ * is false for an incremental frame, correct only against the baseline its predecessor left behind
+ * — so skipping a corrupt `Terminal` and applying the diffs behind it keeps the framing perfect
+ * while the rendered cells go permanently wrong.
+ *
+ * The protocol's own cure is `ClientMessage::RequestFullFrame` (`src/protocol/wire.rs:462-467`,
+ * mx-only): the server drops that client's render baseline so its next `Terminal` carries
+ * `full: true`. This class holds the write end of the channel, so it sends that itself and
+ * withholds diffs until the full frame lands — the screen stalls for one render instead of showing
+ * wrong cells, and no ssh exec channel or handshake is thrown away, which is what reconnecting
+ * would have cost. {@link ServerMessageReader} has no write end and therefore only exposes
+ * `screenDesynced` (`src/stream.ts`); both layers classify a desync with the same predicate,
+ * `desynchronizesScreen` (`src/errors.ts`), so only the *remedy* differs.
+ *
  * ## Handler calls are isolated
  *
  * Every handler is invoked through {@link ServerMessageChannel.notify}, so a handler that throws
@@ -670,6 +691,10 @@ export class ServerMessageChannel {
   private lastSkipped: WireError | undefined;
   private callbackFailures = 0;
   private lastCallbackError: unknown;
+  /** Set while a `RequestFullFrame` is outstanding: diffs are dropped until a `full` frame lands. */
+  private desynced = false;
+  private droppedDiffs = 0;
+  private fullFrameRequests = 0;
 
   private constructor(handlers: ServerMessageChannelHandlers, options: ServerMessageChannelOptions) {
     this.handlers = handlers;
@@ -711,6 +736,33 @@ export class ServerMessageChannel {
   /** The most recent dropped frame's error, for a caller that polls instead of subscribing. */
   get lastUndecodable(): WireError | undefined {
     return this.lastSkipped;
+  }
+
+  /**
+   * True between a screen-invalidating frame loss and the `Terminal` with `full === true` that
+   * repairs it. While set, `Terminal` diffs are dropped instead of delivered.
+   *
+   * Public because "the terminal froze for a moment" and "the terminal froze" are the same thing to
+   * a user and opposite things to an operator: a channel stuck here has asked for a full frame the
+   * server never sent, and that is a server-side or fork-skew story, not a renderer bug.
+   */
+  get awaitingFullFrame(): boolean {
+    return this.desynced;
+  }
+
+  /**
+   * How many `Terminal` diffs were dropped because the baseline they assume was unknowable.
+   *
+   * The observability the drop owes the caller: `onMessage` simply does not fire for them, so
+   * without a counter a withheld frame and a frame that never arrived look identical.
+   */
+  get droppedDiffCount(): number {
+    return this.droppedDiffs;
+  }
+
+  /** How many `ClientMessage::RequestFullFrame` messages this channel has sent. */
+  get fullFrameRequestCount(): number {
+    return this.fullFrameRequests;
   }
 
   /** How many times one of the handlers threw. Isolated, but never hidden. */
@@ -766,10 +818,55 @@ export class ServerMessageChannel {
       const wire = error as WireError;
       this.skipped += 1;
       this.lastSkipped = wire;
+      if (desynchronizesScreen(wire)) {
+        this.requestFullFrame();
+      }
       this.notify(this.handlers.onUndecodable, wire);
       return;
     }
+    if (message.type === "terminal") {
+      if (message.full) {
+        // A full redraw is self-contained: it *is* the resynchronization point.
+        this.desynced = false;
+      } else if (this.desynced) {
+        // The diff assumes a baseline this client never saw. Delivering it would paint wrong cells
+        // for as long as the pane is on screen; dropping it costs one frame of staleness, ended by
+        // the full frame the request above is already fetching.
+        this.droppedDiffs += 1;
+        return;
+      }
+    }
     this.notify(this.handlers.onMessage, message);
+  }
+
+  /**
+   * Enters (or re-enters) the desynchronized state and asks the server to re-baseline.
+   *
+   * Sent on *every* screen-invalidating loss, not only the first: a frame lost while already
+   * waiting could have been the very full frame that was on its way, and a request that fired once
+   * would then strand the screen forever. Re-asking is safe because the server-side handler is a
+   * baseline reset (`src/server/headless.rs:3052` -> `src/server/clients.rs:149`), which is
+   * idempotent, and the message is five bytes on the wire.
+   *
+   * The write goes through {@link send}, so a channel that is already gone is a no-op, and a
+   * transport whose `write` returns a promise cannot land an unhandled rejection here.
+   */
+  private requestFullFrame(): void {
+    this.desynced = true;
+    if (this.channel === null || this.closed || this.framingFailure !== null) {
+      return;
+    }
+    this.fullFrameRequests += 1;
+    try {
+      const written = this.send(encodeRequestFullFrameFrame());
+      if (written !== undefined) {
+        // Losing the request is not worse than never sending it, and it must not take the decode
+        // loop — and with it every frame behind this one — down with it.
+        void written.catch(() => {});
+      }
+    } catch {
+      // Same reasoning, for a transport that throws synchronously.
+    }
   }
 
   /** Calls a handler without letting its failure decide what happens to the other frames. */

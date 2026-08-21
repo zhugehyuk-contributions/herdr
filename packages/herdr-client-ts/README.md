@@ -12,7 +12,7 @@ those three:
 | # | Piece | Direction |
 |---|---|---|
 | 1 | the `[u32 LE length][bincode payload]` envelope, **incrementally** | both |
-| 2 | `ClientMessage::Hello` + `ClientMessage::ObserveTerminal` encode | client → server |
+| 2 | `ClientMessage::Hello` + `ClientMessage::ObserveTerminal` (+ `RequestFullFrame`) encode | client → server |
 | 3 | `ServerMessage::Welcome` / `ServerMessage::Terminal` decode | server → client |
 
 Plus one thing the plan implies but does not list: `src/jsonApi.ts`, a client for the *other*
@@ -118,7 +118,7 @@ const panes = await api.paneList();
 const stream = await ServerMessageChannel.open(transport, {
   onMessage: (message) => { /* welcome / terminal */ },
   // One frame lost: an undecoded variant OR a corrupt payload. Optional — `stream.undecodableCount`
-  // counts them either way.
+  // counts them either way. A corrupt one also triggers screen resynchronization (below).
   onUndecodable: (error) => { /* diagnostics */ },
   // Terminal, and only terminal: a framing error, fired exactly once. Not a corrupt frame.
   onError: (error) => { /* drop the connection and reconnect */ },
@@ -175,6 +175,17 @@ only automatic `@types` inclusion; an explicit `import … from "ssh2"` still re
   is that same rule; `FrameReader` defaults to its larger arm because graphics are spliced *into*
   `TerminalFrame.bytes` (`src/server/render_stream.rs:109`) and a rejected length prefix cannot be
   resynchronized — the connection flaps. **Any value between the two caps is always wrong.**
+- **A lost frame can leave the *screen* wrong even though the *wire* is fine.** `Terminal` is a
+  diff stream (`TerminalFrame.full`, `src/protocol/wire.rs:771-780`), so skipping a corrupt frame
+  and applying the diffs behind it renders cells the server never sent. The cure is in the protocol:
+  `ClientMessage::RequestFullFrame` (tag 11, `src/protocol/wire.rs:462-467`, **mx-only**) makes the
+  server drop that client's render baseline so its next `Terminal` is `full: true`.
+  `ServerMessageChannel` owns the write end, so it sends the request itself and withholds diffs
+  until the full frame lands (`awaitingFullFrame`, `droppedDiffCount`, `fullFrameRequestCount`).
+  `ServerMessageReader` cannot send anything, so it only reports (`screenDesynced`) and drops diffs
+  when you opt in with `dropDiffsWhileDesynced` — swallowing them without sending the request would
+  freeze the screen instead of merely drifting it. Both layers classify a desync with the same
+  predicate, `desynchronizesScreen`; an *undecoded variant* is never one.
 - **Ordinals live in one file.** `src/constants.ts` — they are *fork-local*; see the warning at the
   top of that file and `mobile/.prd/03-blockers.md` B1.
 - **`undecodableCount` is the fork-skew alarm.** B1 is not hypothetical: mx and upstream both
@@ -195,7 +206,7 @@ only automatic `@types` inclusion; an explicit `import … from "ssh2"` still re
 - **Any other `ClientMessage`.** `Input`, `Resize`, `Detach`, `ControlTerminal` (writable control,
   tag 13 — same `target` as `ObserveTerminal` plus a `takeover: bool`) and the rest are not encoded
   here; their tags are not even transcribed. `Hello` + `ObserveTerminal` is exactly enough to open a
-  read-only stream.
+  read-only stream, and `RequestFullFrame` is what keeps it correct after a lost frame.
 - **Layout identification.** Equal `PROTOCOL_VERSION` does not prove equal wire layout across the
   mx/upstream fork line (B1).
 - **Reconnect, backpressure, ANSI interpretation.** The transport *seam* is here (below); the

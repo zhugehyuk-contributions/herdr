@@ -4,7 +4,8 @@
  * Scope is deliberately three things (mobile/.prd/02-architecture.md §2.2):
  *   1. the `[u32 LE length][bincode payload]` envelope, incrementally,
  *   2. `ClientMessage::Hello` encode — plus `ClientMessage::ObserveTerminal`, without which the
- *      handshake succeeds and no stream ever starts,
+ *      handshake succeeds and no stream ever starts, plus `ClientMessage::RequestFullFrame`,
+ *      without which a single lost `Terminal` diff leaves the screen wrong forever,
  *   3. `ServerMessage::Welcome` / `ServerMessage::Terminal` decode.
  *
  * Plus `./jsonApi.js` for the *other* socket: herdr's newline-delimited JSON control API, which is
@@ -46,6 +47,7 @@ export {
   ProtocolVersionMismatchError,
   UnsupportedVariantError,
   WireError,
+  desynchronizesScreen,
   type WireErrorCode,
 } from "./errors.js";
 
@@ -69,6 +71,8 @@ export {
   encodeHelloFrame,
   encodeObserveTerminal,
   encodeObserveTerminalFrame,
+  encodeRequestFullFrame,
+  encodeRequestFullFrameFrame,
   type HandshakeExpectation,
   type HelloParams,
   type ServerMessage,

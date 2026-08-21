@@ -114,11 +114,22 @@ export type ClientLaunchMode = (typeof ClientLaunchMode)[keyof typeof ClientLaun
 export const CLIENT_LAUNCH_MODE_ORDER = ["App", "TerminalAttach"] as const;
 
 /**
- * `ClientMessage` wire tags (`src/protocol/wire.rs:366`). `Hello` and `ObserveTerminal` are the two
- * this package encodes — between them they are enough to open a read-only terminal stream.
+ * `ClientMessage` wire tags (`src/protocol/wire.rs:366`). `Hello` and `ObserveTerminal` are enough
+ * to open a read-only terminal stream; `RequestFullFrame` is what keeps it *correct* after a lost
+ * frame.
  */
 export const ClientMessageTag = {
   Hello: 0,
+  /**
+   * `src/protocol/wire.rs:462-467` — a **unit** variant, so the encoded message is the tag byte and
+   * nothing else. Frozen at 11 by `client_message_wire_tags_preserve_protocol_15_order`
+   * (`src/protocol/wire.rs:1447`).
+   *
+   * ⚠️ **mx-only.** Upstream's `ClientMessage` has no such variant, so an upstream server decodes
+   * tag 11 as whatever sits there in its own enum. That is the same fork-skew hazard this file
+   * opens with, and it is why this is a *recovery* path and never part of the handshake.
+   */
+  RequestFullFrame: 11,
   /**
    * `src/protocol/wire.rs:471`. Frozen by
    * `client_message_wire_tags_preserve_protocol_15_order` (`src/protocol/wire.rs:1448`).

@@ -18,7 +18,9 @@ import {
   assertWelcomeAccepted,
   encodeHelloFrame,
   encodeObserveTerminalFrame,
+  encodeRequestFullFrameFrame,
   type JsonApiClient,
+  type ServerMessage,
   type TerminalMessage,
   type WelcomeMessage,
 } from "../../src/index.js";
@@ -152,6 +154,57 @@ describe.skipIf(skipReason !== null)("live: TerminalAnsi observe against a real 
     expect(second.bytes.includes(0x1b)).toBe(true);
   }, 120_000);
 
+  /**
+   * The one assumption in the resynchronization design that only a real server can settle:
+   * does `ClientMessage::RequestFullFrame` actually make an *observing*, `TerminalAnsi` client's
+   * next `Terminal` carry `full: true`?
+   *
+   * The code says yes — `src/server/client_transport.rs:873` -> `src/server/headless.rs:3052` ->
+   * `Client::request_full_redraw` (`src/server/clients.rs:149`) ->
+   * `ClientRenderState::reset_baseline` (`src/server/render_stream.rs:36`), whose `TerminalAnsi`
+   * arm installs a fresh `BlitEncoder`, and `BlitEncoder::encode_inner`
+   * (`src/protocol/render_ansi.rs:88-92`) derives `full = repaint || prev.is_none() || …`. But
+   * every hop there was read, not run, and the observe path reaches that handler through a
+   * different `ClientConnectionMode` than the app path the variant was written for.
+   *
+   * The control matters as much as the result: the screen is first driven to quiescence and
+   * watched for a full second, so a `full: true` frame appearing right after the request cannot be
+   * a repaint the server was going to send anyway.
+   */
+  it("answers RequestFullFrame with a full=true Terminal frame", async () => {
+    const live = stream;
+    expect(live, "the observe stream was never opened").not.toBeNull();
+    if (live === null) return;
+
+    const settled = await settleFrames(live, 30_000);
+
+    // Control window: with the pane idle, nothing — least of all a full redraw — should arrive.
+    await new Promise((r) => setTimeout(r, 1_000));
+    const idle = live.messages.slice(settled);
+    process.stdout.write(
+      `[live] control window (no request): ${idle.length} message(s), ` +
+        `full=true frames=${idle.filter(isFullTerminal).length}\n`,
+    );
+    expect(
+      idle.filter(isFullTerminal),
+      "a full frame arrived with no request pending; the control window proves nothing",
+    ).toEqual([]);
+
+    const from = live.messages.length;
+    live.send(encodeRequestFullFrameFrame());
+
+    const repaint = await waitForFullTerminal(live, from, 20_000);
+    process.stdout.write(
+      `[live] after RequestFullFrame: seq=${repaint.seq} width=${repaint.width} ` +
+        `height=${repaint.height} full=${repaint.full} bytes_len=${repaint.bytes.length}\n`,
+    );
+    expect(repaint.full).toBe(true);
+    expect(repaint.bytes.length).toBeGreaterThan(0);
+    // A full redraw repaints the whole client geometry, so it dwarfs the ~100-byte diffs above.
+    expect([repaint.width, repaint.height]).toEqual([CLIENT_COLS, CLIENT_ROWS]);
+    expect(stripAnsiText(repaint.bytes)).toContain(SECOND_MARKER);
+  }, 120_000);
+
   it("does not resize the observed pane's PTY while attached", async () => {
     expect(
       stream,
@@ -174,6 +227,55 @@ describe.skipIf(skipReason !== null)("live: TerminalAnsi observe against a real 
 async function sendInput(api: JsonApiClient, paneId: string, text: string): Promise<void> {
   const sent = await api.request("pane.send_input", { pane_id: paneId, text, keys: ["Enter"] });
   expect(sent["type"], `pane.send_input failed: ${JSON.stringify(sent)}`).toBe("ok");
+}
+
+function isFullTerminal(message: ServerMessage): message is TerminalMessage {
+  return message.type === "terminal" && message.full;
+}
+
+/** Waits until the stream stops producing messages for `quietMs`; returns the settled length. */
+async function settleFrames(stream: LiveClientStream, timeoutMs: number): Promise<number> {
+  const quietMs = 800;
+  const deadline = Date.now() + timeoutMs;
+  let last = stream.messages.length;
+  let quietSince = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 100));
+    if (stream.messages.length !== last) {
+      last = stream.messages.length;
+      quietSince = Date.now();
+    } else if (Date.now() - quietSince >= quietMs) {
+      return last;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`stream never went quiet (${stream.messages.length} messages)`);
+    }
+  }
+}
+
+/** The first `full: true` Terminal at or after index `from`. Reads the log directly, not `next`. */
+async function waitForFullTerminal(
+  stream: LiveClientStream,
+  from: number,
+  timeoutMs: number,
+): Promise<TerminalMessage> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    for (const message of stream.messages.slice(from)) {
+      if (isFullTerminal(message)) {
+        return message;
+      }
+    }
+    if (Date.now() > deadline) {
+      const seen = stream.messages
+        .slice(from)
+        .map((m) => (m.type === "terminal" ? `terminal(full=${m.full})` : m.type));
+      throw new Error(
+        `no full Terminal frame within ${timeoutMs}ms of RequestFullFrame; saw [${seen.join(", ")}]`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 async function nextNonEmptyTerminal(

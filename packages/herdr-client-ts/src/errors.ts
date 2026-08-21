@@ -18,6 +18,30 @@ export type WireErrorCode =
   /** `Welcome.encoding` is not the encoding we requested. */
   | "encoding-mismatch";
 
+/**
+ * Does losing this frame invalidate the **rendered screen**, as opposed to merely the frame?
+ *
+ * The single vocabulary both readers share, so their policies cannot drift apart — `stream.ts`
+ * and `transport.ts` decide "did the ANSI baseline just become unknowable?" by calling this and
+ * nothing else.
+ *
+ * - `unsupported-variant` -> **no**. `Notify`, `Compressed`, `Pong` and friends are routine traffic
+ *   this codec deliberately does not decode (`src/constants.ts` SERVER_MESSAGE_VARIANT_NAMES).
+ *   None of them carries terminal cells, so the baseline is untouched; treating them as a desync
+ *   would fire a full-repaint request several times a second on a healthy connection.
+ * - anything else (`corrupt`, and any future decode failure) -> **yes**. The frame might have been
+ *   a `Terminal`, and `TerminalFrame.full` (`src/protocol/wire.rs:771-780`) says a `Terminal` may
+ *   be a diff against the baseline the previous one left. Once one is lost the client cannot know
+ *   which cells the server believes are on screen, and the length prefix — which kept the *wire*
+ *   in sync — says nothing about that.
+ *
+ * `oversized` never reaches here: `FrameReader` poisons itself on a bad length prefix and the only
+ * cure is a new connection.
+ */
+export function desynchronizesScreen(error: WireError): boolean {
+  return error.code !== "unsupported-variant";
+}
+
 /** Base class for every error this codec raises. Never thrown directly. */
 export class WireError extends Error {
   readonly code: WireErrorCode;

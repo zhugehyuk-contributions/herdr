@@ -63,10 +63,10 @@ enum ClientMessage {
         keybindings: ClientKeybindings,
         launch_mode: ClientLaunchMode,
     },
-    // Filler so `ObserveTerminal` lands on the mx wire tag 12. Real names, for the record
-    // (frozen by `client_message_wire_tags_preserve_protocol_15_order`, src/protocol/wire.rs:1448):
-    // Input, ClipboardImage, Resize, Detach, AttachTerminal, AttachScroll, InputEvents,
-    // OpenSettings, OpenKeybindHelp, Ping, RequestFullFrame.
+    // Filler so `RequestFullFrame` lands on the mx wire tag 11 and `ObserveTerminal` on 12. Real
+    // names, for the record (frozen by `client_message_wire_tags_preserve_protocol_15_order`,
+    // src/protocol/wire.rs:1447-1448): Input, ClipboardImage, Resize, Detach, AttachTerminal,
+    // AttachScroll, InputEvents, OpenSettings, OpenKeybindHelp, Ping.
     V1,
     V2,
     V3,
@@ -77,7 +77,8 @@ enum ClientMessage {
     V8,
     V9,
     V10,
-    V11,
+    /// `src/protocol/wire.rs:462-467` — a UNIT variant: tag byte and nothing else.
+    RequestFullFrame,
     /// `src/protocol/wire.rs:471-474` — exactly one field, a `String`.
     ObserveTerminal {
         target: String,
@@ -172,6 +173,9 @@ fn main() {
             launch_mode: ClientLaunchMode::TerminalAttach,
         },
     );
+    // RequestFullFrame carries no fields at all — the vector below is the proof that its encoding
+    // is one byte, so a copy-paste of the neighbouring `ObserveTerminal` shape cannot slip in.
+    emit("REQUEST_FULL_FRAME", &ClientMessage::RequestFullFrame);
     // ObserveTerminal is what actually starts the stream; the string-length boundaries below are
     // the ones a hand-rolled bincode `String` writer gets wrong.
     emit(
@@ -245,6 +249,19 @@ fn main() {
             height: 30,
             full: true,
             bytes: b"\x1b[2J\x1b[1;1H".to_vec(),
+        }),
+    );
+    // The same geometry with `full: false`: a diff, i.e. a frame that is only correct when applied
+    // to the baseline the frame before it left behind. That state dependency is what makes screen
+    // resynchronization a separate problem from frame resynchronization.
+    emit(
+        "TERMINAL_SMALL_DIFF",
+        &ServerMessage::Terminal(TerminalFrame {
+            seq: 2,
+            width: 100,
+            height: 30,
+            full: false,
+            bytes: b"\x1b[1;1Hhi".to_vec(),
         }),
     );
     emit(

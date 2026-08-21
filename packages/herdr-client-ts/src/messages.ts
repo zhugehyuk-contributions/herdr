@@ -137,6 +137,52 @@ export function encodeObserveTerminalFrame(target: string): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
+// Client -> Server: RequestFullFrame
+// ---------------------------------------------------------------------------
+
+/**
+ * Encodes `ClientMessage::RequestFullFrame` (variant 11) exactly as bincode would: **one byte**.
+ *
+ * ## What it is for
+ *
+ * `ServerMessage::Terminal` is a diff stream, not a sequence of independent events —
+ * `TerminalFrame.full` (`src/protocol/wire.rs:771-780`) is false for an incremental frame, which is
+ * only correct against the baseline the frame before it left behind. So a `Terminal` frame that is
+ * dropped (corrupt payload, failed inflate) desynchronizes the *screen* even though the length
+ * prefix kept the *wire* in sync. Its declaration says so (`src/protocol/wire.rs:462-467`): the
+ * server "resets the per-client render baseline so its next render is a full `Frame`, recovering
+ * from a desync without showing wrong cells."
+ *
+ * The server path, end to end, for the `TerminalAnsi` encoding this codec speaks:
+ * `src/server/client_transport.rs:873` -> `ServerEvent::ClientRequestFullFrame` ->
+ * `src/server/headless.rs:3052` -> `Client::request_full_redraw` (`src/server/clients.rs:149`) ->
+ * `ClientRenderState::reset_baseline` (`src/server/render_stream.rs:36`), whose `TerminalAnsi` arm
+ * installs a fresh `BlitEncoder`. `BlitEncoder::encode_inner` then derives
+ * `full = repaint || prev.is_none() || …` (`src/protocol/render_ansi.rs:88-92`), and `prev` is
+ * `None` on a fresh encoder — so the next `Terminal` for that client carries `full: true`.
+ * Cheaper than reconnecting, which would cost a new ssh exec channel and a fresh handshake.
+ *
+ * ## Shape
+ *
+ * A **unit** variant: tag, no fields, no length prefix, no trailing anything. Every neighbour in
+ * the enum carries a payload — `ObserveTerminal` (`:471-474`) is `0c 00` even for an empty target
+ * — so an encoder written by copying one of them and deleting the argument still emits a stray
+ * byte, which the server would read as the beginning of the next message.
+ *
+ * ⚠️ **mx-only**: upstream's `ClientMessage` has no `RequestFullFrame`, so this must never be sent
+ * speculatively to a peer that might not be an mx server. See `src/constants.ts:4-9` for why a
+ * matching `PROTOCOL_VERSION` does not rule that out.
+ */
+export function encodeRequestFullFrame(): Uint8Array {
+  return new ByteWriter(1).writeVarint(ClientMessageTag.RequestFullFrame).toBytes();
+}
+
+/** {@link encodeRequestFullFrame} wrapped in the `[u32 LE length][payload]` envelope: `01000000 0b`. */
+export function encodeRequestFullFrameFrame(): Uint8Array {
+  return frameMessage(encodeRequestFullFrame());
+}
+
+// ---------------------------------------------------------------------------
 // Server -> Client: Welcome, Terminal
 // ---------------------------------------------------------------------------
 
