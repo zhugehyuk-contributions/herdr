@@ -34,6 +34,8 @@ herdr status server
 herdr status client
 ```
 
+`herdr status` は、このマシン上のすべてのセッション(実行中・停止中の両方)を `sessions:` テーブルとして併せて表示します。各セッションのプロトコル、互換性、バージョンが並び、`*` は上の `server:` ブロックが指しているセッションを示します。
+
 API スキーマコマンド:
 
 ```bash
@@ -81,13 +83,15 @@ compinit
 ```bash
 herdr server
 herdr server stop
+herdr server live-handoff
+herdr live-handoff [--json]
 herdr server reload-config
 herdr server agent-manifests [--json]
 herdr server update-agent-manifests [--json]
 herdr server reload-agent-manifests
 ```
 
-`herdr server` はヘッドレスサーバーを明示的に起動します。監視下やサービス的な構成で使ってください。`reload-config` はペインを再起動せずにリロード可能な設定を適用します。`agent-manifests` は、アクティブなエージェント検出マニフェストのソース、キャッシュされたリモートバージョン、直近のリモート更新結果を表示します。`update-agent-manifests` はリモートマニフェストの更新を即座に取得し、実行中のサーバーにリロードして、更新後のマニフェスト状態を表示します。生のステータスレスポンスが欲しいときは `--json` を渡してください。`reload-agent-manifests` は、ローカルオーバーライドの編集後にエージェント検出マニフェストを実行中のサーバーにリロードします。
+`herdr server` はヘッドレスサーバーを明示的に起動します。監視下やサービス的な構成で使ってください。`reload-config` はペインを再起動せずにリロード可能な設定を適用します。`agent-manifests` は、アクティブなエージェント検出マニフェストのソース、キャッシュされたリモートバージョン、直近のリモート更新結果を表示します。`update-agent-manifests` はリモートマニフェストの更新を即座に取得し、実行中のサーバーにリロードして、更新後のマニフェスト状態を表示します。生のステータスレスポンスが欲しいときは `--json` を渡してください。`reload-agent-manifests` は、ローカルオーバーライドの編集後にエージェント検出マニフェストを実行中のサーバーにリロードします。 `herdr server live-handoff` は、実行中サーバーのライブペインを現在のバイナリから起動した新しいサーバーへ引き継ぎます。`herdr live-handoff` はそのトップレベル版で、実行中のすべてのセッションを 1 つずつ順番に引き継ぎ、セッションごとの結果を表示し、いずれかが失敗すると非ゼロで終了します。グローバルな `--session <name>` を付けると、そのセッションだけに絞れます。
 
 ## 通知
 
