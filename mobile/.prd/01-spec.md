@@ -47,6 +47,7 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
 | `05-orca-transport.md` | orca transport 생존성 이식표 (L1~L7 · X1~X6 · P1) |
 | `06-open-decisions.md` | 오너가 정할 것 4개 + 이전 판 대비 변경 |
 | `08-orca-port-map.md` | **orca 와꾸 파일 단위 이식 지도** — 라이선스 판정(MIT) · copy/port/rewrite/drop 등급 · L1~X6·P1을 orca `file:line`으로 매핑 · 착수 순서 |
+| `09-review-followups.md` | **외부 리뷰 후속 추적 큐** — 수리분 · **기각된 후보(근거 포함)** · 범위 밖 확정분 · 레포 규약 위반 |
 | `07-research-2026-08-22.md` | 위 6편이 정리해 낸 원본 조사 전문. 근거를 더 파고들 때만. **충돌하면 01~06이 이긴다** |
 | `assets/mockup.html` | UI 목업 7화면 + 계획 요약. **발행된 아티팩트의 소스** — 고칠 땐 이 파일을 편집해 같은 URL로 재발행 (https://claude.ai/code/artifact/5d23d155-8fe3-4be7-a0f7-dd2050d39806) |
 | `assets/mockup-v5-original.html` | v0.6.8 기준 초판. 줄번호·계획이 낡았다, 화면 설계 참고용 |
