@@ -34,7 +34,7 @@ herdr status server
 herdr status client
 ```
 
-`herdr status` は、このマシン上のすべてのセッション(実行中・停止中の両方)を `sessions:` テーブルとして併せて表示します。各セッションのプロトコル、互換性、バージョンが並び、`*` は上の `server:` ブロックが指しているセッションを示します。
+`herdr status` は、herdr の設定ディレクトリ配下にあるすべてのセッション(実行中・停止中の両方)を `sessions:` テーブルとして併せて表示します。各セッションのプロトコル、互換性、バージョンが並び、上の `server:` ブロックが指すサーバーがその中にある場合は `*` で示します。ない場合(`HERDR_SOCKET_PATH` がセッションツリーの外を指しているとき)は、存在しない目印を約束しないよう見出しから `(* = active)` を落とします。テーブル全体でひとつのプローブ予算を共有するため、実行中でも応答しないセッションはコマンドを止めずに `unknown` と表示されます。
 
 API スキーマコマンド:
 
@@ -84,14 +84,14 @@ compinit
 herdr server
 herdr server stop
 herdr server live-handoff
-herdr live-handoff [--json]
+herdr live-handoff [--session <name>] [--json]
 herdr server reload-config
 herdr server agent-manifests [--json]
 herdr server update-agent-manifests [--json]
 herdr server reload-agent-manifests
 ```
 
-`herdr server` はヘッドレスサーバーを明示的に起動します。監視下やサービス的な構成で使ってください。`reload-config` はペインを再起動せずにリロード可能な設定を適用します。`agent-manifests` は、アクティブなエージェント検出マニフェストのソース、キャッシュされたリモートバージョン、直近のリモート更新結果を表示します。`update-agent-manifests` はリモートマニフェストの更新を即座に取得し、実行中のサーバーにリロードして、更新後のマニフェスト状態を表示します。生のステータスレスポンスが欲しいときは `--json` を渡してください。`reload-agent-manifests` は、ローカルオーバーライドの編集後にエージェント検出マニフェストを実行中のサーバーにリロードします。 `herdr server live-handoff` は、実行中サーバーのライブペインを現在のバイナリから起動した新しいサーバーへ引き継ぎます。`herdr live-handoff` はそのトップレベル版で、実行中のすべてのセッションを 1 つずつ順番に引き継ぎ、セッションごとの結果を表示し、いずれかが失敗すると非ゼロで終了します。グローバルな `--session <name>` を付けると、そのセッションだけに絞れます。
+`herdr server` はヘッドレスサーバーを明示的に起動します。監視下やサービス的な構成で使ってください。`reload-config` はペインを再起動せずにリロード可能な設定を適用します。`agent-manifests` は、アクティブなエージェント検出マニフェストのソース、キャッシュされたリモートバージョン、直近のリモート更新結果を表示します。`update-agent-manifests` はリモートマニフェストの更新を即座に取得し、実行中のサーバーにリロードして、更新後のマニフェスト状態を表示します。生のステータスレスポンスが欲しいときは `--json` を渡してください。`reload-agent-manifests` は、ローカルオーバーライドの編集後にエージェント検出マニフェストを実行中のサーバーにリロードします。 `herdr server live-handoff` は、実行中サーバーのライブペインを現在のバイナリから起動した新しいサーバーへ引き継ぎます。`herdr live-handoff` はそのトップレベル版で、これから対象にするセッションを先に列挙してから、実行中のセッションを 1 つずつ順番に引き継ぎ、最後に `N ok, N skipped, N failed` の要約を表示します。アプリモード(`herdr --no-session`)で動いているセッションはライブ引き継ぎができないため、失敗ではなくスキップとして数えます。終了コードが非ゼロになるのは実際に失敗したセッションがあるときだけで、`--session <name>` に存在しないセッション名を渡した場合は 2 で終了します。`--session <name>` はそのセッションだけに絞りますが、環境由来のセッション指定(`HERDR_SESSION`、`HERDR_SOCKET_PATH`)では絞られません。ペインの中から実行してもマシン全体が対象になります。
 
 ## 通知
 
