@@ -52,7 +52,6 @@ fn experiment_toggle_action(state: &AppState, idx: usize) -> Option<SettingsActi
     }
 }
 
-
 impl App {
     pub(crate) fn handle_settings_key(&mut self, key: KeyEvent) {
         let previous_section = self.state.settings.section;

@@ -4974,9 +4974,7 @@ mod tests {
                 // Clamped to the local block: the insert slot never points into the remote block.
                 let insert = match drop_target.expect("preview carries an insert slot") {
                     crate::app::state::WorkspaceDropTarget::Before(idx) => idx,
-                    crate::app::state::WorkspaceDropTarget::End => {
-                        dragging.app.workspaces.len()
-                    }
+                    crate::app::state::WorkspaceDropTarget::End => dragging.app.workspaces.len(),
                 };
                 assert!(
                     insert <= local_block_end,

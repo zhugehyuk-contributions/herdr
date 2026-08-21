@@ -53,8 +53,7 @@ pub(crate) use self::{
     modal::{
         handle_global_menu_key, handle_keybind_help_key, handle_navigator_key,
         insert_keybind_help_query_text, insert_navigator_search_text, insert_rename_input_text,
-        open_keybind_help,
-        open_new_workspace_dialog,
+        open_keybind_help, open_new_workspace_dialog,
     },
     navigate::{
         terminal_direct_indexed_navigation_action, terminal_direct_non_indexed_navigation_action,

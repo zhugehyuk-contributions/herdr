@@ -1785,13 +1785,10 @@ mod tests {
         // The viewport clips the third workspace's card, so the bottom-most slot targets
         // Before(2) (the first off-screen workspace), drawn just below the last VISIBLE card —
         // never at the footer.
-        let (_, bottom_slot) = *crate::ui::workspace_drop_slots(
-            &app.state,
-            cards,
-            app.state.workspace_list_rect(),
-        )
-        .last()
-        .unwrap();
+        let (_, bottom_slot) =
+            *crate::ui::workspace_drop_slots(&app.state, cards, app.state.workspace_list_rect())
+                .last()
+                .unwrap();
 
         let last = cards.last().unwrap().rect;
         assert_eq!(bottom_slot, last.y + last.height);

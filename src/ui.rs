@@ -97,10 +97,9 @@ pub(crate) use self::{
         collapsed_sidebar_sections, collapsed_sidebar_toggle_rect, compute_workspace_card_areas,
         compute_workspace_list_areas_full, expanded_sidebar_sections, expanded_sidebar_toggle_rect,
         normalized_workspace_scroll, sidebar_section_divider_rect, workspace_drop_slots,
-        workspace_group_chevron_rect, workspace_list_entries,
-        workspace_list_entries_expanded, workspace_list_rect,
-        workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
-        AgentPanelEntry, HostBannerArea, WorkspaceListEntry,
+        workspace_group_chevron_rect, workspace_list_entries, workspace_list_entries_expanded,
+        workspace_list_rect, workspace_list_scroll_metrics, workspace_list_scrollbar_rect,
+        workspace_parent_group_state, AgentPanelEntry, HostBannerArea, WorkspaceListEntry,
     },
 };
 // Test-only geometry oracles: after the #53 view-geometry refactor the production render/hit-test

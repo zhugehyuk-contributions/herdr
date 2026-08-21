@@ -720,7 +720,8 @@ fn dispatch_composited_input(
     // the SAME client action the mouse path uses. Only a single bare Key event is considered; any
     // multi-event/paste/unmatched input falls through to Forward so terminal input is preserved.
     if let [crate::raw_input::RawInputEvent::Key(key)] = events.as_slice() {
-        if let Some(dispatch) = dispatch_composited_key_input(key.clone(), &data, compositor, model) {
+        if let Some(dispatch) = dispatch_composited_key_input(key.clone(), &data, compositor, model)
+        {
             return dispatch;
         }
     }
@@ -5230,7 +5231,6 @@ async fn run_client_loop(
     if will_query_host_cell_size {
         query_host_cell_size();
     }
-
 
     // Spawn the resize poller thread.
     let resize_quit = should_quit.clone();
