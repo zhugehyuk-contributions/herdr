@@ -73,7 +73,14 @@ M0-b만 머지 이후 additive 분리 PR로 upstream에 제안한다(임계 경�
 **단독 가치**: #70이 원래 호소하던 "리모트 N대가 클라 업그레이드 한 번에 전멸"이 앱과 무관하게 해소된다.
 **됐다** = 태그 테이블이 바뀌면 CI red · 서버 v20에 v19 클라이언트가 붙어 정상 렌더 · 게이트 green · 픽스처 커밋.
 
-### M1 — `packages/herdr-client-ts` (헤드리스 코어, 폰 없음)
+### M1 — `packages/herdr-client-ts` (헤드리스 코어, 폰 없음) — **착수됨 2026-08-22**
+
+> **진행**: 와이어 코덱 슬라이스 완료(`a102abb9`) — envelope · `Hello` 인코드 · `Welcome`/`Terminal` 디코드 ·
+> incremental `FrameReader` · `assertWelcomeAccepted`(error→version→**encoding**). vitest 59 green, `tsc --noEmit` 0.
+> RN/Hermes 호환을 타입으로 강제(`"types": []`, `Buffer`/`TextEncoder` 없이 `Uint8Array`+손구현 UTF-8), `seq`는 `bigint`.
+> `Hello` 바이트를 두 경로(실제 bincode · Rust 하네스 손유도)로 독립 유도해 일치 확인.
+> **남은 것**: ssh 어댑터 인터페이스 · JSON API 클라이언트(요청 1개=채널 1개 캡슐화) · observe 세션 상태기계 ·
+> 노드에서 실서버 대상 종단 검증(아래 "됐다").
 ssh 어댑터 인터페이스(노드=`ssh2`, RN=네이티브 모듈) · JSON API 클라이언트(요청 1개=채널 1개 계약 캡슐화) ·
 최소 와이어 코덱(envelope / `Hello` 인코드 / `Welcome`·`Terminal`·`ServerShutdown`·`Pong` 디코드) ·
 observe 세션 상태기계.

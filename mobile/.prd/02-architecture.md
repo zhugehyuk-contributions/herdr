@@ -69,6 +69,14 @@ Hello{ v20, cols, rows, cell_px, TerminalAnsi, …, launch=TerminalAttach }
 델타 재구성이 전부 빠진다. 레포 안에 코덱 참조 구현이 있다 — `tests/server_headless.rs:154-250`이
 프레이밍과 bincode varint를 평문으로 손구현해 둔 것 `[v]`.
 
+> **프레임 크기 상한은 값이 아니라 규칙이다 (2026-08-22 확인 — 앱이 틀리기 쉬운 곳).**
+> 서버는 프레임마다 고른다 — 그래픽이 없으면 `MAX_FRAME_SIZE` 2 MiB, 있으면 `MAX_GRAPHICS_FRAME_SIZE`
+> **32 MiB** (`src/server/headless.rs:4231-4235` · `wire.rs:27,32` `[v]`). 프로덕션 클라이언트가 같은 규칙을
+> 미러하고 그 함수의 주석이 위험을 명시한다 — *"every reader must use the larger cap when kitty graphics are
+> enabled — otherwise a large graphics frame fails framing and flaps the connection"* (`src/client/mod.rs:6483-6491` `[v]`).
+> **그리고 이 경로엔 그래픽이 온다**: kitty 그래픽은 별도 메시지가 아니라 위에서 본 대로 **ANSI 바이트 안에
+> 인라인**된다. → 앱이 2 MiB(또는 임의의 중간값)를 하드코딩하면 **합법 프레임을 거절하고 연결이 플랩한다.**
+
 대가는 xterm 종속이다. 앱이 셀을 자기 UI로 재해석할 수 없다([`06-open-decisions.md`](./06-open-decisions.md) 결정 1).
 
 ### 2.3 쓰기는 JSON API — 와이어로 쓰지 않는다
