@@ -3,6 +3,7 @@ import {
   ClientLaunchMode,
   DEFAULT_MAX_FRAME_SIZE,
   FrameReader,
+  LENGTH_PREFIX_BYTES,
   OversizedFrameError,
   RUST_MAX_FRAME_SIZE,
   RUST_MAX_GRAPHICS_FRAME_SIZE,
@@ -41,6 +42,66 @@ describe("frameMessage", () => {
     expect(toHex(decoded!)).toBe(toHex(payload));
   });
 });
+
+interface AllocationTally {
+  allocations: number;
+  bytes: number;
+}
+
+/**
+ * Counts the bytes {@link FrameReader} actually allocates and copies while it assembles a frame.
+ *
+ * Both of the reader's copy sites are counted: `new Uint8Array(n)` (through a construct trap) and
+ * `TypedArray.prototype.slice` (through a temporary prototype patch). Views — `subarray`, the
+ * `DataView` over the length prefix — allocate nothing and are deliberately not counted. Every
+ * allocation on this path is filled immediately, so allocated bytes *are* copied bytes.
+ */
+function tallyAllocations(body: () => void): AllocationTally {
+  const real = globalThis.Uint8Array;
+  const realSlice = real.prototype.slice;
+  const tally: AllocationTally = { allocations: 0, bytes: 0 };
+
+  globalThis.Uint8Array = new Proxy(real, {
+    construct(target, args, newTarget) {
+      const instance = Reflect.construct(target, args, newTarget) as Uint8Array;
+      tally.allocations += 1;
+      tally.bytes += instance.byteLength;
+      return instance;
+    },
+  }) as Uint8ArrayConstructor;
+  real.prototype.slice = function slice(this: Uint8Array, start?: number, end?: number) {
+    const out = realSlice.call(this, start, end);
+    tally.allocations += 1;
+    tally.bytes += out.byteLength;
+    return out;
+  } as typeof realSlice;
+
+  try {
+    body();
+  } finally {
+    globalThis.Uint8Array = real;
+    real.prototype.slice = realSlice;
+  }
+  return tally;
+}
+
+/** Feeds one framed payload through a reader in fixed-size chunks and returns what that cost. */
+function assemblyCost(payloadBytes: number, chunkBytes: number): AllocationTally {
+  const framed = new Uint8Array(LENGTH_PREFIX_BYTES + payloadBytes);
+  new DataView(framed.buffer).setUint32(0, payloadBytes, true);
+  const reader = new FrameReader();
+
+  const tally = tallyAllocations(() => {
+    let emitted = 0;
+    for (let at = 0; at < framed.length; at += chunkBytes) {
+      emitted += reader.push(framed.subarray(at, at + chunkBytes)).length;
+    }
+    if (emitted !== 1) {
+      throw new Error(`expected exactly one frame, got ${emitted}`);
+    }
+  });
+  return tally;
+}
 
 describe("FrameReader", () => {
   it("emits exactly one frame when fed one byte at a time", () => {
@@ -139,6 +200,64 @@ describe("FrameReader", () => {
       expect(error).toBeInstanceOf(OversizedFrameError);
       expect((error as OversizedFrameError).decodedBefore).toHaveLength(1);
     }
+  });
+
+  /**
+   * The ceiling is only a ceiling if `claimed > maxFrameSize` can be true. `NaN` makes every
+   * comparison false, so an advertised cap silently becomes no cap at all and a `0xffffffff`
+   * prefix buffers forever — an OOM on a phone, reached without a single error. `Infinity` and a
+   * negative or fractional value are the same class of caller bug, so all of them die at
+   * construction rather than at 4 GiB.
+   */
+  it("rejects a maxFrameSize that cannot act as a ceiling", () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
+      expect(
+        () => new FrameReader({ maxFrameSize: bad }),
+        `maxFrameSize=${bad} must be rejected`,
+      ).toThrow(/maxFrameSize/);
+    }
+    // Non-numbers reach here from untyped JS callers (config files, RN bridges).
+    expect(() => new FrameReader({ maxFrameSize: "1024" as unknown as number })).toThrow(
+      /maxFrameSize/,
+    );
+  });
+
+  it("still accepts the legal ceilings, including the degenerate zero", () => {
+    expect(new FrameReader({ maxFrameSize: 0 }).push(fromHex("00000000"))).toHaveLength(1);
+    expect(() => new FrameReader({ maxFrameSize: RUST_MAX_GRAPHICS_FRAME_SIZE })).not.toThrow();
+    expect(() => new FrameReader({})).not.toThrow();
+    expect(() => new FrameReader({ maxFrameSize: undefined })).not.toThrow();
+  });
+
+  /**
+   * The companion invariant to the one above: with a ceiling that *is* a ceiling, a `0xffffffff`
+   * prefix costs four buffered bytes and a throw — never a 4 GiB accumulator.
+   */
+  it("never buffers a frame past a ceiling it was told to enforce", () => {
+    const reader = new FrameReader({ maxFrameSize: 1024 });
+    expect(() => reader.push(fromHex("ffffffff"))).toThrow(OversizedFrameError);
+    expect(reader.bufferedBytes).toBe(4);
+  });
+
+  /**
+   * A frame is assembled from socket chunks, and the accumulator used to rebuild the *whole*
+   * pending buffer on every chunk: `new Uint8Array(pending + chunk)` plus a full copy, with
+   * `consumed` staying 0 until the payload completes. That is Θ(S²/c) — for the 32 MiB the default
+   * ceiling admits (a legal Kitty-graphics frame, `src/constants.ts:60-77`) and a ~64 KiB ssh
+   * payload, gigabytes of memcpy for one frame, on a phone. Measured here rather than asserted in
+   * prose: doubling the payload must double the work, not quadruple it.
+   */
+  it("assembles a frame in work linear in its size, not quadratic", () => {
+    const CHUNK = 4 * 1024;
+    const small = assemblyCost(256 * 1024, CHUNK);
+    const large = assemblyCost(512 * 1024, CHUNK);
+
+    expect(
+      large.bytes / small.bytes,
+      `256 KiB cost ${small.bytes} bytes, 512 KiB cost ${large.bytes}`,
+    ).toBeLessThan(3);
+    // The absolute budget: gather the payload once, hand it out once.
+    expect(large.bytes).toBeLessThan(4 * 512 * 1024);
   });
 
   it("mirrors the server's per-frame cap rule", () => {
@@ -355,6 +474,37 @@ describe("ServerMessageReader", () => {
 
     expect(messages.map((m) => m.type)).toEqual(["terminal"]);
     expect(seen.map((error) => error.code)).toEqual(["corrupt"]);
+  });
+
+  /**
+   * The `cf05b11b` regression, resurrected through the callback path.
+   *
+   * `onUndecodable` is diagnostics — a logger, a metric, a `console.warn` that a bundler replaced.
+   * Called unguarded inside the decode loop, one throw from it aborts the loop, and `FrameReader`
+   * has *already consumed the whole batch*: every frame behind the skipped one is gone for good,
+   * which is exactly the data loss "skip and continue" exists to prevent. So the callback is
+   * isolated — and its failure is counted, not swallowed.
+   */
+  it("keeps decoding the rest of the chunk when onUndecodable throws", () => {
+    const reader = new ServerMessageReader({
+      onUndecodable: () => {
+        throw new Error("logger blew up");
+      },
+    });
+
+    const messages = reader.push(glue(NOTIFY_FRAME, TERMINAL_FRAME, COMPRESSED_FRAME, WELCOME_FRAME));
+
+    expect(messages.map((m) => m.type)).toEqual(["terminal", "welcome"]);
+    expect(reader.undecodableCount).toBe(2);
+    expect(reader.callbackFailureCount).toBe(2);
+    expect((reader.lastCallbackFailure as Error).message).toBe("logger blew up");
+
+    // The reader itself is untouched: the next chunk decodes normally.
+    expect(reader.push(TERMINAL_FRAME).map((m) => m.type)).toEqual(["terminal"]);
+
+    reader.reset();
+    expect(reader.callbackFailureCount).toBe(0);
+    expect(reader.lastCallbackFailure).toBeUndefined();
   });
 
   /**

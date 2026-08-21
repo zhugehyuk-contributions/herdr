@@ -9,6 +9,14 @@ export interface ServerMessageReaderOptions extends FrameReaderOptions {
    * Optional because it is diagnostics, not control flow: a reader without a handler still counts
    * its skips ({@link ServerMessageReader.undecodableCount}), so a dropped frame is never
    * unobservable.
+   *
+   * **It may throw and nothing breaks.** That is a guarantee, not an expectation: the call is
+   * isolated, the rest of the chunk still decodes, and the failure is counted in
+   * {@link ServerMessageReader.callbackFailureCount}. Without the isolation a `console.warn` a
+   * bundler replaced, or a logger with a bad format string, would abort the decode loop — and
+   * {@link FrameReader} has already consumed the whole batch, so every frame behind the skipped
+   * one would be gone for good. That is the exact data loss "skip and continue" exists to
+   * prevent, re-entering through the diagnostics door.
    */
   onUndecodable?: ((error: WireError) => void) | undefined;
 }
@@ -34,12 +42,19 @@ export interface ServerMessageReaderOptions extends FrameReaderOptions {
  * Skipping is never silent: a skipped frame reaches
  * {@link ServerMessageReaderOptions.onUndecodable} when one is supplied, and is counted in
  * {@link ServerMessageReader.undecodableCount} either way.
+ *
+ * ## What `push` throws
+ *
+ * Exactly one thing: the framing error from {@link FrameReader}. Nothing a caller's callback does
+ * changes that — callbacks are isolated (see {@link ServerMessageReaderOptions.onUndecodable}).
  */
 export class ServerMessageReader {
   private readonly frames: FrameReader;
   private readonly onUndecodable: ((error: WireError) => void) | undefined;
   private skipped = 0;
   private lastSkipped: WireError | undefined;
+  private callbackFailures = 0;
+  private lastCallbackError: unknown;
   /** Set once a framing error has poisoned {@link FrameReader}; rethrown verbatim after that. */
   private framingFailure: WireError | null = null;
 
@@ -66,11 +81,27 @@ export class ServerMessageReader {
     return this.lastSkipped;
   }
 
+  /**
+   * How many times {@link ServerMessageReaderOptions.onUndecodable} threw. Isolating the callback
+   * must not mean hiding its failure: a logger that throws on every frame is a real defect, and a
+   * counter at zero is what lets a caller prove it is not happening.
+   */
+  get callbackFailureCount(): number {
+    return this.callbackFailures;
+  }
+
+  /** Whatever the callback threw most recently. `unknown`, because a throw can be anything. */
+  get lastCallbackFailure(): unknown {
+    return this.lastCallbackError;
+  }
+
   /** Back to the construction state: buffer, poison and skip bookkeeping all cleared. */
   reset(): void {
     this.frames.reset();
     this.skipped = 0;
     this.lastSkipped = undefined;
+    this.callbackFailures = 0;
+    this.lastCallbackError = undefined;
     this.framingFailure = null;
   }
 
@@ -108,10 +139,23 @@ export class ServerMessageReader {
         const wire = error as WireError;
         this.skipped += 1;
         this.lastSkipped = wire;
-        this.onUndecodable?.(wire);
+        this.notifyUndecodable(wire);
         continue;
       }
       messages.push(message);
+    }
+  }
+
+  /** Diagnostics must never decide what happens to the frames behind them. */
+  private notifyUndecodable(wire: WireError): void {
+    if (this.onUndecodable === undefined) {
+      return;
+    }
+    try {
+      this.onUndecodable(wire);
+    } catch (error) {
+      this.callbackFailures += 1;
+      this.lastCallbackError = error;
     }
   }
 }

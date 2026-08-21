@@ -152,6 +152,34 @@ export function parseJsonApiResponse(line: string): JsonApiResponse {
 }
 
 /**
+ * Checks that a reply belongs to the request that is waiting for it.
+ *
+ * One request is one connection, so there is no correlation to *do* — which is exactly why a
+ * mismatched echo is worth stopping on: it cannot be a routing mistake, it can only mean the wire
+ * is not what it claims to be (a bridge multiplexing two callers, a skewed protocol, a replayed
+ * line). {@link parseJsonApiResponse} normalises a missing or non-string `id` to `""`, so without
+ * this check such a reply was accepted as a successful result for whatever was asked.
+ *
+ * One reply is exempt: a request the server could not parse is answered with `id: ""` by
+ * construction (`src/api/server.rs:159-172`, and the encode fallback at `:819`). It is the answer
+ * to this request — there is no other request on this connection — so its diagnosis must survive
+ * as a {@link JsonApiError} instead of being replaced by a complaint about correlation.
+ */
+function assertEchoedId(id: string, method: string, response: JsonApiResponse): void {
+  if (response.id === id) {
+    return;
+  }
+  if (isJsonApiError(response) && response.id === "") {
+    return;
+  }
+  throw new JsonApiProtocolError(
+    `${method} got a reply carrying id ${JSON.stringify(response.id)}, not ` +
+      `${JSON.stringify(id)}; one request is one connection, so a mismatched echo means the ` +
+      `reply belongs to something else`,
+  );
+}
+
+/**
  * One connection per request, enforced. See the file header for why that is not optional.
  *
  * Only `agent.list` and `pane.list` get named methods — the two this package proves end-to-end
@@ -167,7 +195,12 @@ export class JsonApiClient {
     this.connect = connect;
   }
 
-  /** Round-trips one request. Returns the envelope as-is; errors are values, not throws. */
+  /**
+   * Round-trips one request. Returns the envelope as-is; *server* errors are values, not throws.
+   *
+   * A reply that does not echo the request's `id` is not a server error, though — it is a broken
+   * wire, and it throws {@link JsonApiProtocolError}. See {@link assertEchoedId}.
+   */
   async call(method: string, params: Record<string, unknown> = {}): Promise<JsonApiResponse> {
     const id = `ts-${this.nextId}`;
     this.nextId += 1;
@@ -175,7 +208,9 @@ export class JsonApiClient {
     const connection = await this.connect();
     try {
       await connection.write(encodeJsonApiRequest(id, method, params));
-      return parseJsonApiResponse(await connection.readLine());
+      const response = parseJsonApiResponse(await connection.readLine());
+      assertEchoedId(id, method, response);
+      return response;
     } finally {
       connection.close();
     }

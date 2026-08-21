@@ -91,6 +91,7 @@ export {
   type JsonApiResponse,
 } from "./jsonApi.js";
 export {
+  BRIDGE_EXEC_OPTIONS,
   DEFAULT_SESSION_NAME,
   HerdrChannelKind,
   JsonApiEventStream,
@@ -107,6 +108,8 @@ export {
   type HerdrChannelClose,
   type HerdrChannelHandlers,
   type HerdrTransport,
+  type JsonApiEventStreamHandlers,
+  type JsonApiEventStreamListener,
   type RemoteBridgeCommandOptions,
   type ServerMessageChannelHandlers,
   type ServerMessageChannelOptions,

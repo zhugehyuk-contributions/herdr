@@ -26,6 +26,7 @@ import { Client, type ClientChannel, type ConnectConfig } from "ssh2";
 import type { RemoteBridgeCommandOptions } from "../transport.js";
 
 import {
+  BRIDGE_EXEC_OPTIONS,
   DEFAULT_SESSION_NAME,
   remoteBridgeCommand,
   type HerdrChannel,
@@ -171,9 +172,10 @@ export class SshHerdrTransport implements HerdrTransport {
         rejectChannel(new Error(`remote exec did not start within ${timeoutMs}ms: ${command}`));
       }, timeoutMs);
 
-      // `pty: false` mirrors the desktop client's `ssh -T` (`src/remote/unix.rs:288-296`): a pty
-      // would turn the byte pump into a line discipline and mangle every framed payload.
-      this.client.exec(command, { pty: false }, (error, stream) => {
+      // The no-pty requirement is the protocol layer's, not this file's: see
+      // `BRIDGE_EXEC_OPTIONS` (`src/transport.ts`), which is where a React Native implementer
+      // reads it. Restating it here as a literal is how the two would drift.
+      this.client.exec(command, BRIDGE_EXEC_OPTIONS, (error, stream) => {
         if (settled) {
           stream?.close();
           return;

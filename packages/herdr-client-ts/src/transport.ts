@@ -34,7 +34,11 @@
  */
 import {
   JsonApiClient,
+  JsonApiError,
+  JsonApiProtocolError,
   LineAccumulator,
+  isJsonApiError,
+  parseJsonApiResponse,
   type JsonApiConnect,
   type JsonApiConnection,
 } from "./jsonApi.js";
@@ -140,12 +144,58 @@ export interface HerdrChannel {
  * (`src/remote/unix.rs:310-316`), and for the same reason: each extra connection is another TCP
  * handshake, another key exchange and another sshd session held open on the server, on a link that
  * is a phone's LTE.
+ *
+ * ## The implementer's contract
+ *
+ * Everything below is a requirement on the *implementation*, none of it is expressible in the
+ * signatures above, and all of it is stated here rather than in `src/node/sshTransport.ts` because
+ * that file is the reference implementation, not the specification — and because a React Native
+ * native-module author (iOS libssh2/NMSSH, Android sshj) does not read it. Same reason
+ * {@link remoteBridgeCommand} lives in this file.
+ *
+ * 1. **exec without a pty** — use {@link BRIDGE_EXEC_OPTIONS}. A pty inserts a line discipline
+ *    between the bridge and the socket: CR/LF translation and echo rewrite bytes *inside* every
+ *    framed payload. The corruption is total, silent, and looks like a codec bug.
+ * 2. **Run the command string this package produced** — {@link remoteBridgeCommand}'s output,
+ *    verbatim, passed from JS to the native side. Do not rebuild it per platform: byte-identical
+ *    output is the only thing keeping `--session` placement, `shell_quote` semantics
+ *    (`src/remote/unix.rs:2088-2102`) and the `env` prefix in agreement across three
+ *    implementations, of which the Rust one is the arbiter.
+ * 3. **Pump stderr into {@link HerdrChannelClose.stderr}** — the bridges' *only* error channel.
+ *    `ensure_remote_server_running` (`src/remote/unix.rs:592-611`) writes there and exits, so a
+ *    transport that drops stderr turns every startup failure into a bare "closed".
+ * 4. **Attach handlers before the channel is observable** — they are arguments to `openChannel`
+ *    for this reason. The remote command writes the instant it starts, and a `NativeEventEmitter`
+ *    subscribed after the fact loses whatever preceded it.
+ * 5. **One connection, N channels** — as above.
+ * 6. **`onData` delivers one channel's stdout ordered and exactly once** — this is a byte stream
+ *    reassembled by a length-prefixed framer, so a reordered or duplicated delivery does not cost
+ *    "an event", it desynchronizes the framer and poisons the reader irrecoverably. Chunk
+ *    *boundaries* may be anything; chunk *order* may not, and one channel's bytes must never be
+ *    delivered on another's.
+ * 7. **The `onData` buffer belongs to the transport and is valid only for that call** — an
+ *    implementation may reuse or free it on return, so a consumer that keeps bytes copies them.
+ *    This codec does: `FrameReader.push` copies each chunk into its accumulator
+ *    (`src/framing.ts`), `LineAccumulator.push` into its own (`src/jsonApi.ts:85-101`), so no
+ *    decoded message aliases a transport buffer. The opposite convention — handing ownership to
+ *    JS — would force the native side to allocate per chunk, which is the copy this rule avoids.
+ * 8. **`write` resolves on hand-off, not on delivery** — resolution (or return, for the `void`
+ *    form) means the local send path accepted the bytes. It is not an acknowledgement that the
+ *    remote received them; this protocol has no delivery receipt, and the only end-to-end
+ *    confirmation is a reply on the same channel.
+ * 9. **A write racing a close must not throw** — `close()` is asynchronous on every real
+ *    transport (`src/node/sshTransport.ts` ends the stream, `onClose` arrives later), so a write
+ *    can legitimately land after the channel is gone. Drop it and let `onClose` report the end:
+ *    `ssh2` surfaces it as an `error` event on the stream, never a synchronous throw, and the
+ *    in-memory fake counts such writes instead of raising (`test/fakeTransport.ts:27-31`).
  */
 export interface HerdrTransport {
   openChannel(kind: HerdrChannelKind, handlers: HerdrChannelHandlers): Promise<HerdrChannel>;
   /** Tears down every open channel and the underlying connection. */
   close(): void | Promise<void>;
 }
+
+
 
 // ---------------------------------------------------------------------------
 // NDJSON over a channel
@@ -198,35 +248,71 @@ export interface TransportJsonApiOptions {
   timer?: TransportTimer;
 }
 
+/** What a resident NDJSON consumer can be told about its channel. */
+interface NdjsonListeners {
+  onLine?: ((line: string) => void) | undefined;
+  /**
+   * The channel failed: it died remotely, the line decoder rejected the bytes, or a pull timed
+   * out. Fires at most once, and never for a close the caller asked for.
+   */
+  onError?: ((error: Error) => void) | undefined;
+  /** The channel ended, from either side. Fires exactly once, with the transport's own detail. */
+  onClose?: ((close: HerdrChannelClose) => void) | undefined;
+}
+
 /**
  * Reads newline-delimited lines off a channel, with both a pull (`nextLine`) and a push
  * (`onLine`) face because the two API lifetimes need different ones: a request/response call pulls
  * exactly one line, a subscription is pushed lines forever.
  *
  * Lines that arrive before anyone asks are queued, never dropped — see the note on
- * {@link HerdrChannelHandlers} about why bytes can beat the caller.
+ * {@link HerdrChannelHandlers} about why bytes can beat the caller. A resident consumer therefore
+ * starts in pull mode (`deferLines`), reads its handshake line, and only then switches to push
+ * with {@link NdjsonChannel.startPushing}; nothing that arrived in between is lost.
+ *
+ * Every listener call is isolated. `ingest` is invoked straight from the transport's `onData`,
+ * which the Node implementation calls from an `ssh2` `data` event, so a listener that throws would
+ * otherwise drop the rest of that chunk's lines *and* send an exception into an EventEmitter.
+ * Isolation is not silence: failures are counted.
  */
 class NdjsonChannel {
   private readonly lines = new LineAccumulator();
   private readonly queue: string[] = [];
+  private listeners: NdjsonListeners = {};
   private channel: HerdrChannel | null = null;
   private failure: Error | null = null;
   private waiter: ((line: string) => void) | null = null;
   private waiterReject: ((error: Error) => void) | null = null;
   private push: ((line: string) => void) | null = null;
+  private errorReported = false;
+  private closedByCaller = false;
+  private callbackFailures = 0;
+  private lastCallbackError: unknown;
 
   static async open(
     transport: HerdrTransport,
     kind: HerdrChannelKind,
-    onLine?: (line: string) => void,
+    listeners: NdjsonListeners = {},
+    deferLines = false,
   ): Promise<NdjsonChannel> {
     const self = new NdjsonChannel();
-    self.push = onLine ?? null;
+    self.listeners = listeners;
+    self.push = deferLines ? null : listeners.onLine ?? null;
     self.channel = await transport.openChannel(kind, {
       onData: (chunk) => self.ingest(chunk),
       onClose: (close) => self.finish(close),
     });
     return self;
+  }
+
+  /** How many times a listener threw. Zero is the number a caller should be able to check. */
+  get callbackFailureCount(): number {
+    return this.callbackFailures;
+  }
+
+  /** Whatever a listener threw most recently. `unknown`, because a throw can be anything. */
+  get lastCallbackFailure(): unknown {
+    return this.lastCallbackError;
   }
 
   private ingest(chunk: Uint8Array): void {
@@ -238,23 +324,41 @@ class NdjsonChannel {
       return;
     }
     for (const line of decoded) {
-      if (this.push !== null) {
-        this.push(line);
-        continue;
-      }
-      const deliver = this.waiter;
-      if (deliver !== null) {
-        this.waiter = null;
-        this.waiterReject = null;
-        deliver(line);
-      } else {
-        this.queue.push(line);
-      }
+      this.deliver(line);
+    }
+  }
+
+  private deliver(line: string): void {
+    if (this.push !== null) {
+      this.notify(this.push, line);
+      return;
+    }
+    const waiting = this.waiter;
+    if (waiting !== null) {
+      this.waiter = null;
+      this.waiterReject = null;
+      waiting(line);
+    } else {
+      this.queue.push(line);
+    }
+  }
+
+  /** Calls a listener without letting its failure escape into the transport's event dispatch. */
+  private notify<T>(handler: ((value: T) => void) | null | undefined, value: T): void {
+    if (handler === null || handler === undefined) {
+      return;
+    }
+    try {
+      handler.call(this.listeners, value);
+    } catch (error) {
+      this.callbackFailures += 1;
+      this.lastCallbackError = error;
     }
   }
 
   private finish(close: HerdrChannelClose): void {
     this.fail(close.error ?? new Error(describeClose("API bridge channel closed", close)));
+    this.notify(this.listeners.onClose, close);
   }
 
   private fail(error: Error): void {
@@ -263,6 +367,11 @@ class NdjsonChannel {
     this.waiter = null;
     this.waiterReject = null;
     reject?.(this.failure);
+    // A close the caller asked for is not a failure to report back to it; `onClose` covers that.
+    if (!this.errorReported && !this.closedByCaller) {
+      this.errorReported = true;
+      this.notify(this.listeners.onError, this.failure);
+    }
   }
 
   write(line: string): void | Promise<void> {
@@ -293,7 +402,20 @@ class NdjsonChannel {
     });
   }
 
+  /**
+   * Switches from pull to push mode: `first` (the line already consumed to check a handshake) and
+   * then everything queued behind it, in arrival order.
+   */
+  startPushing(first: string): void {
+    this.push = this.listeners.onLine ?? null;
+    this.notify(this.push, first);
+    while (this.queue.length > 0) {
+      this.notify(this.push, this.queue.shift() as string);
+    }
+  }
+
   close(): void {
+    this.closedByCaller = true;
     this.channel?.close();
   }
 }
@@ -335,6 +457,63 @@ export function createTransportJsonApiClient(
 }
 
 /**
+ * What a subscriber can be told about its subscription. A bare `onLine` function is still accepted
+ * everywhere this type is, and means "line handler only".
+ */
+export interface JsonApiEventStreamHandlers {
+  /** Every line the subscription produces, the acknowledgement included. */
+  onLine(line: string): void;
+  /**
+   * The channel died: the ssh channel dropped, the remote `herdr` restarted, the phone lost LTE.
+   * Fires at most once, and not for a {@link JsonApiEventStream.close} the subscriber called.
+   *
+   * Without this a subscriber has no way to learn that its subscription is gone — `onLine` simply
+   * stops, which is indistinguishable from a quiet system, and the UI freezes on stale state
+   * forever. This is the signal a reconnect is built on.
+   */
+  onError?(error: Error): void;
+  /** The channel ended, from either side, with whatever the transport could observe about why. */
+  onClose?(close: HerdrChannelClose): void;
+}
+
+export type JsonApiEventStreamListener =
+  | ((line: string) => void)
+  | JsonApiEventStreamHandlers;
+
+/** `ResponseResult::SubscriptionStarted` (`src/api/schema/response.rs:191`), as it hits the wire. */
+const SUBSCRIPTION_STARTED = "subscription_started";
+
+/**
+ * Checks the one line that decides whether a subscription exists.
+ *
+ * `stream_subscriptions` builds every subscription first and answers exactly once before it starts
+ * streaming: `SuccessResponse { result: SubscriptionStarted }` if all of them were accepted
+ * (`src/api/server.rs:679-686`), or the `ErrorResponse` from `ActiveSubscription::new`
+ * (`src/api/subscriptions.rs:114-120`) written as one line before the connection is dropped
+ * (`src/api/server.rs:663-676`). The server's own test asserts that shape
+ * (`src/api/server.rs:1292`). So the first line is a decidable acknowledgement, and reading it is
+ * the difference between a subscription and a handle to nothing.
+ */
+function assertSubscriptionStarted(id: string, line: string): void {
+  const response = parseJsonApiResponse(line);
+  if (isJsonApiError(response)) {
+    throw new JsonApiError("events.subscribe", response.error.code, response.error.message);
+  }
+  if (response.id !== id) {
+    throw new JsonApiProtocolError(
+      `events.subscribe was acknowledged for id ${JSON.stringify(response.id)}, not ` +
+        `${JSON.stringify(id)}`,
+    );
+  }
+  if (response.result.type !== SUBSCRIPTION_STARTED) {
+    throw new JsonApiProtocolError(
+      `events.subscribe expected a \`${SUBSCRIPTION_STARTED}\` acknowledgement, got ` +
+        `\`${response.result.type}\``,
+    );
+  }
+}
+
+/**
  * The resident NDJSON channel: `events.subscribe` and nothing else.
  *
  * Separate from {@link transportJsonApiConnect} because the server treats it as a different shape
@@ -350,21 +529,55 @@ export class JsonApiEventStream {
   }
 
   /**
-   * Opens the channel and sends the `events.subscribe` request. Returns as soon as the request is
-   * written; the first line the server sends back is the `subscription_started` acknowledgement,
-   * delivered through `onLine` like any other.
+   * Opens the channel, sends `events.subscribe`, and **waits for the server to accept it**.
+   *
+   * Resolving therefore means the subscription exists. It used to mean only that the request had
+   * been written, so a rejected subscription — or a bridge that died on the way up — still handed
+   * back a live-looking stream that would never produce a line.
+   *
+   * The acknowledgement is forwarded to `onLine` like any other line, so a subscriber that logs
+   * the stream sees exactly what it saw before the check existed.
    */
   static async subscribe(
     transport: HerdrTransport,
     subscriptions: ReadonlyArray<{ type: string } & Record<string, unknown>>,
-    onLine: (line: string) => void,
+    listener: JsonApiEventStreamListener,
     id = "ts-events",
+    options: TransportJsonApiOptions = {},
   ): Promise<JsonApiEventStream> {
-    const ndjson = await NdjsonChannel.open(transport, HerdrChannelKind.ApiStream, onLine);
-    await ndjson.write(
-      `${JSON.stringify({ id, method: "events.subscribe", params: { subscriptions } })}\n`,
-    );
+    const handlers: JsonApiEventStreamHandlers =
+      typeof listener === "function" ? { onLine: listener } : listener;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_LINE_TIMEOUT_MS;
+    const timer = options.timer ?? hostTimer;
+
+    // Deferred push: the acknowledgement has to be *read*, and anything the server sends behind it
+    // queues meanwhile rather than racing past the handler.
+    const ndjson = await NdjsonChannel.open(transport, HerdrChannelKind.ApiStream, handlers, true);
+
+    let acknowledgement: string;
+    try {
+      await ndjson.write(
+        `${JSON.stringify({ id, method: "events.subscribe", params: { subscriptions } })}\n`,
+      );
+      acknowledgement = await ndjson.nextLine(timeoutMs, timer);
+      assertSubscriptionStarted(id, acknowledgement);
+    } catch (error) {
+      ndjson.close();
+      throw error;
+    }
+
+    ndjson.startPushing(acknowledgement);
     return new JsonApiEventStream(ndjson);
+  }
+
+  /** How many times a subscriber callback threw. Isolated, but never hidden. */
+  get callbackFailureCount(): number {
+    return this.ndjson.callbackFailureCount;
+  }
+
+  /** Whatever a subscriber callback threw most recently. */
+  get lastCallbackFailure(): unknown {
+    return this.ndjson.lastCallbackFailure;
   }
 
   close(): void {
@@ -379,17 +592,33 @@ export class JsonApiEventStream {
 export interface ServerMessageChannelHandlers {
   onMessage(message: ServerMessage): void;
   /**
-   * A frame this codec deliberately does not decode (`Notify`, `Compressed`, …). Expected traffic
-   * on a real connection, not an error: `decodeServerMessage` throws `UnsupportedVariantError`, the
-   * frame has already been consumed, and the stream stays in sync. Omit this and such frames are
-   * dropped silently, which is the documented recovery in `src/stream.ts`.
+   * A frame that did not become a message, costing exactly that frame. Two things arrive here and
+   * they are deliberately the same thing to a caller:
+   *
+   * - a variant this codec does not decode (`Notify`, `Compressed`, …) — routine traffic on a real
+   *   connection, `UnsupportedVariantError`;
+   * - a payload that did not parse — `CorruptError` and friends.
+   *
+   * Both are recoverable for the identical reason: the length prefix already fixed the frame
+   * boundary, so the frames behind them are exactly where they should be. `ServerMessageReader`
+   * treats them the same way (`src/stream.ts`), and a corrupt payload used to be routed to
+   * {@link ServerMessageChannelHandlers.onError} here — which contradicted `onError`'s own
+   * "terminal" contract in both directions: an app that disposed its terminal on `onError` then
+   * got `onMessage` and applied ANSI to a dead screen, and an app that reconnected flapped the ssh
+   * channel over one skippable frame.
+   *
+   * Omitting this handler is fine — the drop is still counted in
+   * {@link ServerMessageChannel.undecodableCount}. Throwing from it is fine too: the call is
+   * isolated (see {@link ServerMessageChannel.callbackFailureCount}).
    */
   onUndecodable?: ((error: WireError) => void) | undefined;
   /**
-   * A frame that broke the stream, or the channel ending. Terminal either way — and a framing
-   * error fires this **exactly once**, no matter how many chunks the bridge writes afterwards:
-   * the stream cannot be resynced, so repeating the same error object per chunk would be noise
-   * over a fact the caller already has. `onClose` still reports the channel's own end.
+   * A failure the stream cannot come back from: a framing error, and nothing else. The only one is
+   * an oversized length prefix, which desynchronizes the stream with no resync point.
+   *
+   * Terminal, and it means it — this fires **exactly once**, no matter how many chunks the bridge
+   * writes afterwards, and no `onMessage` follows it. `onClose` still reports the channel's own
+   * end.
    */
   onError?: ((error: Error) => void) | undefined;
   onClose(close: HerdrChannelClose): void;
@@ -417,6 +646,17 @@ export interface ServerMessageChannelOptions {
  * (`onMessage` / `onUndecodable` / `onError`), including the frames salvaged out of a poisoned
  * {@link FrameReader}, whereas `push` returns an array and reports the rest out of band. Folding
  * one into the other would buy a dozen lines and cost that per-frame ordering.
+ *
+ * ## Handler calls are isolated
+ *
+ * Every handler is invoked through {@link ServerMessageChannel.notify}, so a handler that throws
+ * costs its own call and nothing else. Three separate losses used to follow from one throw:
+ * the rest of the chunk's frames (already de-framed, so gone for good — the `cf05b11b` bug through
+ * the callback door), the terminal `onError` when the throw came from the salvage loop that runs
+ * *before* it, and — because `ingest` is wired straight to the transport's `onData`, which the
+ * Node implementation calls from an `ssh2` `data` event — an exception escaping into an
+ * EventEmitter, which can take the process down. Isolation is not silence:
+ * {@link ServerMessageChannel.callbackFailureCount} counts every one.
  */
 export class ServerMessageChannel {
   private readonly frames: FrameReader;
@@ -426,6 +666,10 @@ export class ServerMessageChannel {
   private framingFailure: WireError | null = null;
   /** Set once the channel has ended, from either side. Same terminal treatment. */
   private closed = false;
+  private skipped = 0;
+  private lastSkipped: WireError | undefined;
+  private callbackFailures = 0;
+  private lastCallbackError: unknown;
 
   private constructor(handlers: ServerMessageChannelHandlers, options: ServerMessageChannelOptions) {
     this.handlers = handlers;
@@ -442,10 +686,41 @@ export class ServerMessageChannel {
       onData: (chunk) => self.ingest(chunk),
       onClose: (close) => {
         self.closed = true;
-        handlers.onClose(close);
+        self.notify(handlers.onClose, close);
       },
     });
     return self;
+  }
+
+  /**
+   * Frames dropped since this channel opened — undecoded variants and corrupt payloads alike.
+   *
+   * Always present, handler or not, because "connected, green, and the screen is black" has to be
+   * a one-line diagnosis. The concrete way to reach that state is on record: `src/constants.ts:4-9`
+   * documents that mx and upstream both report `PROTOCOL_VERSION = 20` while disagreeing on
+   * `ServerMessage::Terminal` (13 here, 2 upstream), and `assertWelcomeAccepted`
+   * (`src/messages.ts`) compares only versions. Against an upstream server the handshake passes,
+   * every terminal frame arrives as a variant this codec calls `Graphics`, and — `onUndecodable`
+   * being optional and documented as *not* an error — the failure would otherwise produce no
+   * error, no log and no clue. A counter climbing in step with the frame rate names it instantly.
+   */
+  get undecodableCount(): number {
+    return this.skipped;
+  }
+
+  /** The most recent dropped frame's error, for a caller that polls instead of subscribing. */
+  get lastUndecodable(): WireError | undefined {
+    return this.lastSkipped;
+  }
+
+  /** How many times one of the handlers threw. Isolated, but never hidden. */
+  get callbackFailureCount(): number {
+    return this.callbackFailures;
+  }
+
+  /** Whatever a handler threw most recently. `unknown`, because a throw can be anything. */
+  get lastCallbackFailure(): unknown {
+    return this.lastCallbackError;
   }
 
   private ingest(chunk: Uint8Array): void {
@@ -470,7 +745,9 @@ export class ServerMessageChannel {
       for (const payload of (wire.decodedBefore ?? []) as Uint8Array[]) {
         this.decodeOne(payload);
       }
-      this.handlers.onError?.(wire);
+      // Reached even if every salvaged frame's handler threw: `decodeOne` isolates them, so the
+      // terminal signal cannot be lost behind the last good bytes.
+      this.notify(this.handlers.onError, wire);
       return;
     }
     for (const payload of payloads) {
@@ -483,15 +760,29 @@ export class ServerMessageChannel {
     try {
       message = decodeServerMessage(payload);
     } catch (error) {
+      // Every decode failure costs one frame and no more, whatever kind it is: the length prefix
+      // already told the framer where this frame ended. Only a bad *prefix* is terminal, and that
+      // never reaches here — `FrameReader` throws it out of `ingest`.
       const wire = error as WireError;
-      if (wire.code === "unsupported-variant") {
-        this.handlers.onUndecodable?.(wire);
-      } else {
-        this.handlers.onError?.(wire);
-      }
+      this.skipped += 1;
+      this.lastSkipped = wire;
+      this.notify(this.handlers.onUndecodable, wire);
       return;
     }
-    this.handlers.onMessage(message);
+    this.notify(this.handlers.onMessage, message);
+  }
+
+  /** Calls a handler without letting its failure decide what happens to the other frames. */
+  private notify<T>(handler: ((value: T) => void) | undefined, value: T): void {
+    if (handler === undefined) {
+      return;
+    }
+    try {
+      handler.call(this.handlers, value);
+    } catch (error) {
+      this.callbackFailures += 1;
+      this.lastCallbackError = error;
+    }
   }
 
   /** Sends one already-framed `ClientMessage` (`encodeHelloFrame`, `encodeObserveTerminalFrame`). */
@@ -549,6 +840,23 @@ export interface RemoteBridgeCommandOptions {
 }
 
 /**
+ * How the bridge command must be exec'd, wherever it is exec'd from.
+ *
+ * A value rather than a comment because it is protocol knowledge, like {@link remoteBridgeCommand}
+ * beside it, and the file that used to hold it — `src/node/sshTransport.ts` — is the one a React
+ * Native implementer never opens. The requirement itself: both bridges are pure byte pumps
+ * (`bridge_stdio_to_socket`, `src/remote/unix.rs:568-590`), and a pty puts a line discipline in
+ * front of them. CR/LF translation and echo then rewrite bytes inside every framed payload, so the
+ * failure is total, silent, and looks like a codec bug. The desktop client avoids it with `ssh -T`
+ * (`src/remote/unix.rs:288-296`); this is the same instruction in the shape `ssh2` and the native
+ * modules take.
+ */
+export const BRIDGE_EXEC_OPTIONS = { pty: false } as const;
+
+/** POSIX portable environment variable name: `[A-Za-z_][A-Za-z0-9_]*` (IEEE 1003.1, §3.235). */
+const POSIX_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
  * Shell-quotes one word the way `shell_quote` does (`src/remote/unix.rs:2088-2102`): bare when it
  * is entirely `[A-Za-z0-9@%_+=:,./-]`, single-quoted with `'\''` escaping otherwise.
  */
@@ -567,6 +875,14 @@ export function shellQuote(value: string): string {
  * ssh session open after the bridge exits. The `--session` flag sits *before* the subcommand
  * because `session::configure_from_args` (`src/session.rs:29`) strips it out of `argv` before
  * `main.rs:550-555` looks at `args[1]` for the subcommand name.
+ *
+ * Env *values* are shell-quoted; env *names* are validated and rejected, because a name that is
+ * not a POSIX identifier could not have worked anyway — the remote `env` refuses it — while an
+ * unquoted `X$(id)` would be expanded by the remote shell first. This function's output is a
+ * string another machine's shell executes, and it is exported API: the caller finding out at the
+ * call site beats a bridge that dies with an unexplained non-zero exit.
+ *
+ * @throws if any `env` key is not `[A-Za-z_][A-Za-z0-9_]*`.
  */
 export function remoteBridgeCommand(
   kind: HerdrChannelKind,
@@ -578,6 +894,12 @@ export function remoteBridgeCommand(
   if (names.length > 0) {
     parts.push("env");
     for (const name of names) {
+      if (!POSIX_ENV_NAME.test(name)) {
+        throw new Error(
+          `${JSON.stringify(name)} is not a POSIX environment variable name ` +
+            `([A-Za-z_][A-Za-z0-9_]*); it cannot be passed to the remote \`env\``,
+        );
+      }
       parts.push(`${name}=${shellQuote(env[name] as string)}`);
     }
   }

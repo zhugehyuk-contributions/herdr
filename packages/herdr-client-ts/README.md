@@ -75,6 +75,11 @@ with no resync point (the salvageable messages ride along on `error.decodedBefor
 else the decoder rejects — an undecoded variant, a corrupt payload — costs that one frame and
 nothing behind it, because the length prefix already fixed where the next frame starts.
 
+Both promises hold **even if your `onUndecodable` throws**: diagnostic callbacks are invoked in
+isolation, so a logger blowing up cannot abort the decode loop and take the already-de-framed
+frames behind it with it. It is isolated, not swallowed — `reader.callbackFailureCount` and
+`reader.lastCallbackFailure` say so, next to `undecodableCount` / `lastUndecodable`.
+
 ## Transport — how this reaches a server that is not local
 
 `src/transport.ts` is the seam. The app never opens `herdr.sock` / `herdr-client.sock`: it runs two
@@ -112,18 +117,40 @@ const panes = await api.paneList();
 
 const stream = await ServerMessageChannel.open(transport, {
   onMessage: (message) => { /* welcome / terminal */ },
+  // One frame lost: an undecoded variant OR a corrupt payload. Optional — `stream.undecodableCount`
+  // counts them either way.
+  onUndecodable: (error) => { /* diagnostics */ },
+  // Terminal, and only terminal: a framing error, fired exactly once. Not a corrupt frame.
+  onError: (error) => { /* drop the connection and reconnect */ },
   onClose: (close) => { /* close.exitCode / close.stderr — the bridge's only error channel */ },
 });
 stream.send(encodeHelloFrame({ /* … */ }));
 ```
 
-Two rules the interface encodes rather than documents:
+`JsonApiEventStream.subscribe()` resolves only once the server has **acknowledged** the
+subscription (`subscription_started`, `src/api/server.rs:679-686`); a rejected subscription rejects
+the promise instead of handing back a handle that will never produce a line. Pass it
+`{ onLine, onError, onClose }` rather than a bare function and the subscriber also learns when the
+channel dies — the everyday mobile case (LTE drops, remote `herdr` restarts), and the signal any
+resubscribe is built on.
+
+Rules the interface encodes rather than documents:
 
 - **Handlers are passed at open, not attached afterwards.** The remote can emit bytes the instant
   the command starts, and on React Native delivery is a `NativeEventEmitter`; any gap between
   "channel exists" and "listener attached" drops frames.
 - **`Uint8Array`, callbacks and promises only.** No `Buffer`, `Stream` or `EventEmitter` — the
   native module has to implement this, and `src/` has to load on Hermes.
+- **Handlers may throw.** Every handler call is isolated and counted
+  (`callbackFailureCount`), because `onData` is dispatched straight from the transport's event
+  source — an escaping exception would cost the rest of that chunk's frames and, on Node, can take
+  the process down.
+- **Nine more the *implementation* must satisfy** — no pty (`BRIDGE_EXEC_OPTIONS`), the command
+  string built here and passed through verbatim, stderr pumped into `close.stderr`, ordered
+  exactly-once per-channel delivery, transport-owned `onData` buffers valid only for the call,
+  `write` resolving on hand-off rather than delivery, and a write racing a close never throwing.
+  They are enumerated on the `HerdrTransport` interface in `src/transport.ts`, which is the file a
+  native-module author reads.
 
 `ssh2` is a **devDependency** and lives behind the separate `@herdr/client-ts/node` entry point, so
 a Metro bundle of `.` cannot reach it. That is checked mechanically by `test/hermesContract.test.ts`,
@@ -150,6 +177,12 @@ only automatic `@types` inclusion; an explicit `import … from "ssh2"` still re
   resynchronized — the connection flaps. **Any value between the two caps is always wrong.**
 - **Ordinals live in one file.** `src/constants.ts` — they are *fork-local*; see the warning at the
   top of that file and `mobile/.prd/03-blockers.md` B1.
+- **`undecodableCount` is the fork-skew alarm.** B1 is not hypothetical: mx and upstream both
+  report `PROTOCOL_VERSION = 20` while disagreeing on `ServerMessage::Terminal` (13 vs 2), and
+  `assertWelcomeAccepted` compares only versions. Against a skewed server the handshake is green
+  and every terminal frame is silently dropped as an unknown variant. A counter that climbs with
+  the frame rate turns "connected, no errors, black screen" into a one-line diagnosis, which is why
+  both readers expose it whether or not a handler is attached.
 
 ## Not covered (deliberately)
 
