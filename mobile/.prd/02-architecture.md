@@ -125,7 +125,20 @@ expo-router + TS, pnpm, vitest. 터미널 엔진은 xterm을 WebView용으로 �
 **덜어낸다**: 페어링 · E2EE · 릴레이(ssh가 대체) · `git.*`/`files.*`/tasks 화면(herdr JSON API에 대응 메서드 없음).
 
 **새로 짠다 (orca에 등가물이 없다)**: ssh 네이티브 모듈(§2.4 — 최대 신규 작업) ·
-pane(split) 레벨 내비게이션(orca는 tab=terminal 1:1) · herdr 와이어 코덱 3종(§2.2).
+herdr 와이어 코덱 3종(§2.2 — **✅ 2026-08-22 완료**, `packages/herdr-client-ts`) ·
+**읽기 뷰포트 UX**(아래 참조).
+
+> **2026-08-22 정정 2건** (근거 = [`08-orca-port-map.md`](./08-orca-port-map.md), orca 실물 대조):
+> - **pane(split) 레벨은 신규 설계가 아니다.** orca에 layout leaf가 있고 모바일이 그걸 받는다
+>   (`src/shared/agent-status-types.ts:107` `[v]`). **이식 대상으로 내린다.**
+> - **§2.5에 없던 drop이 있다**: `mobile/src/session/mobile-terminal-viewport-resubscribe.ts`(293줄 + 테스트 333줄)는
+>   통째로 **데스크톱 PTY를 폰 뷰포트에 맞춰 재구독하는 수렴 루프**다. herdr은 observe라 리사이즈하지 않으므로(§2.3)
+>   **전량 drop**. 동시에 이것은 **B4(읽기 뷰포트 UX)에 orca 선례가 없다**는 뜻이다 —
+>   "화면 레이아웃을 최대한 가져온다"가 **읽기 뷰포트만은 성립하지 않는다.** 그 부분은 우리가 설계해야 한다.
+>
+> **이식의 최대 위험**: orca `mobile/` 파일 **293개가 데스크톱 레포 루트의 `src/shared/`를 import**한다
+> (`mobile/metro.config.js:9,14-15`의 watchFolders). copy 등급 파일도 그냥 복사하면 컴파일되지 않는다.
+> 다행히 밀도가 착수 순서와 반비례한다 — 먼저 가져올 `terminal/`은 **10/107**, `session/`은 **115/310**.
 
 > **재사용률을 숫자로 주장하지 않는다.** UI 셸·라우트·xterm·정책은 재사용되지만 **임계 경로(ssh 어댑터 ·
 > 오류 모델 · herdr 코덱 · pane 모델)는 신규**다. 전제 2는 달성 가능한 목표이되, 일정 착시를 만들지 않으려면

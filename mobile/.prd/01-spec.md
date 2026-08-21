@@ -46,6 +46,7 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
 | `04-milestones.md` | M0~M6, 각 단계의 "됐다" 기준 |
 | `05-orca-transport.md` | orca transport 생존성 이식표 (L1~L7 · X1~X6 · P1) |
 | `06-open-decisions.md` | 오너가 정할 것 4개 + 이전 판 대비 변경 |
+| `08-orca-port-map.md` | **orca 와꾸 파일 단위 이식 지도** — 라이선스 판정(MIT) · copy/port/rewrite/drop 등급 · L1~X6·P1을 orca `file:line`으로 매핑 · 착수 순서 |
 | `07-research-2026-08-22.md` | 위 6편이 정리해 낸 원본 조사 전문. 근거를 더 파고들 때만. **충돌하면 01~06이 이긴다** |
 | `assets/mockup.html` | UI 목업 7화면 + 계획 요약. **발행된 아티팩트의 소스** — 고칠 땐 이 파일을 편집해 같은 URL로 재발행 (https://claude.ai/code/artifact/5d23d155-8fe3-4be7-a0f7-dd2050d39806) |
 | `assets/mockup-v5-original.html` | v0.6.8 기준 초판. 줄번호·계획이 낡았다, 화면 설계 참고용 |
@@ -94,7 +95,12 @@ herdr의 도메인은 **remote ▸ workspace(space) ▸ tab ▸ pane(=terminal)*
 transport 생존성 계층, 설정/연결로그/트러블슈팅 화면.
 
 **다른 것**:
-- orca는 tab = terminal 1:1이라 **pane(split) 레벨이 없다.** 이 한 단계는 신규 설계다.
+- ~~orca는 tab = terminal 1:1이라 pane(split) 레벨이 없다. 이 한 단계는 신규 설계다.~~
+  **2026-08-22 정정 (틀렸다)**: orca에 layout **leaf**(= pane)가 있다 — `src/shared/agent-status-types.ts:107` `[v]`
+  *"Composite key: `${tabId}:${leafId}` where leafId is a stable UUID layout leaf"*. 호스트가 터미널 서피스를
+  `${parentTabId}::${leafId}`로 발행하고 모바일이 **평탄화한 tab 배열 + 별도 `tabGroups[]`**로 받는다.
+  → **pane 레벨은 신규 설계가 아니라 이식 대상이다.** 진짜 1:1 제약은 "동시에 한 서피스만 활성"이다.
+  상세 = [`08-orca-port-map.md`](./08-orca-port-map.md).
 - orca의 pairing/E2EE/relay는 통째로 사라진다. herdr은 인증이 ssh 자체고 와이어에 auth 필드가 없다.
 - orca의 `git.*`/`files.*`/tasks 화면은 herdr JSON API에 대응 메서드가 없어 v1에서 드랍한다.
   herdr에서 git은 pane 안에서 산다.
