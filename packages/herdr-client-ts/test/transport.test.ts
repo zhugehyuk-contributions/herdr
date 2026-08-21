@@ -308,6 +308,53 @@ describe("observe flow over a transport", () => {
     expect(got.errors.map((error) => (error as WireError).code)).toEqual(["oversized"]);
     expect(got.messages).toEqual([]);
   });
+
+  /**
+   * A poisoned {@link FrameReader} rethrows the *same* error object, `decodedBefore` and all
+   * (`src/framing.ts:54-56`), so a caller that salvages on every throw replays those frames once
+   * per chunk that follows — and a bridge keeps writing until its channel dies. On a terminal that
+   * is the same ANSI bytes applied N times, i.e. a corrupted screen. A framing failure is terminal:
+   * salvage once, report once, then nothing. `ServerMessageReader` holds the same property by
+   * rethrowing verbatim (`src/stream.ts:78-82`).
+   */
+  it("salvages the frames before a framing error exactly once, however many chunks follow", async () => {
+    const transport = new FakeTransport();
+    const { got } = await openObserve(transport);
+    const wire = transport.last();
+
+    // One Terminal frame, then an oversized prefix, in ONE chunk: `FrameReader` de-framed the
+    // Terminal before it threw, so it is salvage and must reach `onMessage`.
+    wire.emit(fromHex(frameHex(TERMINAL_SMALL_FULL) + "ffffffff"));
+    expect(got.messages.map((message) => message.type)).toEqual(["terminal"]);
+    expect(got.errors.map((error) => (error as WireError).code)).toEqual(["oversized"]);
+
+    // Two more chunks off the still-open socket. Neither may re-deliver the salvage.
+    wire.emit(fromHex(frameHex(TERMINAL_SMALL_FULL)));
+    wire.emit(fromHex("00"));
+
+    expect(got.messages.map((message) => message.type)).toEqual(["terminal"]);
+    expect(got.errors).toHaveLength(1);
+    expect(got.undecodable).toEqual([]);
+  });
+
+  /**
+   * The other terminal state. `close()` over ssh only asks the stream to end; `onClose` arrives
+   * when the remote gets round to it (`src/node/sshTransport.ts:82-92`), so bytes can still land
+   * in between. They belong to a channel the caller has already retired — routing them would
+   * push messages at a pane that is gone.
+   */
+  it("ignores bytes that arrive after the channel is closed", async () => {
+    const transport = new FakeTransport();
+    const { channel, got } = await openObserve(transport);
+    const wire = transport.last();
+
+    channel.close();
+    wire.emit(fromHex(frameHex(TERMINAL_SMALL_FULL)));
+
+    expect(got.messages).toEqual([]);
+    expect(got.errors).toEqual([]);
+    expect(got.closes).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

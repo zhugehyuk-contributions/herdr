@@ -385,7 +385,12 @@ export interface ServerMessageChannelHandlers {
    * dropped silently, which is the documented recovery in `src/stream.ts`.
    */
   onUndecodable?: ((error: WireError) => void) | undefined;
-  /** A frame that broke the stream, or the channel ending. Terminal either way. */
+  /**
+   * A frame that broke the stream, or the channel ending. Terminal either way — and a framing
+   * error fires this **exactly once**, no matter how many chunks the bridge writes afterwards:
+   * the stream cannot be resynced, so repeating the same error object per chunk would be noise
+   * over a fact the caller already has. `onClose` still reports the channel's own end.
+   */
   onError?: ((error: Error) => void) | undefined;
   onClose(close: HerdrChannelClose): void;
 }
@@ -417,6 +422,10 @@ export class ServerMessageChannel {
   private readonly frames: FrameReader;
   private readonly handlers: ServerMessageChannelHandlers;
   private channel: HerdrChannel | null = null;
+  /** Set once a framing error has poisoned {@link FrameReader}; every later chunk is dropped. */
+  private framingFailure: WireError | null = null;
+  /** Set once the channel has ended, from either side. Same terminal treatment. */
+  private closed = false;
 
   private constructor(handlers: ServerMessageChannelHandlers, options: ServerMessageChannelOptions) {
     this.handlers = handlers;
@@ -431,19 +440,33 @@ export class ServerMessageChannel {
     const self = new ServerMessageChannel(handlers, options);
     self.channel = await transport.openChannel(HerdrChannelKind.ClientStream, {
       onData: (chunk) => self.ingest(chunk),
-      onClose: (close) => handlers.onClose(close),
+      onClose: (close) => {
+        self.closed = true;
+        handlers.onClose(close);
+      },
     });
     return self;
   }
 
   private ingest(chunk: Uint8Array): void {
+    if (this.framingFailure !== null || this.closed) {
+      // Both terminal, and "terminal" has to mean it. A poisoned `FrameReader` rethrows the *same*
+      // error object on every later push, salvage included (`src/framing.ts:53-56`), so without
+      // this guard each further chunk would re-decode and re-emit the frames already routed below
+      // — the same ANSI bytes applied again, i.e. a corrupted screen. `ServerMessageReader` holds
+      // the identical property by rethrowing verbatim (`src/stream.ts:78-82`).
+      return;
+    }
+
     let payloads: Uint8Array[];
     try {
       payloads = this.frames.push(chunk);
     } catch (error) {
       // Framing errors are terminal: an oversized prefix desynchronizes the stream and
-      // `FrameReader` poisons itself (`src/framing.ts:28`). Salvage what came before, then stop.
+      // `FrameReader` poisons itself (`src/framing.ts:28`). Salvage what came before, report the
+      // failure once, then stop — `onClose` remains the signal that the channel itself is gone.
       const wire = error as WireError;
+      this.framingFailure = wire;
       for (const payload of (wire.decodedBefore ?? []) as Uint8Array[]) {
         this.decodeOne(payload);
       }
@@ -477,6 +500,7 @@ export class ServerMessageChannel {
   }
 
   close(): void {
+    this.closed = true;
     this.channel?.close();
   }
 }
