@@ -13,6 +13,7 @@ mod api;
 mod bundle;
 mod completion;
 mod integration;
+mod live_handoff;
 mod notification;
 mod pane;
 mod plugin;
@@ -86,6 +87,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
             };
             exit_code
         }
+        "live-handoff" => live_handoff::run_live_handoff_command(&args[2..])?,
         "api" => api::run_api_command(&args[2..])?,
         "status" => status::run_status_command(&args[2..])?,
         "bundle" => bundle::run_bundle_command(&args[2..])?,
