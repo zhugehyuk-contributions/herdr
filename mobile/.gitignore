@@ -1,0 +1,13 @@
+# Ported from orca mobile/.gitignore @ 4fd93ead, trimmed to what exists here.
+# The repo-root .gitignore already covers mobile/{node_modules,.expo,dist,ios/Pods,android/.gradle};
+# this file adds the build products that live inside src/.
+src/terminal/terminal-webview-engine.generated.ts
+/android/
+/ios/
+web-build/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*

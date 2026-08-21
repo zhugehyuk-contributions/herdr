@@ -1,0 +1,13 @@
+{
+  "//": "Not from orca. orca leaves its tests un-type-checked: its `typecheck` script is `tsc --noEmit` against a project whose `exclude` drops every `*.test.ts(x)`. herdr's sibling package packages/herdr-client-ts does type-check its tests (`tsc -p tsconfig.test.json --noEmit`), and this file puts mobile on that gate.",
+  "//scope": "`include` lists herdr-authored test files ONLY, and grows with them. Pointing it at the ported orca tests produces 8 errors that are artifacts of orca never having compiled them: happy-dom EventTarget listener variance (terminal-caret-rendering-oracle.test.ts:81,98); findByType('WebView'|'Text') passing a string where @types/react-test-renderer wants an ElementType (terminal-webview-engine-error.test.ts:67,75, terminal-webview-query-reply-routing.test.ts:43); a never-inferred renderer (terminal-webview-engine-error.test.ts:244); two vi.fn() assignments (terminal-webview-wheel-scroll.test.ts:181,185). None is a herdr defect and every fix would edit copied orca source, so the scope is stated rather than widened, and the errors are recorded here rather than hidden.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": [
+    "src/terminal/terminal-frame-sink.test.ts",
+    "src/terminal/terminal-ansi-screen.test.ts"
+  ],
+  "exclude": []
+}
