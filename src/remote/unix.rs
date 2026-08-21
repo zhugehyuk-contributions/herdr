@@ -226,8 +226,12 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     let ssh_target = SshTarget::bare(&remote.target);
     // CLI path: echo each provisioning stage to stderr so a slow seed reads as progress.
     let progress = |stage: RemoteProvisionStage| eprintln!("herdr: {}", stage.label());
+    // `--session` selects which far-side SERVER we provision against, not just which one we attach
+    // to: dropping it here restarted/handed off the remote's default-session server while the
+    // bridge below went to `session_name`.
     let prepared_remote = prepare_remote_herdr(
         &ssh_target,
+        &session_name,
         remote.live_handoff,
         false, // add-remote reuses a version-matching binary; only the "update" button forces
         RemotePrepPolicy::Interactive,
@@ -237,6 +241,7 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     ensure_remote_server_ready(
         &ssh_target,
         &prepared_remote.remote_herdr,
+        &session_name,
         prepared_remote.installed_or_replaced,
         remote.live_handoff,
         RemotePrepPolicy::Interactive,
@@ -497,11 +502,19 @@ pub(crate) fn start_ssh_remote_bridge(
     let policy = RemotePrepPolicy::NonInteractive {
         restart_incompatible,
     };
-    let prepared_remote = prepare_remote_herdr(&target, true, force_reinstall, policy, progress)?;
+    let prepared_remote = prepare_remote_herdr(
+        &target,
+        session_name,
+        true,
+        force_reinstall,
+        policy,
+        progress,
+    )?;
     progress(RemoteProvisionStage::StartingServer);
     ensure_remote_server_ready(
         &target,
         &prepared_remote.remote_herdr,
+        session_name,
         prepared_remote.installed_or_replaced,
         true,
         policy,
@@ -775,8 +788,12 @@ impl InstallSource {
     }
 }
 
+/// Install/verify the remote's herdr binary. Installing is session-INDEPENDENT (a host has one
+/// binary), but the interactive pre-install prompt asks about the RUNNING server, so it needs
+/// `session_name` to name the right one.
 fn prepare_remote_herdr(
     target: &SshTarget,
+    session_name: &str,
     live_handoff_enabled: bool,
     force_reinstall: bool,
     policy: RemotePrepPolicy,
@@ -833,6 +850,7 @@ fn prepare_remote_herdr(
         confirm_remote_install_with_running_server(
             target,
             status_probe_herdr,
+            session_name,
             live_handoff_enabled,
             policy,
         )?;
@@ -1349,14 +1367,20 @@ enum RemoteServerRestartReason {
     VersionMismatch,
 }
 
+/// Reconcile the RUNNING server for `session_name` on the remote with this client's build.
+///
+/// `session_name` is the far-side session this attach is for. It is load-bearing: the status probe,
+/// the live-handoff and the stop all have to name the same server the bridge is about to attach to,
+/// or the protocol-compatibility decision is made against a process we will never talk to.
 fn ensure_remote_server_ready(
     target: &SshTarget,
     remote_herdr: &RemoteHerdr,
+    session_name: &str,
     remote_binary_changed: bool,
     live_handoff_enabled: bool,
     policy: RemotePrepPolicy,
 ) -> io::Result<()> {
-    let status = remote_server_status(target, remote_herdr)?;
+    let status = remote_server_status(target, remote_herdr, session_name)?;
     let RemoteServerStatus::Running {
         version,
         protocol,
@@ -1380,7 +1404,7 @@ fn ensure_remote_server_ready(
         match non_interactive_server_action(reason, live_handoff_enabled, live_handoff) {
             NonInteractiveServerAction::AttachExisting => return Ok(()),
             NonInteractiveServerAction::LiveHandoff => {
-                return match live_handoff_remote_server(target, remote_herdr) {
+                return match live_handoff_remote_server(target, remote_herdr, session_name) {
                     Ok(()) => Ok(()),
                     // A failed handoff for a protocol mismatch leaves us unable to attach; surface
                     // it rather than killing panes. For a compatible server, fall back to attaching.
@@ -1401,7 +1425,7 @@ fn ensure_remote_server_ready(
                 // approved it via the add-remote y/N (issue #12, macmini). Otherwise we surface a
                 // typed signal the client turns into that prompt.
                 if restart_incompatible {
-                    stop_remote_server(target, remote_herdr)?;
+                    stop_remote_server(target, remote_herdr, session_name)?;
                     return Ok(());
                 }
                 return Err(io::Error::other(RestartConfirmNeeded {
@@ -1422,7 +1446,7 @@ fn ensure_remote_server_ready(
             reason,
         )?
     {
-        match live_handoff_remote_server(target, remote_herdr) {
+        match live_handoff_remote_server(target, remote_herdr, session_name) {
             Ok(()) => return Ok(()),
             Err(err) => {
                 eprintln!("remote live handoff failed: {err}");
@@ -1432,7 +1456,7 @@ fn ensure_remote_server_ready(
     }
 
     if confirm_remote_server_stop(target.destination(), version.as_deref(), protocol, reason)? {
-        stop_remote_server(target, remote_herdr)?;
+        stop_remote_server(target, remote_herdr, session_name)?;
     }
     Ok(())
 }
@@ -1496,6 +1520,7 @@ fn non_interactive_server_action(
 fn confirm_remote_install_with_running_server(
     target: &SshTarget,
     remote_herdr: &RemoteHerdr,
+    session_name: &str,
     live_handoff_enabled: bool,
     policy: RemotePrepPolicy,
 ) -> io::Result<()> {
@@ -1505,7 +1530,10 @@ fn confirm_remote_install_with_running_server(
         return Ok(());
     }
     let dest = target.destination();
-    let status = match remote_server_status(target, remote_herdr) {
+    // The prompt has to describe the server this attach will actually disturb: replacing the binary
+    // under a `work` server while quoting the `default` server's version is a question about the
+    // wrong process.
+    let status = match remote_server_status(target, remote_herdr, session_name) {
         Ok(status) => status,
         Err(err) => {
             if !io::stdin().is_terminal() {
@@ -1580,8 +1608,9 @@ fn confirm_remote_install_with_running_server(
 fn remote_server_status(
     target: &SshTarget,
     remote_herdr: &RemoteHerdr,
+    session_name: &str,
 ) -> io::Result<RemoteServerStatus> {
-    let command = format!("{} status server --json", remote_herdr.shell_path);
+    let command = remote_herdr_command(remote_herdr, session_name, "status server --json");
     let output = ssh_output(target, &command)?;
     if !output.status.success() {
         return Err(command_failed("remote server status failed", &output));
@@ -1761,12 +1790,12 @@ fn confirm_remote_server_handoff(
     Ok(answer != "n" && answer != "no")
 }
 
-fn live_handoff_remote_server(target: &SshTarget, remote_herdr: &RemoteHerdr) -> io::Result<()> {
-    let command = format!(
-        "{} server live-handoff --import-exe {} --expected-protocol {CURRENT_PROTOCOL} --expected-version {CURRENT_VERSION}",
-        remote_herdr.shell_path,
-        remote_herdr.shell_path
-    );
+fn live_handoff_remote_server(
+    target: &SshTarget,
+    remote_herdr: &RemoteHerdr,
+    session_name: &str,
+) -> io::Result<()> {
+    let command = remote_live_handoff_command(remote_herdr, session_name);
     let output = ssh_output(target, &command)?;
     if !output.status.success() {
         return Err(command_failed("remote server live handoff failed", &output));
@@ -1779,14 +1808,18 @@ fn live_handoff_remote_server(target: &SshTarget, remote_herdr: &RemoteHerdr) ->
     Ok(())
 }
 
-fn stop_remote_server(target: &SshTarget, remote_herdr: &RemoteHerdr) -> io::Result<()> {
-    let command = format!("{} server stop", remote_herdr.shell_path);
+fn stop_remote_server(
+    target: &SshTarget,
+    remote_herdr: &RemoteHerdr,
+    session_name: &str,
+) -> io::Result<()> {
+    let command = remote_herdr_command(remote_herdr, session_name, "server stop");
     let output = ssh_output(target, &command)?;
     if !output.status.success() {
         return Err(command_failed("remote server stop failed", &output));
     }
 
-    wait_for_remote_server_shutdown(target, remote_herdr)?;
+    wait_for_remote_server_shutdown(target, remote_herdr, session_name)?;
     eprintln!(
         "stopped the remote herdr server on {}; it will restart when the remote client bridge attaches.",
         target.destination()
@@ -1797,10 +1830,13 @@ fn stop_remote_server(target: &SshTarget, remote_herdr: &RemoteHerdr) -> io::Res
 fn wait_for_remote_server_shutdown(
     target: &SshTarget,
     remote_herdr: &RemoteHerdr,
+    session_name: &str,
 ) -> io::Result<()> {
     let deadline = Instant::now() + REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT;
     loop {
-        if remote_server_status(target, remote_herdr)? == RemoteServerStatus::NotRunning {
+        if remote_server_status(target, remote_herdr, session_name)?
+            == RemoteServerStatus::NotRunning
+        {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -2060,6 +2096,45 @@ fn remote_bridge_command(
     command.push(' ');
     command.push_str(kind.subcommand());
     command
+}
+
+/// Build a NON-bridge remote `herdr` invocation (status / stop / live-handoff) against a specific
+/// session, following the same rule as [`remote_bridge_command`]: `--session` is a global flag, so
+/// it rides immediately after the binary path and is omitted entirely for the default session.
+///
+/// A host has ONE herdr binary, but each session is a separate SERVER PROCESS. Everything that
+/// merely installs a binary is session-independent; everything that inspects, hands off or stops a
+/// RUNNING server must name the session, or it acts on the remote's default-session server — the
+/// wrong process — while the pinned one keeps running the old binary.
+///
+/// Omitting the flag for the default session keeps the wire bytes identical to the pre-threading
+/// commands, so an unpinned remote cannot regress (and an older remote that predates `--session`
+/// still understands them).
+fn remote_herdr_command(remote_herdr: &RemoteHerdr, session_name: &str, tail: &str) -> String {
+    let mut command = remote_herdr.shell_path.clone();
+    if session_name != crate::session::DEFAULT_SESSION_NAME {
+        command.push_str(" --session ");
+        command.push_str(&shell_quote(session_name));
+    }
+    command.push(' ');
+    command.push_str(tail);
+    command
+}
+
+/// The live-handoff invocation, split out because its tail is the only non-trivial one: two flags
+/// that look session-ish but are not. `--import-exe` is the BINARY to adopt (host-scoped, one per
+/// host) while `--session` picks WHICH server process adopts it, and `--expected-*` guard the
+/// hand-off against the wrong build. Kept as a named builder so the interplay is pinned by a test
+/// rather than by reading an ssh transcript.
+fn remote_live_handoff_command(remote_herdr: &RemoteHerdr, session_name: &str) -> String {
+    remote_herdr_command(
+        remote_herdr,
+        session_name,
+        &format!(
+            "server live-handoff --import-exe {} --expected-protocol {CURRENT_PROTOCOL} --expected-version {CURRENT_VERSION}",
+            remote_herdr.shell_path
+        ),
+    )
 }
 
 fn reattach_command(
@@ -3101,6 +3176,89 @@ mod tests {
                 RemoteBridgeKind::Api,
             ),
             "exec \"$HOME/.local/bin/herdr\" remote-api-bridge"
+        );
+    }
+
+    #[test]
+    fn remote_herdr_command_omits_the_default_session() {
+        // The default session must stay BYTE-IDENTICAL to the pre-threading strings: every remote
+        // that is not pinned keeps the exact wire command it had before, so this change cannot
+        // regress the overwhelmingly common case.
+        let remote_herdr = RemoteHerdr::for_platform(RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        });
+
+        assert_eq!(
+            remote_herdr_command(
+                &remote_herdr,
+                crate::session::DEFAULT_SESSION_NAME,
+                "status server --json",
+            ),
+            "\"$HOME/.local/bin/herdr\" status server --json"
+        );
+        assert_eq!(
+            remote_herdr_command(
+                &remote_herdr,
+                crate::session::DEFAULT_SESSION_NAME,
+                "server stop"
+            ),
+            "\"$HOME/.local/bin/herdr\" server stop"
+        );
+    }
+
+    #[test]
+    fn remote_herdr_command_targets_a_named_session() {
+        // REGRESSION (feature-created): `remote_server_status` / `live_handoff_remote_server` /
+        // `stop_remote_server` used to shell out with no `--session`, so on a remote pinned to
+        // `work` they inspected and restarted the DEFAULT session's server — the pinned server kept
+        // the old binary and an unrelated session was restarted as collateral.
+        let remote_herdr = RemoteHerdr::for_platform(RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        });
+
+        // `--session <name>` rides immediately after the binary path, exactly like
+        // `remote_bridge_command`, because `herdr` parses it as a global flag before the subcommand.
+        assert_eq!(
+            remote_herdr_command(&remote_herdr, "work", "status server --json"),
+            "\"$HOME/.local/bin/herdr\" --session work status server --json"
+        );
+        assert_eq!(
+            remote_herdr_command(&remote_herdr, "work", "server stop"),
+            "\"$HOME/.local/bin/herdr\" --session work server stop"
+        );
+        // Defence in depth: `validate_name` rejects a space today, but the name reaches a remote
+        // SHELL, so the builder quotes rather than trusting the validator upstream of it.
+        assert_eq!(
+            remote_herdr_command(&remote_herdr, "my session", "server stop"),
+            "\"$HOME/.local/bin/herdr\" --session 'my session' server stop"
+        );
+    }
+
+    #[test]
+    fn remote_live_handoff_command_names_the_session_not_just_the_binary() {
+        let remote_herdr = RemoteHerdr::for_platform(RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        });
+
+        // Default session: byte-identical to the pre-threading command.
+        assert_eq!(
+            remote_live_handoff_command(&remote_herdr, crate::session::DEFAULT_SESSION_NAME),
+            format!(
+                "\"$HOME/.local/bin/herdr\" server live-handoff --import-exe \"$HOME/.local/bin/herdr\" --expected-protocol {CURRENT_PROTOCOL} --expected-version {CURRENT_VERSION}"
+            )
+        );
+
+        // Pinned: `--session` selects the server that adopts the binary; `--import-exe` still names
+        // the host-wide binary. Getting these two confused is the whole defect — a hand-off that
+        // imported the right exe into the WRONG server process.
+        assert_eq!(
+            remote_live_handoff_command(&remote_herdr, "work"),
+            format!(
+                "\"$HOME/.local/bin/herdr\" --session work server live-handoff --import-exe \"$HOME/.local/bin/herdr\" --expected-protocol {CURRENT_PROTOCOL} --expected-version {CURRENT_VERSION}"
+            )
         );
     }
 
