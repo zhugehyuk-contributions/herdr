@@ -2,5 +2,7 @@
 
 pub(crate) mod render_ansi;
 mod wire;
+#[cfg(all(test, not(windows)))]
+mod wire_fixtures;
 
 pub use wire::*;
