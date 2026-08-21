@@ -35,6 +35,11 @@ M1 착수 전 ssh 스파이크(실기기, transport 1 + exec 채널 2, 30분 백
 | X6 | 버전 불일치가 원인불명 재연결 루프로 보임 | 양방향 창 + 하드 블록 화면 | = B1 |
 | P1 | 폰 없이 디버깅 불가 | mock 서버 + 폰 없는 재현 스크립트, 그리고 **"폰 없는 재현부터 돌려라, 실패하면 UI를 건드리지 마라"**는 명문 경계 | **M1의 헤드리스 코어가 이 역할.** orca는 이 순서 덕에 #5049 인접 버그가 **서버 쪽**이었음을 찾아냈다 |
 
+> ⚠️ **L1·X1은 mx 전용 프리미티브에 걸려 있다** (2026-08-22 실측): `Ping`/`Pong{nonce}`와
+> `RequestFullFrame`은 **upstream `ClientMessage`에 존재하지 않는다** `[v]`. mx 서버를 타깃하는 한 문제없지만,
+> 앱을 upstream herdr 사용자에게 배포하는 순간 워치독 프로브(L1)와 재연결 replay(X1)의 기반이 사라진다.
+> → [`03-blockers.md`](./03-blockers.md) B1의 반증 조건과 같은 뿌리.
+
 **전송-특이라 그대로 오지 않는 것**: `readyState` 판정(→ ssh는 "자식 살아있고 파이프 열렸는데 바이트가
 안 옴"), WebSocket close code(→ 자식 exit status + stderr), RN/OkHttp 프로세스 오염(등가물 없음),
 E2EE 핸드셰이크(→ ssh 인증이 대체. 단 핸드셰이크 타임아웃은 "ssh는 붙었는데 원격 herdr이 말을 안 함"으로 매핑).

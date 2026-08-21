@@ -83,10 +83,21 @@ orca는 WebSocket이라 RN 기본 기능으로 끝났다. herdr은 ssh exec 채�
 - 단발 채널: JSON API 호출 1개당 1개 ([`03-blockers.md`](./03-blockers.md) B8이 해소되기 전까지).
 - ssh keepalive만으로는 검출까지 ~60초라 앱 레벨 워치독([`05-orca-transport.md`](./05-orca-transport.md) L1)을 위에 얹는다.
 
-### 2.5 앱 스택
+### 2.5 앱 스택 — orca 와꾸를 최대한 그대로
 
-orca를 따른다 — Expo bare + RN + expo-router + TS, pnpm, vitest. 터미널 엔진은 xterm을 WebView용으로
-번들. 위치는 이 폴더(`mobile/`). 공용 TS 코어는 `packages/herdr-client-ts` 워크스페이스 패키지로 두고
-Metro `watchFolders`에 추가한다.
+[`01-spec.md`](./01-spec.md) 전제 2에 따라 **기본값은 "orca와 같게"**다. 스택은 Expo bare + RN +
+expo-router + TS, pnpm, vitest. 터미널 엔진은 xterm을 WebView용으로 번들. 위치는 이 폴더(`mobile/`).
+공용 TS 코어는 `packages/herdr-client-ts` 워크스페이스 패키지로 두고 Metro `watchFolders`에 추가한다.
+
+**그대로 가져온다 (재작성 금지 — 포팅 대상)**
+- 프로젝트 스캐폴딩 · expo-router 라우트 트리 · 화면 골격(master-detail).
+- `mobile/src/transport/` 생존성 계층 **전체** — [`05-orca-transport.md`](./05-orca-transport.md)의 L1~L7 · X1~X6이 곧 그 코드다.
+- xterm WebView 브리지(`terminal-webview-html.ts` 계열)와 스크롤백 설정(B5의 v1 대체 수단).
+- 설정 · 연결로그 · 트러블슈팅 화면.
+
+**덜어낸다**: 페어링 · E2EE · 릴레이(ssh가 대체) · `git.*`/`files.*`/tasks 화면(herdr JSON API에 대응 메서드 없음).
+
+**새로 짠다 (orca에 등가물이 없다)**: ssh 네이티브 모듈(§2.4 — 최대 신규 작업) ·
+pane(split) 레벨 내비게이션(orca는 tab=terminal 1:1) · herdr 와이어 코덱 3종(§2.2).
 
 ---
