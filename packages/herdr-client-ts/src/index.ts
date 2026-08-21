@@ -7,6 +7,9 @@
  *      handshake succeeds and no stream ever starts,
  *   3. `ServerMessage::Welcome` / `ServerMessage::Terminal` decode.
  *
+ * Plus `./jsonApi.js` for the *other* socket: herdr's newline-delimited JSON control API, which is
+ * how a client discovers the pane it is going to observe. Same rules apply to it.
+ *
  * No Node built-ins are used, so the package runs unchanged under Hermes/React Native.
  */
 export {
@@ -68,3 +71,17 @@ export {
   type WelcomeMessage,
 } from "./messages.js";
 export { ServerMessageReader } from "./stream.js";
+export {
+  JsonApiClient,
+  JsonApiError,
+  JsonApiProtocolError,
+  LineAccumulator,
+  encodeJsonApiRequest,
+  isJsonApiError,
+  parseJsonApiResponse,
+  type JsonApiConnect,
+  type JsonApiConnection,
+  type JsonApiErrorResponse,
+  type JsonApiOkResponse,
+  type JsonApiResponse,
+} from "./jsonApi.js";

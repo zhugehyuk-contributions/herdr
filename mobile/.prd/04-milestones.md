@@ -82,8 +82,15 @@ M0-b만 머지 이후 additive 분리 PR로 upstream에 제안한다(임계 경�
 > incremental `FrameReader` · `assertWelcomeAccepted`(error→version→**encoding**). vitest 59 green, `tsc --noEmit` 0.
 > RN/Hermes 호환을 타입으로 강제(`"types": []`, `Buffer`/`TextEncoder` 없이 `Uint8Array`+손구현 UTF-8), `seq`는 `bigint`.
 > `Hello` 바이트를 두 경로(실제 bincode · Rust 하네스 손유도)로 독립 유도해 일치 확인.
-> **남은 것**: ssh 어댑터 인터페이스 · JSON API 클라이언트(요청 1개=채널 1개 캡슐화) · observe 세션 상태기계 ·
-> 노드에서 실서버 대상 종단 검증(아래 "됐다").
+> **✅ "됐다" ①②③ 라이브 green (2026-08-22)** — 노드에서 격리 실서버 상대로 종단 관통:
+> `agent.list`/`pane.list` 왕복 · `Hello`(TerminalAnsi) → `Welcome{version:20, encoding:1, error:null}` →
+> `ObserveTerminal` → **실제 `Terminal` 프레임 수신**(`seq=1 100x30 full=true bytes_len=55923`, 선두
+> `ESC[?2026h ESC[?25l … ESC[2J`), 그리고 새 출력 후 `seq=2 full=false` **diff 프레임**이 같은 소켓으로
+> 도착(= 일회성이 아니라 살아있는 스트림) · **pane PTY 23x53 → 23x53 불변**. 5/5 무플레이크, 유저 데몬 9→9.
+> **부수 확인**: 서버는 **tty를 요구하지 않는다** — Rust 하네스의 `portable_pty`는 불필요했다.
+> 프레임 크기가 **관측자의 지오메트리**(100x30)이지 pane의 53컬럼이 아님도 라이브로 재확인(B4).
+> **남은 것**: ssh 어댑터 인터페이스(RN 네이티브 모듈 — §2.4, 최대 신규 작업) · observe 세션 상태기계 ·
+> 픽스처 코퍼스 테스트는 이미 green(④).
 ssh 어댑터 인터페이스(노드=`ssh2`, RN=네이티브 모듈) · JSON API 클라이언트(요청 1개=채널 1개 계약 캡슐화) ·
 최소 와이어 코덱(envelope / `Hello` 인코드 / `Welcome`·`Terminal`·`ServerShutdown`·`Pong` 디코드) ·
 observe 세션 상태기계.

@@ -14,6 +14,13 @@ those three:
 | 2 | `ClientMessage::Hello` + `ClientMessage::ObserveTerminal` encode | client → server |
 | 3 | `ServerMessage::Welcome` / `ServerMessage::Terminal` decode | server → client |
 
+Plus one thing the plan implies but does not list: `src/jsonApi.ts`, a client for the *other*
+socket — herdr's newline-delimited JSON control API (`herdr.sock`), which is how you find a pane to
+observe in the first place. It is transport-agnostic like the rest of `src/` (the caller supplies
+the connection), and its reason to be a type at all is that **one request is one connection**:
+`handle_connection` (`src/api/server.rs:139-152`) reads a single line, answers, and returns — a
+client that reuses the socket gets silence.
+
 ## Usage
 
 ```ts
@@ -98,10 +105,32 @@ socket.on("data", (chunk: Uint8Array) => {
 
 ```
 pnpm install
-pnpm test          # vitest
+pnpm test          # vitest — codec only, no binary needed
 pnpm typecheck     # tsc --noEmit (src, Node-free) + tsconfig.test.json
+pnpm test:live     # vitest against a REAL spawned `herdr server` (needs target/debug/herdr)
 ```
 
 Golden bytes in `test/vectors.ts` come from real `bincode` v2 `config::standard()` output;
 `tools/gen-vectors.rs` regenerates them and documents how. `test/fixtures.test.ts` additionally
 cross-checks `docs/next/protocol/fixtures.json` when that file is present.
+
+### The live suite (`test/live/`)
+
+Everything above is byte-level: it proves the codec agrees with a *recording*. `pnpm test:live`
+proves it agrees with the *program*. It spawns an XDG-isolated `target/debug/herdr server`, calls
+`agent.list` / `pane.list` over the JSON API, handshakes on `herdr-client.sock` as
+`TerminalAnsi` + `TerminalAttach`, sends `ObserveTerminal`, and decodes real
+`ServerMessage::Terminal` frames — the TypeScript sibling of
+[`tests/observe_terminal_ansi.rs`](../../tests/observe_terminal_ansi.rs). It also asserts observing
+does not resize the observed pane's PTY (measured with `stty size` *inside* the pane, because
+`PaneInfo` carries no size field — `src/api/schema/panes.rs:398-430`).
+
+It is excluded from `pnpm test` on purpose (`vitest.live.config.ts` is a separate runner): it
+spawns a process and waits on a shell, and the codec gate should need neither. If the binary is
+missing it skips **loudly** on stderr; set `HERDR_LIVE_REQUIRE=1` where the binary is supposed to
+exist and the skip becomes a failure instead.
+
+No PTY is involved, unlike the Rust test: measured on this tree, the server comes up fine on plain
+pipes (both sockets in ~0.5 s), so `child_process.spawn` is enough. That also keeps the server a
+direct child whose pid the harness can signal precisely — it never matches processes by name, since
+a developer box typically has several unrelated `herdr server` daemons running.
