@@ -243,6 +243,40 @@ pub fn client_handshake(
     cols: u16,
     rows: u16,
 ) -> Result<(u32, Option<String>), String> {
+    client_handshake_with(
+        stream,
+        version,
+        cols,
+        rows,
+        RENDER_ENCODING_SEMANTIC_FRAME,
+        CLIENT_LAUNCH_MODE_APP,
+    )
+}
+
+/// `RenderEncoding::SemanticFrame` (`src/protocol/wire.rs:55`).
+pub const RENDER_ENCODING_SEMANTIC_FRAME: u32 = 0;
+/// `RenderEncoding::TerminalAnsi` (`src/protocol/wire.rs:57`).
+pub const RENDER_ENCODING_TERMINAL_ANSI: u32 = 1;
+/// `ClientLaunchMode::App` (`src/protocol/wire.rs:82`).
+pub const CLIENT_LAUNCH_MODE_APP: u32 = 0;
+/// `ClientLaunchMode::TerminalAttach` (`src/protocol/wire.rs:84`).
+pub const CLIENT_LAUNCH_MODE_TERMINAL_ATTACH: u32 = 1;
+/// `ClientMessage::ObserveTerminal` wire tag, frozen by
+/// `client_message_wire_tags_preserve_protocol_15_order` (`src/protocol/wire.rs:1448`).
+pub const CLIENT_MESSAGE_OBSERVE_TERMINAL: u32 = 12;
+/// `ServerMessage::Terminal` variant index (`src/protocol/wire.rs:886`).
+pub const SERVER_MESSAGE_TERMINAL: u32 = 13;
+
+/// Handshake with an explicit render encoding and launch mode so terminal-ANSI clients (the
+/// mobile/observe surface) can be exercised, not just the semantic-frame default.
+pub fn client_handshake_with(
+    stream: &mut UnixStream,
+    version: u32,
+    cols: u16,
+    rows: u16,
+    requested_encoding: u32,
+    launch_mode: u32,
+) -> Result<(u32, Option<String>), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| e.to_string())?;
@@ -255,10 +289,10 @@ pub fn client_handshake(
             &encode_varint_u16(rows),
             &encode_varint_u32(8),  // cell_width_px
             &encode_varint_u32(16), // cell_height_px
-            &encode_varint_u32(0),  // RenderEncoding::SemanticFrame
-            &encode_varint_u32(0),  // ClientSurfaceMode::FullApp
-            &encode_varint_u32(0),  // ClientKeybindings::Server
-            &encode_varint_u32(0),  // ClientLaunchMode::App
+            &encode_varint_u32(requested_encoding),
+            &encode_varint_u32(0), // ClientSurfaceMode::FullApp
+            &encode_varint_u32(0), // ClientKeybindings::Server
+            &encode_varint_u32(launch_mode),
         ],
     );
     let framed = frame_message(&hello_payload);
@@ -275,6 +309,21 @@ pub fn client_handshake(
     let mut payload = vec![0u8; len];
     stream.read_exact(&mut payload).map_err(|e| e.to_string())?;
     decode_welcome(&payload)
+}
+
+/// Sends `ClientMessage::ObserveTerminal { target }` (read-only terminal stream).
+pub fn send_observe_terminal(stream: &mut UnixStream, target: &str) -> Result<(), String> {
+    let mut buf = encode_varint_u32(CLIENT_MESSAGE_OBSERVE_TERMINAL);
+    buf.extend_from_slice(&encode_varint_u32(target.len() as u32));
+    buf.extend_from_slice(target.as_bytes());
+    let framed = frame_message(&buf);
+    stream
+        .write_all(&framed)
+        .map_err(|e| format!("write observe: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("flush observe: {e}"))?;
+    Ok(())
 }
 
 pub fn read_server_message(stream: &mut UnixStream) -> Result<(u32, Vec<u8>), String> {
