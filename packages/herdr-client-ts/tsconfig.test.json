@@ -3,5 +3,12 @@
   "compilerOptions": {
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src", "test", "vitest.config.ts", "vitest.live.config.ts"]
+  "exclude": [],
+  "include": [
+    "src",
+    "test",
+    "vitest.config.ts",
+    "vitest.live.config.ts",
+    "vitest.live-ssh.config.ts"
+  ]
 }

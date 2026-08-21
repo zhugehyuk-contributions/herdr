@@ -1,0 +1,197 @@
+/**
+ * {@link HerdrTransport} over `ssh2` — the Node reference implementation of the seam.
+ *
+ * ⚠️ **This file is not part of the React Native bundle and must never become part of it.** It is
+ * reachable only through the `@herdr/client-ts/node` export; the `.` export (`src/index.ts`) never
+ * imports anything under `src/node/`. Three things hold that line, in descending order of value:
+ *
+ *   1. `test/hermesContract.test.ts` walks the real import graph from `src/index.ts` and fails on
+ *      any `node:*`/`ssh2`/`src/node/` reachability. **This is the only one that actually catches
+ *      a leak** — measured, by adding the leak and watching it go red.
+ *   2. `ssh2` is a devDependency, so it is not in the graph a Metro build would install.
+ *   3. `exports` maps `.` and `./node` separately; Metro resolves only `.`.
+ *
+ * Notably *not* on that list: the `tsc --noEmit` Hermes project. `types: []` suppresses only the
+ * automatic inclusion of `@types/*`; an explicit `import … from "ssh2"` still resolves through
+ * `@types/ssh2`, which drags Node's lib in via its own `/// <reference types="node" />`. A leak
+ * therefore type-checks clean. Verified 2026-08-22 — do not rely on the compiler here.
+ *
+ * Its purpose is to be the thing the React Native native module (iOS libssh2/NMSSH, Android sshj —
+ * `mobile/.prd/02-architecture.md` §2.4) has to match. Everything protocol-shaped is therefore in
+ * `src/transport.ts`, not here; what is left below is genuinely ssh2-specific: authentication, the
+ * exec call, and translating a `ClientChannel`'s events into {@link HerdrChannelHandlers}.
+ */
+import { Client, type ClientChannel, type ConnectConfig } from "ssh2";
+
+import type { RemoteBridgeCommandOptions } from "../transport.js";
+
+import {
+  DEFAULT_SESSION_NAME,
+  remoteBridgeCommand,
+  type HerdrChannel,
+  type HerdrChannelClose,
+  type HerdrChannelHandlers,
+  type HerdrChannelKind,
+  type HerdrTransport,
+} from "../transport.js";
+
+/**
+ * Connection + command options. The command half (`herdrBinary`, `session`, `env`) is
+ * {@link RemoteBridgeCommandOptions}, which lives in `src/transport.ts` because a React Native
+ * native module has to build the identical string; only `ssh` and `execTimeoutMs` are ssh2's.
+ */
+export interface SshHerdrTransportOptions extends RemoteBridgeCommandOptions {
+  /** Passed to `ssh2`'s `Client.connect` verbatim: host, port, username, privateKey, agent, … */
+  ssh: ConnectConfig;
+  /** How long `openChannel` waits for the remote exec to be accepted. Default 20s. */
+  execTimeoutMs?: number;
+}
+
+export { DEFAULT_SESSION_NAME };
+
+class SshChannel implements HerdrChannel {
+  readonly kind: HerdrChannelKind;
+  private readonly stream: ClientChannel;
+  private closed = false;
+
+  constructor(kind: HerdrChannelKind, stream: ClientChannel, handlers: HerdrChannelHandlers) {
+    this.kind = kind;
+    this.stream = stream;
+
+    let stderr = "";
+    let exitCode: number | undefined;
+    let signal: string | undefined;
+    let error: Error | undefined;
+
+    stream.on("data", (chunk: Buffer) => handlers.onData(new Uint8Array(chunk)));
+    stream.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    // `exit` is optional per the SSH2 spec, so it is recorded when it arrives and `close` is what
+    // actually terminates the channel — never the other way round.
+    stream.on("exit", (code: number | null, signalName?: string) => {
+      if (code === null) {
+        signal = signalName;
+      } else {
+        exitCode = code;
+      }
+    });
+    stream.on("error", (err: Error) => {
+      error ??= err;
+    });
+    stream.on("close", () => {
+      if (this.closed) {
+        return;
+      }
+      this.closed = true;
+      const close: HerdrChannelClose = {};
+      if (exitCode !== undefined) close.exitCode = exitCode;
+      if (signal !== undefined) close.signal = signal;
+      if (stderr.length > 0) close.stderr = stderr;
+      if (error !== undefined) close.error = error;
+      handlers.onClose(close);
+    });
+  }
+
+  write(bytes: Uint8Array): void {
+    this.stream.write(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  }
+
+  close(): void {
+    // EOF first so the remote's stdin pump can shut the socket's write half down cleanly
+    // (`bridge_stdio_to_socket`, `src/remote/unix.rs:583-587`), then tear the channel down.
+    this.stream.end();
+    this.stream.close();
+  }
+}
+
+/**
+ * One ssh connection, N exec channels.
+ *
+ * The multiplexing contract of `HerdrTransport` is enforced structurally: {@link connect} is the
+ * only place a `Client` is created, and {@link openChannel} can do nothing but `exec` on it.
+ * {@link connectionCount} exposes the count so a test can assert it rather than trust the prose.
+ */
+export class SshHerdrTransport implements HerdrTransport {
+  private readonly client: Client;
+  private readonly options: SshHerdrTransportOptions;
+  private connections = 0;
+  private channelsOpened = 0;
+  private ended = false;
+
+  private constructor(client: Client, options: SshHerdrTransportOptions) {
+    this.client = client;
+    this.options = options;
+  }
+
+  /** ssh connections established. One transport is one host, so this must stay at 1. */
+  get connectionCount(): number {
+    return this.connections;
+  }
+
+  /** Exec channels opened over the lifetime of this transport. */
+  get channelCount(): number {
+    return this.channelsOpened;
+  }
+
+  static connect(options: SshHerdrTransportOptions): Promise<SshHerdrTransport> {
+    return new Promise((resolveTransport, rejectTransport) => {
+      const client = new Client();
+      const transport = new SshHerdrTransport(client, options);
+      const onEarlyError = (error: Error): void => {
+        client.removeListener("ready", onReady);
+        rejectTransport(error);
+      };
+      const onReady = (): void => {
+        client.removeListener("error", onEarlyError);
+        transport.connections += 1;
+        // Post-handshake errors have no request to reject; surface them instead of crashing the
+        // process on an unhandled 'error' event. Individual channels get their own close events.
+        client.on("error", () => {});
+        resolveTransport(transport);
+      };
+      client.once("ready", onReady);
+      client.once("error", onEarlyError);
+      client.connect(options.ssh);
+    });
+  }
+
+  openChannel(kind: HerdrChannelKind, handlers: HerdrChannelHandlers): Promise<HerdrChannel> {
+    if (this.ended) {
+      return Promise.reject(new Error("transport is closed"));
+    }
+    const command = remoteBridgeCommand(kind, this.options);
+    const timeoutMs = this.options.execTimeoutMs ?? 20_000;
+
+    return new Promise((resolveChannel, rejectChannel) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        rejectChannel(new Error(`remote exec did not start within ${timeoutMs}ms: ${command}`));
+      }, timeoutMs);
+
+      // `pty: false` mirrors the desktop client's `ssh -T` (`src/remote/unix.rs:288-296`): a pty
+      // would turn the byte pump into a line discipline and mangle every framed payload.
+      this.client.exec(command, { pty: false }, (error, stream) => {
+        if (settled) {
+          stream?.close();
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        if (error) {
+          rejectChannel(error);
+          return;
+        }
+        this.channelsOpened += 1;
+        resolveChannel(new SshChannel(kind, stream, handlers));
+      });
+    });
+  }
+
+  close(): void {
+    this.ended = true;
+    this.client.end();
+  }
+}

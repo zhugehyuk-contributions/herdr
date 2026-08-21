@@ -18,5 +18,7 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "//exclude": "src/node is the Node-only entry (`@herdr/client-ts/node`, ssh2), kept out of the Hermes project. NOTE: this does NOT make tsc reject a leak — measured 2026-08-22, adding `export … from './node/index.js'` to src/index.ts still compiles clean here, because `types: []` only suppresses AUTOMATIC @types inclusion and @types/ssh2 (which pulls in node via a /// reference) is resolved on demand. The machine check for the leak is test/hermesContract.test.ts.",
+  "exclude": ["src/node"]
 }

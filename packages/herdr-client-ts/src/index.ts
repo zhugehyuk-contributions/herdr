@@ -10,6 +10,11 @@
  * Plus `./jsonApi.js` for the *other* socket: herdr's newline-delimited JSON control API, which is
  * how a client discovers the pane it is going to observe. Same rules apply to it.
  *
+ * Plus `./transport.js`, the seam by which both of those sockets are reached on a phone: not a
+ * unix socket but an ssh exec channel onto `herdr remote-api-bridge` / `herdr remote-client-bridge`
+ * (`src/remote/unix.rs:75-76`). The interface only; the ssh2 implementation of it is a separate
+ * entry point, `@herdr/client-ts/node`.
+ *
  * No Node built-ins are used, so the package runs unchanged under Hermes/React Native.
  */
 export {
@@ -85,3 +90,27 @@ export {
   type JsonApiOkResponse,
   type JsonApiResponse,
 } from "./jsonApi.js";
+export {
+  DEFAULT_SESSION_NAME,
+  HerdrChannelKind,
+  JsonApiEventStream,
+  ServerMessageChannel,
+  bridgeSubcommand,
+  createTransportJsonApiClient,
+  describeClose,
+  hostTimer,
+  isApiChannelKind,
+  remoteBridgeCommand,
+  shellQuote,
+  transportJsonApiConnect,
+  type HerdrChannel,
+  type HerdrChannelClose,
+  type HerdrChannelHandlers,
+  type HerdrTransport,
+  type RemoteBridgeCommandOptions,
+  type ServerMessageChannelHandlers,
+  type ServerMessageChannelOptions,
+  type TransportJsonApiOptions,
+  type TransportTimer,
+  type TransportTimerHandle,
+} from "./transport.js";
