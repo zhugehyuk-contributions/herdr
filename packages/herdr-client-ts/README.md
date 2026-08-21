@@ -43,7 +43,12 @@ socket.write(
   }),
 );
 
-const reader = new ServerMessageReader();
+// `onUndecodable` is optional: `Notify`, `Clipboard`, `Pong` and the other variants this codec
+// does not decode are skipped, the rest of the chunk still decodes, and `reader.undecodableCount`
+// counts them whether or not you subscribe.
+const reader = new ServerMessageReader({
+  onUndecodable: (error) => console.debug(error.message),
+});
 let handshaked = false;
 
 socket.on("data", (chunk: Uint8Array) => {
@@ -64,6 +69,11 @@ socket.on("data", (chunk: Uint8Array) => {
 `assertWelcomeAccepted` is not optional politeness. `Hello.requested_encoding` is a *request*;
 `Welcome.encoding` is what the server actually chose. A client that skips the check and gets
 `SemanticFrame` will read `Frame` payloads as `Terminal` frames.
+
+`push` throws exactly one thing: `OversizedFrameError`, the framing error that leaves the stream
+with no resync point (the salvageable messages ride along on `error.decodedBefore`). Everything
+else the decoder rejects — an undecoded variant, a corrupt payload — costs that one frame and
+nothing behind it, because the length prefix already fixed where the next frame starts.
 
 ## Transport — how this reaches a server that is not local
 

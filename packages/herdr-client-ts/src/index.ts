@@ -75,7 +75,7 @@ export {
   type TerminalMessage,
   type WelcomeMessage,
 } from "./messages.js";
-export { ServerMessageReader } from "./stream.js";
+export { ServerMessageReader, type ServerMessageReaderOptions } from "./stream.js";
 export {
   JsonApiClient,
   JsonApiError,

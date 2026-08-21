@@ -23,8 +23,11 @@ export class WireError extends Error {
   readonly code: WireErrorCode;
 
   /**
-   * Messages successfully decoded before this error, when it was raised mid-chunk by
-   * `ServerMessageReader.push`. Lets a caller keep good frames while surfacing the bad one.
+   * What was successfully read before this error, when it was raised mid-chunk. Lets a caller keep
+   * the good frames while surfacing the fatal one. The element type follows the layer that threw:
+   * frame payloads (`Uint8Array`) from `FrameReader.push`, decoded messages from
+   * `ServerMessageReader.push`, which re-decodes the payloads it was handed. Attached once, on the
+   * throw that produced it; a poisoned reader rethrows the same error object unchanged.
    */
   decodedBefore?: unknown[];
 

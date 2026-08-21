@@ -13,6 +13,8 @@ import {
   encodeHello,
   frameMessage,
   serverFrameSizeCap,
+  type ServerMessage,
+  type WireError,
 } from "../src/index.js";
 import { frameHex, fromHex, toHex } from "./helpers.js";
 import { TERMINAL_SMALL_FULL, WELCOME_OK_ANSI } from "./vectors.js";
@@ -222,6 +224,39 @@ describe("FrameReader", () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// ServerMessageReader
+// ---------------------------------------------------------------------------
+
+/**
+ * Concatenates frames into one chunk. Chunk boundaries are meaningless on a socket, and that is
+ * precisely what these tests are about: what happens to share a TCP segment must never decide
+ * which frames survive.
+ */
+function glue(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+
+/** `ServerMessage::Notify` (variant 4): not decoded here, and routine traffic on a real server. */
+const NOTIFY_FRAME = fromHex(frameHex("04"));
+/** `ServerMessage::Compressed` (variant 11), likewise not decoded. */
+const COMPRESSED_FRAME = fromHex(frameHex("0b03aabbcc"));
+/** A `Terminal` tag whose body stops after `seq`: the frame is whole, the message inside is not. */
+const CORRUPT_TERMINAL_FRAME = fromHex(frameHex("0d01"));
+
+function oversizedHeader(): Uint8Array {
+  const header = new Uint8Array(4);
+  new DataView(header.buffer).setUint32(0, RUST_MAX_GRAPHICS_FRAME_SIZE + 1, true);
+  return header;
+}
+
 describe("ServerMessageReader", () => {
   it("decodes messages across chunk boundaries", () => {
     const reader = new ServerMessageReader();
@@ -237,25 +272,114 @@ describe("ServerMessageReader", () => {
     expect(reader.hasPartialFrame).toBe(false);
   });
 
-  it("names an undecodable variant instead of dropping the frame", () => {
-    // Variant 11 = ServerMessage::Compressed, which this codec does not inflate.
-    const compressed = fromHex(frameHex("0b03aabbcc"));
-    const chunk = new Uint8Array(WELCOME_FRAME.length + compressed.length);
-    chunk.set(WELCOME_FRAME, 0);
-    chunk.set(compressed, WELCOME_FRAME.length);
-
+  /**
+   * The regression. `Notify` is undecoded *and* routine, so it routinely shares a TCP segment with
+   * the `Terminal` frame behind it. Aborting the chunk on the first undecodable frame threw that
+   * `Terminal` away for good — `FrameReader` had already consumed it — and an ANSI screen built
+   * from diffs then stays wrong until the next full frame.
+   */
+  it("keeps a Terminal that shares a chunk with an undecodable variant", () => {
     const reader = new ServerMessageReader();
-    try {
-      reader.push(chunk);
-      expect.unreachable("expected an UnsupportedVariantError");
-    } catch (error) {
-      expect(error).toBeInstanceOf(UnsupportedVariantError);
-      expect((error as UnsupportedVariantError).variant).toBe(11);
-      expect((error as UnsupportedVariantError).variantName).toBe("Compressed");
-      expect((error as UnsupportedVariantError).decodedBefore).toHaveLength(1);
-    }
+    const messages = reader.push(glue(NOTIFY_FRAME, TERMINAL_FRAME));
 
-    // The bad frame was consumed, so the stream stays in sync.
+    expect(messages.map((m) => m.type)).toEqual(["terminal"]);
+    expect(reader.undecodableCount).toBe(1);
+    expect(reader.lastUndecodable?.code).toBe("unsupported-variant");
+  });
+
+  it("skips every undecodable frame in a chunk and keeps every decodable one", () => {
+    const seen: WireError[] = [];
+    const reader = new ServerMessageReader({ onUndecodable: (error) => seen.push(error) });
+    const messages = reader.push(glue(WELCOME_FRAME, NOTIFY_FRAME, COMPRESSED_FRAME, TERMINAL_FRAME));
+
+    expect(messages.map((m) => m.type)).toEqual(["welcome", "terminal"]);
+    expect(seen.map((error) => error.code)).toEqual([
+      "unsupported-variant",
+      "unsupported-variant",
+    ]);
+    expect(seen.map((error) => (error as UnsupportedVariantError).variantName)).toEqual([
+      "Notify",
+      "Compressed",
+    ]);
+    expect(seen.map((error) => (error as UnsupportedVariantError).variant)).toEqual([4, 11]);
+  });
+
+  it("keeps the frames before a trailing undecodable one and stays in sync", () => {
+    const reader = new ServerMessageReader();
+    const messages = reader.push(glue(WELCOME_FRAME, TERMINAL_FRAME, NOTIFY_FRAME));
+    expect(messages.map((m) => m.type)).toEqual(["welcome", "terminal"]);
+
+    // The bad frame was consumed, not half-read: the next chunk decodes normally.
+    expect(reader.push(TERMINAL_FRAME).map((m) => m.type)).toEqual(["terminal"]);
+    expect(reader.undecodableCount).toBe(1);
+  });
+
+  it("survives an undecodable frame delivered one byte at a time", () => {
+    const reader = new ServerMessageReader();
+    const stream = glue(NOTIFY_FRAME, TERMINAL_FRAME, COMPRESSED_FRAME, WELCOME_FRAME);
+
+    const messages = [];
+    for (let i = 0; i < stream.length; i += 1) {
+      messages.push(...reader.push(stream.subarray(i, i + 1)));
+    }
+    expect(messages.map((m) => m.type)).toEqual(["terminal", "welcome"]);
+    expect(reader.undecodableCount).toBe(2);
+    expect(reader.hasPartialFrame).toBe(false);
+  });
+
+  /**
+   * A caller that passes no handler must still be able to find out that frames were dropped —
+   * "skip and continue" without a receipt is just silent data loss with extra steps.
+   */
+  it("counts skips even with no handler, and clears the count on reset", () => {
+    const reader = new ServerMessageReader();
+    reader.push(glue(NOTIFY_FRAME, COMPRESSED_FRAME));
+
+    expect(reader.undecodableCount).toBe(2);
+    expect(reader.lastUndecodable?.message).toContain("Compressed");
+
+    reader.reset();
+    expect(reader.undecodableCount).toBe(0);
+    expect(reader.lastUndecodable).toBeUndefined();
+  });
+
+  /**
+   * A corrupt *payload* does not desynchronize anything: the length prefix already told the framer
+   * where the frame ends, so the frames behind it are still exactly where they should be. Only a
+   * corrupt length prefix desyncs, and that is `FrameReader`'s business (`oversized`, below).
+   */
+  it("does not let a corrupt payload kill the frames behind it", () => {
+    const seen: WireError[] = [];
+    const reader = new ServerMessageReader({ onUndecodable: (error) => seen.push(error) });
+    const messages = reader.push(glue(CORRUPT_TERMINAL_FRAME, TERMINAL_FRAME));
+
+    expect(messages.map((m) => m.type)).toEqual(["terminal"]);
+    expect(seen.map((error) => error.code)).toEqual(["corrupt"]);
+  });
+
+  /**
+   * The one error that is still thrown, because it is the one the stream cannot come back from:
+   * an oversized length prefix leaves no resync point and poisons `FrameReader`.
+   */
+  it("hands back messages decoded before an oversized frame, then rethrows it unchanged", () => {
+    const reader = new ServerMessageReader();
+
+    let thrown: unknown;
+    try {
+      reader.push(glue(WELCOME_FRAME, oversizedHeader()));
+      expect.unreachable("expected an OversizedFrameError");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(OversizedFrameError);
+    const salvaged = (thrown as OversizedFrameError).decodedBefore as ServerMessage[];
+    expect(salvaged.map((m) => m.type)).toEqual(["welcome"]);
+
+    // Rethrown as-is, so a caller that salvages once does not salvage the same messages twice.
+    expect(() => reader.push(TERMINAL_FRAME)).toThrow(OversizedFrameError);
+    expect((thrown as OversizedFrameError).decodedBefore).toBe(salvaged);
+
+    reader.reset();
     expect(reader.push(TERMINAL_FRAME).map((m) => m.type)).toEqual(["terminal"]);
   });
 });

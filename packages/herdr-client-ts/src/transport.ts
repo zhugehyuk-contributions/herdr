@@ -402,14 +402,16 @@ export interface ServerMessageChannelOptions {
  *
  * ## Why this de-frames and decodes separately instead of using {@link ServerMessageReader}
  *
- * `ServerMessageReader.push` decodes a chunk's frames in a loop and rethrows on the first failure
- * (`src/stream.ts:38-45`), attaching only the messages decoded *before* it. Frames that were
- * already de-framed **after** the failure are dropped with the throw. That is fine for a codec
- * test fed one frame at a time, and wrong on a socket: `Notify` (an undecoded variant, and normal
- * traffic) routinely shares a TCP segment with the `Terminal` frame behind it, and losing that
- * `Terminal` corrupts a diff-based ANSI screen until the next full frame.
+ * Not for the reason it once was. `ServerMessageReader.push` used to rethrow on the first
+ * undecodable frame, dropping everything already de-framed behind it — fatal on a socket, where
+ * `Notify` (an undecoded variant, and normal traffic) routinely shares a TCP segment with the
+ * `Terminal` frame after it. `src/stream.ts` now skips and continues, so both layers agree that an
+ * undecodable frame costs exactly that frame.
  *
- * So the frame loop lives here, where an undecodable frame costs exactly that frame.
+ * What is left is shape. This class is push-shaped: each frame is routed the moment it is decoded
+ * (`onMessage` / `onUndecodable` / `onError`), including the frames salvaged out of a poisoned
+ * {@link FrameReader}, whereas `push` returns an array and reports the rest out of band. Folding
+ * one into the other would buy a dozen lines and cost that per-frame ordering.
  */
 export class ServerMessageChannel {
   private readonly frames: FrameReader;

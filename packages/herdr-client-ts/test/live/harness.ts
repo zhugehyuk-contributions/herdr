@@ -282,15 +282,18 @@ export function apiClient(server: SpawnedServer, timeoutMs = 15_000): JsonApiCli
  * The observing client's end of `herdr-client.sock`, driven by {@link ServerMessageReader}.
  *
  * Frames whose variant this codec does not decode (`Notify`, `Compressed`, …) are expected on a
- * real connection: `decodeServerMessage` throws `UnsupportedVariantError` for them by design. The
- * offending frame has already been consumed, so we salvage `decodedBefore`, record the variant and
- * keep reading — which is the recovery `src/stream.ts` documents, exercised for real here.
+ * real connection: `decodeServerMessage` raises `UnsupportedVariantError` for them by design. The
+ * reader consumes such a frame, reports it through `onUndecodable` and keeps decoding the rest of
+ * the chunk — so a `Terminal` that shared a TCP segment with a `Notify` still lands here, which is
+ * the property this harness exercises against a real server.
  */
 export class LiveClientStream {
   readonly messages: ServerMessage[] = [];
   readonly undecodable: string[] = [];
   private readonly socket: Socket;
-  private readonly reader = new ServerMessageReader();
+  private readonly reader = new ServerMessageReader({
+    onUndecodable: (error) => this.onUndecodable(error),
+  });
   private cursor = 0;
   private wake: (() => void) | null = null;
   private failure: Error | null = null;
@@ -316,17 +319,28 @@ export class LiveClientStream {
     });
   }
 
+  /**
+   * Undecoded variants are traffic, not failure. Anything else the decoder rejects (a corrupt
+   * payload) is recorded as the failure that ends the wait: the reader keeps going, but a live
+   * test that saw corruption has nothing left to prove.
+   */
+  private onUndecodable(error: WireError): void {
+    if (error.code === "unsupported-variant") {
+      this.undecodable.push(error.message);
+    } else {
+      this.failure ??= error;
+    }
+  }
+
   private ingest(chunk: Uint8Array): void {
     try {
       this.messages.push(...this.reader.push(chunk));
     } catch (error) {
+      // Only framing errors reach here now, and they are terminal: an oversized prefix leaves no
+      // resync point. Salvage the messages decoded before it, then stop.
       const wire = error as WireError;
-      if (wire.code === "unsupported-variant") {
-        this.messages.push(...((wire.decodedBefore ?? []) as ServerMessage[]));
-        this.undecodable.push(wire.message);
-      } else {
-        this.failure = error as Error;
-      }
+      this.messages.push(...((wire.decodedBefore ?? []) as ServerMessage[]));
+      this.failure ??= wire;
     }
     this.wake?.();
   }

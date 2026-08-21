@@ -268,7 +268,8 @@ describe("observe flow over a transport", () => {
     const wire = transport.last();
 
     // ServerMessage::Notify (tag 4, undecoded) immediately followed by a Terminal, in ONE chunk —
-    // the arrangement that `ServerMessageReader` would have dropped the Terminal from.
+    // the arrangement `ServerMessageReader` used to drop the Terminal from (`src/stream.ts`, fixed
+    // there too). Both layers own this property; this one pins it for the push-shaped path.
     wire.emit(fromHex(frameHex("04") + frameHex(TERMINAL_SMALL_FULL)));
 
     expect(got.undecodable.map((error) => error.code)).toEqual(["unsupported-variant"]);
