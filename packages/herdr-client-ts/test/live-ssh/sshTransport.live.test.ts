@@ -258,6 +258,18 @@ describe.skipIf(skipReason !== null)("live: herdr over an ssh transport", () => 
     );
     expect(second.seq > frame.seq).toBe(true);
 
+    // The wire-layout probe's no-false-positive receipt, against the real thing. `ObserveTerminal`
+    // armed it above (`ServerMessageChannel.send` reads the tag back out of the framed bytes), a
+    // healthy mx server ran a full observe session through it, and it stayed quiet. That is the
+    // half of `src/layoutProbe.ts` no fixture can establish: the rule was argued from what the
+    // server's code *can* emit (`src/server/headless.rs`, `src/server/render_stream.rs`), and this
+    // is the server actually emitting it.
+    process.stdout.write(
+      `[ssh] layout probe: undecodable=${stream.undecodableCount} ` +
+        `verdict=${stream.layoutMismatch?.message ?? "none"}\n`,
+    );
+    expect(stream.layoutMismatch).toBeUndefined();
+
     stream.close();
   }, 120_000);
 

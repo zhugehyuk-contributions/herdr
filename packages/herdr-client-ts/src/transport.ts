@@ -49,7 +49,15 @@ import {
   type ServerMessage,
 } from "./messages.js";
 import { utf8Encode } from "./utf8.js";
-import { desynchronizesScreen, type WireError } from "./errors.js";
+import {
+  UnsupportedVariantError,
+  desynchronizesScreen,
+  type LayoutMismatchError,
+  type WireError,
+} from "./errors.js";
+import { ByteCursor } from "./cursor.js";
+import { ClientMessageTag, LENGTH_PREFIX_BYTES } from "./constants.js";
+import { WireLayoutProbe, type WireLayoutProbeOptions } from "./layoutProbe.js";
 
 /**
  * What a channel is for. Not decoration: the kind decides the **remote command** and, more
@@ -218,32 +226,75 @@ export type TransportTimerHandle = unknown;
  * Native's `JSTimers`. Rather than pull in `@types/node`/`lib.dom` and blunt the gate that keeps
  * this package Hermes-clean, the timer is a value.
  *
- * {@link hostTimer} is the default and simply forwards to `globalThis`, which *is* ES2020. If the
- * host has no timers the calls become no-ops: a request then has no deadline of its own and ends
- * when the channel does. That is a real degradation, so it is stated here rather than hidden — a
- * caller in such a host should pass its own {@link TransportTimer}.
+ * {@link hostTimer} is the default and simply forwards to `globalThis`, which *is* ES2020. A host
+ * that has no timers gets an error, not a degradation — see {@link createHostTimer}.
  */
 export interface TransportTimer {
   setTimeout(handler: () => void, ms: number): TransportTimerHandle;
   clearTimeout(handle: TransportTimerHandle): void;
 }
 
-interface HostTimers {
-  setTimeout?: (handler: () => void, ms: number) => unknown;
-  clearTimeout?: (handle: unknown) => void;
+/** The subset of a host object this package needs. `globalThis` in production. */
+export interface HostTimers {
+  setTimeout?: ((handler: () => void, ms: number) => unknown) | undefined;
+  clearTimeout?: ((handle: unknown) => void) | undefined;
+}
+
+/**
+ * A {@link TransportTimer} over a host object — and a **hard failure** when that host has no
+ * timers, rather than a silent no-op.
+ *
+ * The calls used to be optional (`host.setTimeout?.(…)`). On a host without timers they returned
+ * `undefined` and armed nothing, so every documented deadline in this file quietly became *no*
+ * deadline: `nextLine`'s 15s bound never fired and the promise it was supposed to bound waited on
+ * the channel instead. Since `JsonApiEventStream.subscribe` began waiting for the server's
+ * acknowledgement, that no-op means `subscribe()` never settles — and a pending promise is the one
+ * failure with no diagnosis at all: no error, no log, no close, just a UI that never finishes
+ * connecting. A throw at the moment the deadline would have been armed is strictly better: it
+ * names the missing capability and the injection point that fixes it.
+ *
+ * Both halves are required together. `setTimeout` without `clearTimeout` is worse than neither:
+ * the deadline arms, the response arrives, the timer cannot be cancelled, and it later fails a
+ * *healthy* channel with "no API response line" long after that line was read.
+ *
+ * The host is a parameter rather than a hard-coded `globalThis` so the timerless case is reachable
+ * from a test without mutating the global object the test runner is standing on.
+ */
+export function createHostTimer(host: HostTimers): TransportTimer {
+  const timers = (): {
+    setTimeout: (handler: () => void, ms: number) => unknown;
+    clearTimeout: (handle: unknown) => void;
+  } => {
+    const set = host.setTimeout;
+    const clear = host.clearTimeout;
+    if (typeof set !== "function" || typeof clear !== "function") {
+      const missing = [
+        typeof set === "function" ? null : "setTimeout",
+        typeof clear === "function" ? null : "clearTimeout",
+      ].filter((name): name is string => name !== null);
+      throw new Error(
+        `this host provides no ${missing.join("/")}, so a deadline cannot be armed and the ` +
+          "request would wait forever; pass an explicit TransportTimer (the `timer` option) " +
+          "backed by the host's own scheduler",
+      );
+    }
+    return { setTimeout: set, clearTimeout: clear };
+  };
+
+  return {
+    setTimeout(handler: () => void, ms: number): TransportTimerHandle {
+      return timers().setTimeout(handler, ms);
+    },
+    clearTimeout(handle: TransportTimerHandle): void {
+      // Never throws: nothing can have been armed by a timer whose `setTimeout` refused to run,
+      // so a caller unwinding through its `finally` must not trip over a second error here.
+      host.clearTimeout?.(handle);
+    },
+  };
 }
 
 /** {@link TransportTimer} bound to `globalThis`. */
-export const hostTimer: TransportTimer = {
-  setTimeout(handler: () => void, ms: number): TransportTimerHandle {
-    const host = globalThis as HostTimers;
-    return host.setTimeout?.(handler, ms);
-  },
-  clearTimeout(handle: TransportTimerHandle): void {
-    const host = globalThis as HostTimers;
-    host.clearTimeout?.(handle);
-  },
-};
+export const hostTimer: TransportTimer = createHostTimer(globalThis as HostTimers);
 
 export interface TransportJsonApiOptions {
   /** How long a single request may wait for its response line. Default 15s. */
@@ -617,8 +668,13 @@ export interface ServerMessageChannelHandlers {
    */
   onUndecodable?: ((error: WireError) => void) | undefined;
   /**
-   * A failure the stream cannot come back from: a framing error, and nothing else. The only one is
-   * an oversized length prefix, which desynchronizes the stream with no resync point.
+   * A failure the stream cannot come back from. Two of them:
+   *
+   * - a framing error — an oversized length prefix, which desynchronizes the stream with no resync
+   *   point ({@link OversizedFrameError});
+   * - a wire-layout verdict — the peer's frames do not look like this codec's layout, so nothing on
+   *   this stream is going to decode ({@link LayoutMismatchError}, also readable as
+   *   {@link ServerMessageChannel.layoutMismatch}).
    *
    * Terminal, and it means it — this fires **exactly once**, no matter how many chunks the bridge
    * writes afterwards, and no `onMessage` follows it. `onClose` still reports the channel's own
@@ -630,6 +686,29 @@ export interface ServerMessageChannelHandlers {
 
 export interface ServerMessageChannelOptions {
   frameReader?: FrameReaderOptions | undefined;
+  /**
+   * Tuning for the wire-layout probe ({@link WireLayoutProbe}). The defaults are the argued ones;
+   * this exists for a caller that knows its peer better than this package can.
+   */
+  layoutProbe?: WireLayoutProbeOptions | undefined;
+  /**
+   * How long after `ObserveTerminal` the first `ServerMessage::Terminal` may take before the probe
+   * is allowed to reach a verdict on the frames it has. **Opt-in: omitted means no deadline.**
+   *
+   * The count-based rule ({@link WireLayoutProbe}) is the primary detector and needs no clock; this
+   * only covers the sparse case, a skewed peer whose pane is too idle to ever repeat enough. It is
+   * off by default for two reasons: a codec that reads bytes should not acquire a dependency on a
+   * clock unless its caller asks it to (this package's timers are injected precisely because the
+   * host may not have any — see {@link createHostTimer}), and a default deadline would make every
+   * slow first render on a cold server look like a fork. An app that renders a terminal *should*
+   * set it; the value it picks is a UI decision, not a protocol one.
+   *
+   * Even when set, the deadline never accuses a peer it has no evidence against: it is silent
+   * unless at least one undecodable frame arrived (`WireLayoutProbe.deadlineExpired`).
+   */
+  firstTerminalTimeoutMs?: number | undefined;
+  /** Timer backing {@link ServerMessageChannelOptions.firstTerminalTimeoutMs}. Defaults to {@link hostTimer}. */
+  timer?: TransportTimer | undefined;
 }
 
 /**
@@ -668,6 +747,17 @@ export interface ServerMessageChannelOptions {
  * `screenDesynced` (`src/stream.ts`); both layers classify a desync with the same predicate,
  * `desynchronizesScreen` (`src/errors.ts`), so only the *remedy* differs.
  *
+ * ## The wire-layout probe (what a matching `PROTOCOL_VERSION` does not buy)
+ *
+ * `assertWelcomeAccepted` (`src/messages.ts`) compares versions, and `src/constants.ts:4-9` records
+ * that mx and upstream both report 20 while disagreeing on `ServerMessage::Terminal` (13 here, 2
+ * upstream) — so the handshake passes against a peer whose every terminal frame this codec then
+ * skips. This class is where that becomes detectable: it holds the write end, so it knows when
+ * `ObserveTerminal` went out (the probe's premise), and it sees every frame that fails to decode
+ * (the probe's evidence). {@link WireLayoutProbe} owns the rule; the verdict arrives once, on
+ * `onError`, and as {@link ServerMessageChannel.layoutMismatch}. It is an **inference** — see
+ * {@link LayoutMismatchError}.
+ *
  * ## Handler calls are isolated
  *
  * Every handler is invoked through {@link ServerMessageChannel.notify}, so a handler that throws
@@ -695,10 +785,20 @@ export class ServerMessageChannel {
   private desynced = false;
   private droppedDiffs = 0;
   private fullFrameRequests = 0;
+  /** The fork-skew alarm. Armed by `ObserveTerminal`, settled by the first decoded `Terminal`. */
+  private readonly probe: WireLayoutProbe;
+  /** Set once the probe has condemned the connection; terminal, exactly like a framing failure. */
+  private layoutFailure: LayoutMismatchError | null = null;
+  private readonly firstTerminalTimeoutMs: number;
+  private readonly timer: TransportTimer;
+  private firstTerminalDeadline: TransportTimerHandle | null = null;
 
   private constructor(handlers: ServerMessageChannelHandlers, options: ServerMessageChannelOptions) {
     this.handlers = handlers;
     this.frames = new FrameReader(options.frameReader ?? {});
+    this.probe = new WireLayoutProbe(options.layoutProbe ?? {});
+    this.firstTerminalTimeoutMs = options.firstTerminalTimeoutMs ?? 0;
+    this.timer = options.timer ?? hostTimer;
   }
 
   static async open(
@@ -711,6 +811,7 @@ export class ServerMessageChannel {
       onData: (chunk) => self.ingest(chunk),
       onClose: (close) => {
         self.closed = true;
+        self.cancelFirstTerminalDeadline();
         self.notify(handlers.onClose, close);
       },
     });
@@ -736,6 +837,22 @@ export class ServerMessageChannel {
   /** The most recent dropped frame's error, for a caller that polls instead of subscribing. */
   get lastUndecodable(): WireError | undefined {
     return this.lastSkipped;
+  }
+
+  /**
+   * The wire-layout verdict, once the probe has reached one — the counter above turned into an
+   * answer.
+   *
+   * `undecodableCount` made "connected, green, black screen" *diagnosable* by someone who already
+   * suspected fork skew. This *detects* it: `ObserveTerminal` went out, frames came back on one tag
+   * this codec cannot decode, and no `Terminal` ever did. It is also delivered to `onError`, but a
+   * caller may poll it instead — and `onError` is optional, so the state has to be readable either
+   * way, for the same reason `undecodableCount` is always present.
+   *
+   * ⚠️ Inferred, never proven — {@link LayoutMismatchError} says exactly how far it goes.
+   */
+  get layoutMismatch(): LayoutMismatchError | undefined {
+    return this.layoutFailure ?? undefined;
   }
 
   /**
@@ -776,7 +893,7 @@ export class ServerMessageChannel {
   }
 
   private ingest(chunk: Uint8Array): void {
-    if (this.framingFailure !== null || this.closed) {
+    if (this.framingFailure !== null || this.layoutFailure !== null || this.closed) {
       // Both terminal, and "terminal" has to mean it. A poisoned `FrameReader` rethrows the *same*
       // error object on every later push, salvage included (`src/framing.ts:53-56`), so without
       // this guard each further chunk would re-decode and re-emit the frames already routed below
@@ -818,6 +935,11 @@ export class ServerMessageChannel {
       const wire = error as WireError;
       this.skipped += 1;
       this.lastSkipped = wire;
+      if (wire instanceof UnsupportedVariantError && this.condemnLayout(wire.variant)) {
+        // The connection is not going to produce a `Terminal`; reporting this frame as one more
+        // routine skip would bury the only line that explains the black screen.
+        return;
+      }
       if (desynchronizesScreen(wire)) {
         this.requestFullFrame();
       }
@@ -825,6 +947,10 @@ export class ServerMessageChannel {
       return;
     }
     if (message.type === "terminal") {
+      // Decoded, so the peer's tag 13 *is* this codec's `Terminal` — whether or not the frame is
+      // delivered below. The probe watches decoding, not delivery.
+      this.probe.noteTerminal();
+      this.cancelFirstTerminalDeadline();
       if (message.full) {
         // A full redraw is self-contained: it *is* the resynchronization point.
         this.desynced = false;
@@ -853,7 +979,12 @@ export class ServerMessageChannel {
    */
   private requestFullFrame(): void {
     this.desynced = true;
-    if (this.channel === null || this.closed || this.framingFailure !== null) {
+    if (
+      this.channel === null ||
+      this.closed ||
+      this.framingFailure !== null ||
+      this.layoutFailure !== null
+    ) {
       return;
     }
     this.fullFrameRequests += 1;
@@ -867,6 +998,95 @@ export class ServerMessageChannel {
     } catch {
       // Same reasoning, for a transport that throws synchronously.
     }
+  }
+
+  /**
+   * Feeds one skipped variant tag to the probe, and publishes the verdict if it reaches one.
+   *
+   * Only *unsupported variants* are evidence. A `CorruptError` is deliberately not: it says the
+   * bytes inside a frame this codec recognized did not parse, which is a corruption/desync story
+   * with its own remedy (`RequestFullFrame`), and feeding it here would let a flaky link get a
+   * server accused of speaking the wrong protocol.
+   *
+   * @returns true when this frame produced the verdict, so the caller stops routing it.
+   */
+  private condemnLayout(tag: number): boolean {
+    const verdict = this.probe.noteUndecodableTag(tag);
+    if (verdict === null) {
+      return false;
+    }
+    this.reportLayoutMismatch(verdict);
+    return true;
+  }
+
+  /**
+   * Publishes the verdict, once, and stops the stream.
+   *
+   * Terminal for the same reason a framing failure is: the verdict's own precondition is that not
+   * one `Terminal` has ever decoded on this channel, so there is no working stream to throw away —
+   * and continuing to route `Notify`-shaped frames from a peer whose tags this codec cannot read
+   * would keep the black screen alive while the error scrolled past.
+   */
+  private reportLayoutMismatch(verdict: LayoutMismatchError): void {
+    this.layoutFailure = verdict;
+    this.cancelFirstTerminalDeadline();
+    this.notify(this.handlers.onError, verdict);
+  }
+
+  /**
+   * Arms the probe when the client sends the message that starts the stream.
+   *
+   * This class is the layer that can do it, which is why the probe lives here rather than in
+   * `assertWelcomeAccepted` (which only ever sees the handshake — and the handshake is precisely
+   * what passes against a skewed peer) or in {@link ServerMessageReader} (which has no write end,
+   * so it cannot know the stream was ever requested; "no `Terminal` yet" would be evidence of
+   * nothing). The tag is read back out of the caller's own framed bytes rather than added to the
+   * API so that every existing caller — the live suites included — arms it by doing what it
+   * already does.
+   */
+  private noteClientMessage(framed: Uint8Array): void {
+    if (framed.length <= LENGTH_PREFIX_BYTES) {
+      return;
+    }
+    let tag: number;
+    try {
+      tag = new ByteCursor(framed, LENGTH_PREFIX_BYTES).readVarintAsNumber("ClientMessage", 0xffffffff);
+    } catch {
+      // `send` forwards bytes verbatim and always has; bytes this codec did not encode are the
+      // caller's business, not a reason to fail their write.
+      return;
+    }
+    if (tag !== ClientMessageTag.ObserveTerminal) {
+      return;
+    }
+    this.probe.arm();
+    this.armFirstTerminalDeadline();
+  }
+
+  /** The secondary, opt-in arm. No `firstTerminalTimeoutMs`, no clock. */
+  private armFirstTerminalDeadline(): void {
+    if (this.firstTerminalTimeoutMs <= 0 || this.firstTerminalDeadline !== null) {
+      return;
+    }
+    if (!this.probe.armed) {
+      return;
+    }
+    this.firstTerminalDeadline = this.timer.setTimeout(() => {
+      this.firstTerminalDeadline = null;
+      const verdict = this.probe.deadlineExpired();
+      if (verdict !== null) {
+        this.reportLayoutMismatch(verdict);
+      }
+    }, this.firstTerminalTimeoutMs);
+  }
+
+  private cancelFirstTerminalDeadline(): void {
+    const handle = this.firstTerminalDeadline;
+    if (handle === null) {
+      return;
+    }
+    this.firstTerminalDeadline = null;
+    this.timer.clearTimeout(handle);
   }
 
   /** Calls a handler without letting its failure decide what happens to the other frames. */
@@ -884,11 +1104,13 @@ export class ServerMessageChannel {
 
   /** Sends one already-framed `ClientMessage` (`encodeHelloFrame`, `encodeObserveTerminalFrame`). */
   send(bytes: Uint8Array): void | Promise<void> {
+    this.noteClientMessage(bytes);
     return this.channel?.write(bytes);
   }
 
   close(): void {
     this.closed = true;
+    this.cancelFirstTerminalDeadline();
     this.channel?.close();
   }
 }

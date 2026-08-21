@@ -43,13 +43,21 @@ export {
   FieldRangeError,
   HandshakeRejectedError,
   IncompleteError,
+  LayoutMismatchError,
   OversizedFrameError,
   ProtocolVersionMismatchError,
   UnsupportedVariantError,
   WireError,
   desynchronizesScreen,
+  type ObservedTag,
   type WireErrorCode,
 } from "./errors.js";
+
+export {
+  DEFAULT_LAYOUT_PROBE_REPEATS,
+  WireLayoutProbe,
+  type WireLayoutProbeOptions,
+} from "./layoutProbe.js";
 
 export { ByteCursor } from "./cursor.js";
 export { ByteWriter } from "./writer.js";
@@ -101,6 +109,7 @@ export {
   JsonApiEventStream,
   ServerMessageChannel,
   bridgeSubcommand,
+  createHostTimer,
   createTransportJsonApiClient,
   describeClose,
   hostTimer,
@@ -112,6 +121,7 @@ export {
   type HerdrChannelClose,
   type HerdrChannelHandlers,
   type HerdrTransport,
+  type HostTimers,
   type JsonApiEventStreamHandlers,
   type JsonApiEventStreamListener,
   type RemoteBridgeCommandOptions,

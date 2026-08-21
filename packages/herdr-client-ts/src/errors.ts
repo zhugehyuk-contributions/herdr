@@ -16,7 +16,9 @@ export type WireErrorCode =
   /** `Welcome.version` differs from the version we sent. */
   | "version-mismatch"
   /** `Welcome.encoding` is not the encoding we requested. */
-  | "encoding-mismatch";
+  | "encoding-mismatch"
+  /** The peer's traffic does not look like this codec's wire layout. Inferred, never proven. */
+  | "layout-mismatch";
 
 /**
  * Does losing this frame invalidate the **rendered screen**, as opposed to merely the frame?
@@ -35,8 +37,9 @@ export type WireErrorCode =
  *   which cells the server believes are on screen, and the length prefix — which kept the *wire*
  *   in sync — says nothing about that.
  *
- * `oversized` never reaches here: `FrameReader` poisons itself on a bad length prefix and the only
- * cure is a new connection.
+ * `oversized` and `layout-mismatch` never reach here: both are terminal for the connection —
+ * `FrameReader` poisons itself on a bad length prefix, and a layout verdict means nothing on this
+ * stream will ever decode — so there is no baseline left to repair.
  */
 export function desynchronizesScreen(error: WireError): boolean {
   return error.code !== "unsupported-variant";
@@ -161,5 +164,71 @@ export class EncodingMismatchError extends WireError {
     );
     this.requested = requested;
     this.selected = selected;
+  }
+}
+
+/** One `ServerMessage` tag this codec could not decode, and how often it arrived. */
+export interface ObservedTag {
+  /** The wire tag as it arrived. */
+  tag: number;
+  /** What *this codec's* table calls it (`src/constants.ts`), or `undefined` if it has no name. */
+  name: string | undefined;
+  count: number;
+}
+
+/**
+ * The peer's stream does not look like this wire layout — a fork-skew alarm, not a proof.
+ *
+ * ## What it is for
+ *
+ * `src/constants.ts:4-9` records the trap: herdr-mx and upstream/master both report
+ * `PROTOCOL_VERSION = 20` and both put `Welcome` at tag 0, so `assertWelcomeAccepted`
+ * (`src/messages.ts`) accepts either — while `ServerMessage::Terminal` is 13 here and 2 upstream.
+ * Against an upstream server the handshake is green and every terminal frame then arrives as a
+ * variant this codec's table calls `Graphics`, is skipped, and — `onUndecodable` being optional and
+ * documented as *not* an error — produces a black screen with zero errors. This error is that state
+ * given a name, once, instead of N undecodable-variant shrugs the caller has to add up.
+ *
+ * ## ⚠️ What it cannot do
+ *
+ * **It infers; it does not prove.** This codec cannot read the peer's tag table — nothing on the
+ * wire carries one — so all it has is the *shape* of the traffic: frames this codec cannot decode,
+ * repeating on one tag, with no `Terminal` behind them. That shape is also what a server speaking a
+ * third layout, or a future mx that moved `Terminal` again, would produce; the error names the tags
+ * it saw precisely so a human can finish the diagnosis (a repeat of tag 2 is strong evidence of
+ * upstream, because that is where upstream's `Terminal` lives). It can also stay silent on a
+ * skewed peer that never sends enough frames to reach the threshold — an alarm, not a gate.
+ *
+ * The real fix is not in this package: the server must put an ABI/layout fingerprint in `Welcome`
+ * so the client can *check* rather than guess (`mobile/.prd/03-blockers.md` M0-a). Until it does,
+ * this is the strongest signal a client-side codec can produce.
+ */
+export class LayoutMismatchError extends WireError {
+  /** Every undecodable tag seen while the probe was armed, most frequent first. */
+  readonly observedTags: ReadonlyArray<ObservedTag>;
+  /** The most repeated tag — the one that carries the accusation. */
+  readonly dominantTag: number;
+  /** How many `Terminal` frames decoded while the probe was armed. Always 0 when this is thrown. */
+  readonly terminalsSeen: number;
+
+  constructor(observedTags: ReadonlyArray<ObservedTag>, terminalsSeen: number) {
+    const dominant = observedTags[0];
+    if (dominant === undefined) {
+      throw new Error("LayoutMismatchError requires at least one observed tag");
+    }
+    const seen = observedTags
+      .map(({ tag, name, count }) => `${tag} (this codec: ${name ?? "unknown"}) x${count}`)
+      .join(", ");
+    super(
+      "layout-mismatch",
+      `this peer does not appear to speak this wire layout: ${dominant.count} frame(s) tagged ` +
+        `${dominant.tag} arrived after ObserveTerminal and no ServerMessage::Terminal did. ` +
+        `Tags seen: ${seen}. herdr-mx sends Terminal as tag 13, upstream/master as tag 2 ` +
+        `(src/constants.ts:4-9). INFERRED from the traffic's shape, not proven — this codec ` +
+        `cannot read the peer's tag table; only a layout fingerprint in Welcome could.`,
+    );
+    this.observedTags = observedTags;
+    this.dominantTag = dominant.tag;
+    this.terminalsSeen = terminalsSeen;
   }
 }
