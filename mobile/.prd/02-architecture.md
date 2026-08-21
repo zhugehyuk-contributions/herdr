@@ -57,6 +57,14 @@ Hello{ v20, cols, rows, cell_px, TerminalAnsi, …, launch=TerminalAttach }
 ```
 
 **결과: 앱이 손으로 쓸 bincode 디코더는 envelope + `Welcome` + `Terminal` 3개뿐이다.**
+
+> **`Welcome`은 3필드다** — `version: u32` · **`encoding: RenderEncoding`** · `error: Option<String>` (`src/protocol/wire.rs` `[v]`).
+> 그중 **두 번째**가 앱에 중요하다: 서버가 **실제로 선택한 인코딩**을 돌려준다. 요청한 `TerminalAnsi`가 승인되지
+> 않았는데 그대로 진행하면 앱은 semantic `Frame`을 `Terminal`로 오독한다 →
+> **클라이언트는 `Welcome.encoding`을 반드시 검사하고 불일치 시 하드 실패해야 한다.**
+> `Hello`의 필드명이 `requested_encoding`인 것이 이미 그 뜻이다 — *요청*이지 확정이 아니다.
+> (기존 Rust 하네스 `tests/support/mod.rs`의 `decode_welcome`은 이 필드를 소비하지만 버린다. 그 함수의
+> doc 주석이 "Welcome { version, error }"라고 적은 것은 **낡았다** — 코드는 3필드를 올바르게 읽는다.)
 `CellData`(`wire.rs:582` `FrameData`의 셀 배열 `[v]`) · `FrameDelta` · FNV-1a 체크섬 · raw deflate ·
 델타 재구성이 전부 빠진다. 레포 안에 코덱 참조 구현이 있다 — `tests/server_headless.rs:154-250`이
 프레이밍과 bincode varint를 평문으로 손구현해 둔 것 `[v]`.
