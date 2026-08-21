@@ -3535,8 +3535,49 @@ fn spawn_remote_update_for(
             .server_ssh_target(server_id)
             .map(|(destination, options)| crate::remote::SshTarget::new(destination, options))
     });
-    match ssh_target {
-        Some(ssh_target) => {
+    // C4 fallout: the provisioning/lifecycle layer (`src/remote/unix.rs`) is session-BLIND —
+    // `remote_server_status`, `live_handoff_remote_server` and `stop_remote_server` all shell out to
+    // `herdr …` with no `--session`, so they inspect and restart the remote's DEFAULT session server.
+    // Only the bridge command itself honours `--session`. Before a remote could be pinned, "the
+    // remote's server" and "the default session's server" were the same thing, so that was always
+    // right. For a pinned remote it is not: an update would reinstall the binary host-wide, restart
+    // the DEFAULT server, never touch the pinned one — and then report "✓ update complete".
+    // Refuse honestly instead of reporting work we did not do. Threading the session through that
+    // layer is separate, real work (the CLI `--remote host --session work` has the same blindness).
+    let pinned_session = state
+        .supervisor_model
+        .as_ref()
+        .and_then(|model| model.server_session(server_id));
+    match (ssh_target, pinned_session) {
+        (Some(_), Some(session)) => {
+            if let Some(model) = &mut state.supervisor_model {
+                model.set_update_progress(server_id, None);
+                model.set_update_outcome(
+                    server_id,
+                    crate::app::state::HostUpdateOutcome {
+                        // Names the ESCAPE, not just the refusal: a pinned remote on a mismatched
+                        // protocol would otherwise be a dead end with no way forward from the UI.
+                        // Word order is deliberate for the ~25-column host banner sub-line, which
+                        // TRUNCATES: topic ("update") then the precondition ("needs session
+                        // unpinned") then the name. The session name is last because it is the least
+                        // load-bearing part here — the banner already belongs to one known host, and
+                        // the menu row right above it reads `session <name>`.
+                        message: format!("✗ update needs session unpinned ('{session}')"),
+                        success: false,
+                    },
+                );
+            }
+            // Use the FAILURE ttl so the refusal lingers long enough to read.
+            state
+                .update_outcome_expiry
+                .insert(server_id.clone(), Instant::now() + HOST_UPDATE_FAILURE_TTL);
+            // …and suppress AUTO-update for this host. Without this the sweep re-fires an ssh
+            // force-reinstall every ~6s forever (its only other guards are `pending_update_remote`
+            // and the short `HOST_UPDATE_OUTCOME_TTL`). A deliberate auto-update re-toggle, or a
+            // later success, still clears it.
+            state.auto_update_suppressed.insert(server_id.clone());
+        }
+        (Some(ssh_target), None) => {
             if let Some(model) = &mut state.supervisor_model {
                 model.clear_update_outcome(server_id);
                 model.set_update_progress(server_id, Some("starting update…".to_string()));
@@ -3549,7 +3590,7 @@ fn spawn_remote_update_for(
                 &mut state.pending_update_remote,
             );
         }
-        None => {
+        (None, _) => {
             if let Some(model) = &mut state.supervisor_model {
                 model.set_update_progress(
                     server_id,
@@ -9415,6 +9456,153 @@ mod tests {
             dispatch,
             ClientInputDispatch::SetRemoteAutoUpdate { remote_id, auto_update: false } if remote_id == "remote-7"
         ));
+    }
+
+    /// An ssh remote with auto-update ON, at a protocol mismatch, optionally pinned to a session.
+    fn ssh_auto_update_model(
+        session: Option<&str>,
+    ) -> (supervisor::ClientSupervisorModel, supervisor::ServerId) {
+        let mut model = supervisor::ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(crate::remote_registry::RemoteDefinitionSnapshot {
+            id: "remote-pin".into(),
+            name: "pin".into(),
+            target: crate::remote_registry::RemoteTargetSnapshot::Ssh {
+                target: "pin-host".into(),
+                args: Vec::new(),
+            },
+            session: session.map(str::to_string),
+            keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
+            disabled: false,
+            auto_update: true,
+        });
+        model.set_remote_runtime_info(
+            &remote,
+            Some("0.5.0".into()),
+            Some(PROTOCOL_VERSION.wrapping_add(1)),
+        );
+        (model, remote)
+    }
+
+    #[test]
+    fn update_refuses_a_session_pinned_remote_instead_of_updating_the_wrong_session() {
+        // REGRESSION (feature-created): the provisioning layer in `remote/unix.rs` is session-blind —
+        // `remote_server_status` / `live_handoff_remote_server` / `stop_remote_server` all run
+        // `herdr …` with no `--session`, so they act on the remote's DEFAULT session server. Before
+        // this feature every remote WAS the default session, so that was always the right target.
+        // Now, updating a remote pinned to `work` would reinstall the binary and restart the DEFAULT
+        // server — never touching `work` — and then report "✓ update complete". Refuse truthfully.
+        let (model, remote) = ssh_auto_update_model(Some("work"));
+        let mut state = test_client_state_with_model(model);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+
+        spawn_remote_update_for(&mut state, &remote, &event_tx);
+
+        assert!(
+            state.pending_update_remote.is_empty(),
+            "a pinned remote must never reach start_ssh_remote_bridge from the update path"
+        );
+        let model = state.supervisor_model.as_ref().unwrap();
+        assert_eq!(
+            model.update_progress_for(&remote),
+            None,
+            "no spinner for work that was never started"
+        );
+        let outcome = model
+            .update_outcome_for(&remote)
+            .expect("the refusal is surfaced on the host banner");
+        assert!(!outcome.success, "a skip is NOT a success: {outcome:?}");
+        assert!(
+            outcome.message.contains("session") && outcome.message.contains("work"),
+            "the message names the pinned session: {}",
+            outcome.message
+        );
+        // …and it must NAME THE ESCAPE. Refusing without pointing at a way forward just trades a
+        // false success for a silent wall: a pinned remote on a mismatched protocol would have no
+        // route out from the UI. Pinned here so the message can never regress to a dead end.
+        assert!(
+            outcome.message.contains("unpin"),
+            "the message points at the workaround (unpin the session, update, re-pin): {}",
+            outcome.message
+        );
+        // The ~25-column host banner truncates, so the actionable part must survive the cut: the
+        // topic and the precondition come before the session name, not after an apology.
+        assert!(
+            outcome
+                .message
+                .starts_with("✗ update needs session unpinned"),
+            "the actionable part is front-loaded for a truncating 25-col banner: {}",
+            outcome.message
+        );
+        assert!(
+            state.update_outcome_expiry.contains_key(&remote),
+            "the refusal lingers on its display timer"
+        );
+        assert!(
+            state.auto_update_suppressed.contains(&remote),
+            "suppression is what stops the sweep re-firing every ~6s forever"
+        );
+    }
+
+    #[test]
+    fn update_still_runs_for_an_unpinned_ssh_remote() {
+        // The no-behaviour-change guard: a remote on its default session updates exactly as before.
+        let (model, remote) = ssh_auto_update_model(None);
+        let mut state = test_client_state_with_model(model);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+
+        spawn_remote_update_for(&mut state, &remote, &event_tx);
+
+        assert!(
+            state.pending_update_remote.contains(&remote),
+            "an unpinned ssh remote still spawns the update worker"
+        );
+        assert_eq!(
+            state
+                .supervisor_model
+                .as_ref()
+                .unwrap()
+                .update_progress_for(&remote),
+            Some("starting update…"),
+        );
+        assert!(
+            !state.auto_update_suppressed.contains(&remote),
+            "an unpinned remote is not suppressed"
+        );
+    }
+
+    #[test]
+    fn auto_update_sweep_does_not_refire_for_a_pinned_remote() {
+        // The 6-second loop this defect created: the sweep skips a host only while it is pending, or
+        // outcome-guarded (TTL), or suppressed. Expire the outcome guard and confirm suppression
+        // alone still holds the line.
+        let (model, remote) = ssh_auto_update_model(Some("work"));
+        let mut state = test_client_state_with_model(model);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+        assert_eq!(
+            state
+                .supervisor_model
+                .as_ref()
+                .unwrap()
+                .auto_update_candidates(),
+            vec![remote.clone()],
+            "a pinned mismatched host IS still an auto-update candidate"
+        );
+
+        auto_update_mismatched_remotes(&mut state, &event_tx);
+        assert!(
+            state.pending_update_remote.is_empty(),
+            "first sweep refuses"
+        );
+
+        // Simulate the outcome display timer elapsing (HOST_UPDATE_FAILURE_TTL passing).
+        state.update_outcome_expiry.remove(&remote);
+        auto_update_mismatched_remotes(&mut state, &event_tx);
+        auto_update_mismatched_remotes(&mut state, &event_tx);
+
+        assert!(
+            state.pending_update_remote.is_empty(),
+            "a pinned remote must not re-fire an ssh force-reinstall once the outcome TTL expires"
+        );
     }
 
     #[test]

@@ -417,7 +417,7 @@ impl RemoteTargetSnapshot {
 /// `local:default` main server, and the request never reached the API.)
 ///
 /// Precedence matches [`RemoteRegistrySnapshot::set_session`]: an explicit `session` overrides one
-/// spelled into a `local:<name>` target; an absent `session` leaves the target alone (that spelling
+/// spelled into a `local:<name>` target; an ABSENT `session` leaves the target alone (that spelling
 /// IS the session). `Ssh` targets are never rewritten — their session rides the definition.
 ///
 /// Returns `(target, definition_session)` where `definition_session` is exactly what belongs in
@@ -428,17 +428,64 @@ pub fn resolve_target_and_session(
     target: &str,
     session: Option<String>,
 ) -> Result<(RemoteTargetSnapshot, Option<String>), RemoteRegistryError> {
-    let session = normalize_session(session)?;
+    // Classify BEFORE parsing/folding: `normalize_session` alone maps both "no request" and an
+    // explicit `"default"` onto `None`, and folding on that collapsed value cannot tell them apart.
+    let request = SessionRequest::classify(session)?;
     let target = RemoteTargetSnapshot::parse(target)?;
-    match (target, session) {
-        (RemoteTargetSnapshot::Local { session: spelled }, requested) => Ok((
-            RemoteTargetSnapshot::Local {
-                session: requested.or(spelled),
-            },
+    match target {
+        RemoteTargetSnapshot::Local { session: spelled } => {
+            let session = match request {
+                // Only a genuinely absent request defers to the `local:<name>` spelling.
+                SessionRequest::Unspecified => spelled,
+                // An explicit `default` IS a request — for the default session.
+                SessionRequest::Default => None,
+                SessionRequest::Named(name) => Some(name),
+            };
             // One home per kind: a local remote's session IS its target.
-            None,
-        )),
-        (target @ RemoteTargetSnapshot::Ssh { .. }, requested) => Ok((target, requested)),
+            Ok((RemoteTargetSnapshot::Local { session }, None))
+        }
+        target @ RemoteTargetSnapshot::Ssh { .. } => {
+            let session = match request {
+                SessionRequest::Unspecified | SessionRequest::Default => None,
+                SessionRequest::Named(name) => Some(name),
+            };
+            Ok((target, session))
+        }
+    }
+}
+
+/// The three distinguishable things a caller can ask for in a `session` field.
+///
+/// Modeled as an enum rather than an `Option<String>` because the last two states are what
+/// [`normalize_session`] deliberately collapses: it answers "which session?" (`None` = the default),
+/// which is the right shape for STORAGE but loses "did the user ask at all?" — the bit the `Local`
+/// fold needs. Conflating them silently turned `{target: "local:dev", session: "default"}` into
+/// `local:dev`, i.e. the opposite of what was asked. Keeping three variants makes the third case
+/// impossible to forget at the match.
+enum SessionRequest {
+    /// No session field, or an empty/whitespace one (the add-remote form sends `None` for a blank
+    /// field, and a blank must not clobber a spelled `local:<name>` target either).
+    Unspecified,
+    /// Explicitly the default session; stored as `None`.
+    Default,
+    /// An explicitly named session, already trimmed and validated.
+    Named(String),
+}
+
+impl SessionRequest {
+    fn classify(session: Option<String>) -> Result<Self, RemoteRegistryError> {
+        let Some(raw) = session else {
+            return Ok(Self::Unspecified);
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(Self::Unspecified);
+        }
+        if trimmed == crate::session::DEFAULT_SESSION_NAME {
+            return Ok(Self::Default);
+        }
+        crate::session::validate_name(trimmed).map_err(|_| RemoteRegistryError::InvalidSession)?;
+        Ok(Self::Named(trimmed.to_string()))
     }
 }
 
@@ -884,6 +931,60 @@ mod tests {
             normalize_session(Some("..".into())).unwrap_err(),
             RemoteRegistryError::InvalidSession
         );
+    }
+
+    #[test]
+    fn resolve_target_and_session_distinguishes_absent_from_explicit_default() {
+        // REGRESSION: `normalize_session` collapses BOTH "absent" and an explicit "default" to
+        // `None`, so folding on the normalized value could not tell them apart — asking for the
+        // default session on a `local:dev` target silently kept `dev`. The three request states
+        // (unspecified / explicitly-default / named) must stay distinguishable AT the fold.
+        //
+        // Matrix: target x {absent, "", "default", "work"} -> resulting target.
+        let key = |target: &str, session: Option<&str>| {
+            resolve_target_and_session(target, session.map(str::to_string))
+                .unwrap()
+                .0
+                .canonical_key()
+        };
+
+        // A spelled `local:<name>` target: only an EXPLICIT request overrides it.
+        assert_eq!(key("local:dev", None), "local:dev");
+        assert_eq!(
+            key("local:dev", Some("")),
+            "local:dev",
+            "empty = unspecified"
+        );
+        assert_eq!(
+            key("local:dev", Some("   ")),
+            "local:dev",
+            "blank = unspecified"
+        );
+        assert_eq!(
+            key("local:dev", Some("default")),
+            "local:default",
+            "an explicit `default` means the DEFAULT session, not 'leave dev alone'"
+        );
+        assert_eq!(key("local:dev", Some("work")), "local:work");
+
+        // A bare `localhost` target has nothing spelled in, so every request lands the same way.
+        assert_eq!(key("localhost", None), "local:default");
+        assert_eq!(key("localhost", Some("")), "local:default");
+        assert_eq!(key("localhost", Some("default")), "local:default");
+        assert_eq!(key("localhost", Some("work")), "local:work");
+
+        // An ssh target is never rewritten; only its definition-level session varies.
+        let ssh = |session: Option<&str>| {
+            resolve_target_and_session("user@dev", session.map(str::to_string)).unwrap()
+        };
+        let ssh_target = RemoteTargetSnapshot::Ssh {
+            target: "user@dev".into(),
+            args: Vec::new(),
+        };
+        assert_eq!(ssh(None), (ssh_target.clone(), None));
+        assert_eq!(ssh(Some("")), (ssh_target.clone(), None));
+        assert_eq!(ssh(Some("default")), (ssh_target.clone(), None));
+        assert_eq!(ssh(Some("work")), (ssh_target, Some("work".to_string())));
     }
 
     #[test]
