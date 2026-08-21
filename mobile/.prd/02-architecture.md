@@ -79,6 +79,47 @@ Hello{ v20, cols, rows, cell_px, TerminalAnsi, …, launch=TerminalAttach }
 
 대가는 xterm 종속이다. 앱이 셀을 자기 UI로 재해석할 수 없다([`06-open-decisions.md`](./06-open-decisions.md) 결정 1).
 
+## Tensions — 이 계획의 읽기 경로는 레포의 명시 가이드레일과 충돌한다
+
+> **2026-08-22 발견.** 이 레포에 `CLAUDE.md`(→ `AGENTS.md`, 20KB)가 있고 그 **Universal Project Rules**에
+> **Runtime/client boundary guardrail**이 있다. 이 계획은 그걸 읽지 않은 채 §2.2를 결정했다.
+
+**가이드레일 원문** (`AGENTS.md` §Universal Project Rules):
+> *"Herdr is migrating toward a server-owned runtime protocol with the TUI as one client.
+> New work should not deepen the current server/TUI coupling."*
+> *"**Do not add new shared behavior that only works through the private TUI client socket.**"*
+> *"Pane/agent metadata, process state, **terminal state**, events: server/runtime."*
+
+**적용 범위에 예외 없음**: `AGENTS.md:11` — *"Universal project rules apply to every agent working on
+Herdr, **including forks**."* (`:243`의 "private or custom fork" 예외는 이슈/PR/푸시 **워크플로**에 대한
+것이지 Universal Rules가 아니다.)
+
+**충돌 내용**: §2.2가 고른 읽기 경로(`ObserveTerminal` + `TerminalAnsi` on `remote-client-bridge`)는
+**사설 TUI 클라이언트 소켓**이다. 새 클라이언트(모바일 앱)의 **터미널 상태 전달 전체**를 거기 얹는 것은
+가이드레일이 금지한 "사설 TUI 소켓으로만 동작하는 새 공유 동작"에 정확히 해당한다.
+
+**비용 (가설이 아니라 이미 관측된 것)**: 이 계획이 이미 기록한 세 가지가 전부 "사설 채널에 올라탄 대가"의
+증상이다 — ①**B1** 포크 간 태그 스큐(같은 `PROTOCOL_VERSION=20`, `Terminal` 13 vs 2)는 JSON API가 아니라
+**와이어**에서 갈렸다 ②**B13** `Terminal`만 deflate를 못 받는다(압축이 semantic 분기에만 걸려 있다)
+③범프 빈도 실측 7.2일이 전부 **와이어** 이야기다. JSON API는 그동안 스키마 아티팩트로 CI 강제되며 안정적이었다.
+→ upstream이 JSON API를 유지한 채 사설 소켓을 바꾸면 **제어는 되는데 화면만 죽는다.**
+
+**그런데 지금 중립 경로가 없다 — 이것도 이 계획이 실측했다**:
+- `pane.read`는 변경 검출 불가(`revision`이 전 생성 지점 하드코딩 0) + idle 에이전트 pane 스크롤 부작용 → **B10**
+- `events.subscribe`는 시퀀스가 없고 매번 링을 전량 리플레이 → **B9**
+- JSON API에 **터미널 화면을 스트리밍하는 메서드 자체가 없다**
+가이드레일의 문구가 *"exposed through the JSON API/event path **when practical**"*이므로, 현재로선 중립 경로가
+practical하지 않다는 사실 자체는 방어가 된다.
+
+**따라서 정직한 위치**: §2.2는 **의도적이고 문서화된 이탈**이지 무지가 아니다 — 단, 이 계획은 지금까지
+**그 사실을 적지 않았다.** 조용히 넘기지 않기 위해 여기 남긴다. 정합적인 장기 답은 **B8·B9·B10을 닫아
+JSON API/이벤트 경로가 터미널 프레임을 나를 수 있게 만드는 것**이고, 그 셋은 이미 이 계획의 블로커 목록에 있다.
+즉 **가이드레일과 이 계획의 백로그는 같은 방향을 가리킨다.** 차이는 순서뿐이다.
+
+→ **오너 결정 필요 (D8)**: (a) 이탈을 수용하고 M2를 와이어로 진행하되 B8/B9/B10을 "정합성 부채"로 명시 ·
+(b) 중립 경로 확장(서버에 스트리밍 터미널 API 추가)을 M2 **앞에** 놓는다 · (c) upstream에 가이드레일 해석을
+질의한다. **(a)가 기본값이나, 이건 내가 조용히 고를 결정이 아니다.**
+
 ### 2.3 쓰기는 JSON API — 와이어로 쓰지 않는다
 
 `ControlTerminal` / `AttachTerminal`은 공유 PTY를 **폰 그리드로 리사이즈하고 락을 건다**
