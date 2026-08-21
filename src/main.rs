@@ -604,6 +604,7 @@ fn main() -> io::Result<()> {
         println!("       herdr channel set <stable|preview>");
         println!("       herdr server stop");
         println!("       herdr server reload-config");
+        println!("       herdr live-handoff [--session <name>] [--json]");
         println!("       herdr api <subcommand> ...");
         println!("       herdr completion <shell>");
         println!("       herdr config <subcommand> ...");
@@ -689,6 +690,10 @@ fn main() -> io::Result<()> {
         println!();
         println!("Advanced commands:");
         println!("  {:<32} Run as headless server", "herdr server");
+        println!(
+            "  {:<32} Live hand off running sessions to this binary",
+            "herdr live-handoff"
+        );
         println!();
         println!("Options:");
         println!("  --no-session        Run monolithically (no server/client, escape hatch)");
