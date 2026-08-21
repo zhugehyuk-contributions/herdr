@@ -414,7 +414,7 @@ fn fixtures_are_current() {
             )
         });
     panic!(
-        "wire fixture corpus at {} is stale (first difference on line {line_no}):\n  committed: {}\n  generated: {}\nRegenerate with `HERDR_UPDATE_WIRE_FIXTURES=1 just test-one fixtures_are_current`, and re-check the TS codec in mobile/ against the new bytes.",
+        "wire fixture corpus at {} is stale (first difference on line {line_no}):\n  committed: {}\n  generated: {}\n\nSTOP AND CLASSIFY BEFORE REGENERATING — this test is the only mechanical witness that this\nfork's wire tags survived an upstream merge.\n  (a) You are merging upstream and an `enums` ordinal MOVED.\n      This is a BUG IN THE MERGE RESOLUTION, not a stale artifact. This fork's contract is:\n      upstream-inserted enum variants go to the TAIL, existing wire tags stay put\n      (see the update-upstream convention and mobile/.prd/03-blockers.md B1).\n      FIX THE ENUM ORDER. Do NOT regenerate — regenerating here launders exactly the\n      regression this corpus exists to catch.\n  (b) You deliberately bumped PROTOCOL_VERSION / changed a payload on purpose.\n      Then regenerate with `HERDR_UPDATE_WIRE_FIXTURES=1 just test-one fixtures_are_current`,\n      and re-check the TS codec in packages/herdr-client-ts against the new bytes.",
         path.display(),
         truncate(&committed),
         truncate(&generated)
