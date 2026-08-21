@@ -74,7 +74,7 @@ git clone --depth 1 https://github.com/stablyai/orca.git
 
 ### 관련 이슈
 
-- **#70** Fleet upgrade window — 프로토콜 완전일치. 앱의 **선행 조건**이다([`03-blockers.md`](./03-blockers.md) B1).
+- **#70** Fleet upgrade window — 프로토콜 **식별**. 앱의 **선행 조건**이다([`03-blockers.md`](./03-blockers.md) B1).
   단 이슈 본문은 2026-07-16 이후 무갱신이고 **호환 창만으로는 부족하다**는 것이 이번 판의 결론이다(B1 표).
 - **#68** 기본 브랜치 `mx`에 push CI 없음 — 위 fmt 항목의 배경이자 **M-1의 일부**([`04-milestones.md`](./04-milestones.md)).
 

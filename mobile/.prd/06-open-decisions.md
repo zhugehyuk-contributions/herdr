@@ -7,8 +7,9 @@
   M0 먼저 = 빨간 테스트 아래 머지 + 픽스처 재생성(**비가역**).
 - **D6 · M0 구현 위치 = fork(herdr-mx).** M0-a(레이아웃 지문)는 정의상 upstream이 가질 물건이 아니고,
   upstream 수용 리드타임은 통제 밖이다. M0-b(호환 창)만 사후 additive PR로 upstream에 제안한다.
-- **D7 · `mobile/` = in-tree (`herdr-mx/mobile/`).** upstream 트리에 `mobile/` 경로가 **없어서 머지 충돌이
-  구조적으로 불가능**하다 — in-tree의 유일한 반대 논거가 0이 된다. 게다가 픽스처 코퍼스가 Rust(생성)↔TS(소비)를
+- **D7 · `mobile/` = in-tree (`herdr-mx/mobile/`).** upstream 트리에 `mobile/` 경로가 없어
+  **이번 동기화 기준으로 같은 경로의 직접 충돌이 없다** — in-tree의 주된 반대 논거가 사실상 사라진다.
+  (절대 보장은 아니다: upstream이 나중에 같은 경로를 추가하거나 루트 CI/워크스페이스 설정이 충돌할 수 있다.) 게다가 픽스처 코퍼스가 Rust(생성)↔TS(소비)를
   가로지르므로 같은 레포면 커밋 1개로 원자적이고, 레포를 가르면 publish/pin 계약이 된다(1인 팀에서 가장 먼저 썩는 종류).
   되돌리기도 비대칭 — in-tree→형제는 `git subtree split`(히스토리 보존) 1커맨드, 역방향은 이미 낸 동기화 세금이 환불되지 않는다.
   전제 2(orca 와꾸 최대 재사용)와도 맞는다 — orca 자신이 `mobile/`을 in-tree로 둔다.

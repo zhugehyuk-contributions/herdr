@@ -1,6 +1,7 @@
 # 04 — 마일스톤
 
-각 단계가 **단독으로 쓸모 있게** 끊었다. M0는 앱 코드 0줄이며 앱과 무관하게 #70을 닫는다.
+각 단계가 **단독으로 쓸모 있게** 끊었다. M-1과 M0는 앱 코드 0줄이며 앱과 무관하게 **#70이 제기한 문제를 해소한다**
+(#70을 *닫는다*고는 쓰지 않는다 — 이슈 본문의 acceptance가 M0-a~e와 일치한다는 증거가 없다. 닫으려면 이슈 본문을 새 acceptance로 갱신하는 게 먼저다).
 
 Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSION = 20`.
 증거 표기 — `[v]` 직접 열어 확인 · `[i]` 조사 리포트 전언, 재검증 안 함 · `[추정]` 코드 근거 없음.
@@ -16,19 +17,37 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
 되돌리기 비용이 비대칭이다: 동기화 먼저 = M0가 사이클 1회 밀림(**가역**). M0 먼저 = 빨간 테스트 아래에서
 머지 + 픽스처 재생성(**비가역** — 그 재생성이 옳았는지 사후에 증명할 방법이 없다).
 
-**됐다** = 머지 완료 · `mx` push가 clippy/nextest를 탄다 · 머지 후 태그 순서가 확정됐다
+**됐다** = 머지 완료 · `mx` push가 clippy/nextest를 탄다 · **이번 동기화의 기준선이 확정됐다**
 (fork variant를 enum 꼬리에 재배치하는 기존 관행이 있다 — `wire.rs` 인근 주석 `[i]`).
+**"태그 순서가 영구 확정됐다"가 아니다** — 다음 동기화에서 또 움직인다. 그래서 M0에 반복 정책이 필요하다(아래).
 
 ### M0 — 레이아웃 식별 + 호환 창 + 동결 + 픽스처 (herdr-mx 쪽, 앱 코드 0줄)
 
-- **M0-a 레이아웃 지문 (신규 · 최우선).** `ClientMessage`/`ServerMessage` 태그 테이블의 해시를 `Welcome`에
-  싣고 클라이언트가 **완전일치** 검사. **이유**: `PROTOCOL_VERSION`은 이미 레이아웃 식별자로서 죽었다 —
-  mx와 upstream이 둘 다 `20`인데 태그가 다르다([`03-blockers.md`](./03-blockers.md) B1 `[v]`).
-  지문 없이 창만 넓히면 **하드 리젝(시끄러움)이 오파싱(조용함)으로 바뀐다.**
-- **M0-b 호환 창.** `MIN_SUPPORTED_PROTOCOL..=PROTOCOL_VERSION` (#70 옵션 1만). **M0-a 위에서만 의미를 갖는다.**
+- **M0-a 와이어 ABI 게이트 (신규 · 최우선).** **bincode `Hello`보다 먼저 읽는 고정 prelude**에
+  `fork namespace + WIRE_ABI_EPOCH`를 싣고, 양쪽이 그것부터 대조한다.
+  **이유**: `PROTOCOL_VERSION`은 이미 레이아웃 식별자로서 죽었다 — mx와 upstream이 둘 다 `20`인데 태그가
+  다르다([`03-blockers.md`](./03-blockers.md) B1 `[v]`). 지문 없이 창만 넓히면 **하드 리젝(시끄러움)이
+  오파싱(조용함)으로 바뀐다.**
+  - **왜 `Welcome`이 아니라 prelude인가 (2026-08-22 외부 리뷰 지적, 확인함).** 첫 번째로 갈라지는 값인
+    `ClientLaunchMode::TerminalAttach`(mx 1 / upstream 2)는 **`Hello`의 필드**이고 `Hello`를 디코드하는 것은
+    **서버**다. 지문을 서버 응답인 `Welcome`에 두면 **서버가 이미 `Hello`를 오파싱한 뒤에** 검사하게 된다.
+    게이트는 어떤 bincode 디코딩보다도 앞에 있어야 한다.
+  - **해시 범위도 태그로는 부족하다.** upstream은 `MouseCapture`에 `sgr_pixels` **필드를 추가**했다 `[v]` —
+    태그는 그대로인데 payload 레이아웃이 바뀐다. 따라서 대상은 최상위 두 enum의 태그가 아니라
+    **중첩 enum(`ClientLaunchMode`·`RenderEncoding`)과 payload 구조체 필드 순서·타입까지 포함한
+    transitively complete schema fingerprint**이거나, 그것을 대신하는 수동 관리 `WIRE_ABI_EPOCH`다.
+    (빌드 ID는 답이 아니다 — 모든 빌드를 불필요하게 거부한다.)
+  - **됐다** = ① 같은 `PROTOCOL_VERSION`이지만 다른 fork 레이아웃이 **`Hello` 디코드 전에** 거부된다
+    ② 허용된 v19↔v20 조합은 정상 렌더된다 ③ 중첩 enum 또는 payload 필드가 바뀌면 ABI 게이트가 red.
+- **M0-b 호환 창.** `MIN_SUPPORTED_PROTOCOL..=PROTOCOL_VERSION` (#70 옵션 1만). **M0-a 위에서만 의미를 갖는다** —
+  버전 범위가 아니라 **명시적 `(protocol version, ABI epoch)` 허용표**로 표현한다. 창 혼자서는 무엇도 보장하지 않는다.
 - **M0-c `ServerMessage` 태그 동결 테스트.** `client_message_wire_tags_preserve_protocol_15_order`
   (`src/protocol/wire.rs:1383` `[v]`)의 미러, 약 30줄.
 - **M0-d 와이어 픽스처 코퍼스 + 최신성 CI 잡.** (조사 문서의 B3가 여기로 흡수됐다.)
+- **M0-e 반복 정책 (동기화가 또 올 것이므로).** 동결은 영구 불변이 아니라 **이후 변경을 명시적 ABI 사건으로
+  만드는 장치**다. 규칙 셋: ① **기존 픽스처는 덮어쓰지 않고 보존**하고 새 것을 추가한다 ② 와이어가 바뀌면
+  `WIRE_ABI_EPOCH` 범프 + 새 픽스처를 **요구**한다 ③ 이전 ABI를 계속 받을지 거부할지 **명시적 호환성 결정을
+  기록**한다. 이게 없으면 다음 동기화에서도 "CI red를 재생성으로 지우는" 같은 세탁이 반복된다.
 
 **구현 위치 = fork.** M0-a는 정의상 upstream이 가질 이유가 없고(fork의 태그 테이블을 아는 건 fork뿐),
 upstream은 18일에 148커밋이라 수용 리드타임이 통제 밖이다 — **통제 밖 의존성을 임계 경로에 두지 않는다.**
@@ -51,7 +70,9 @@ observe 세션 상태기계.
 **단독 가치**: "폰에서 에이전트 상태를 보고 화면을 읽는다"가 성립 — 목적의 절반.
 **됐다** = 실기기+실서버로 (a) blocked를 Agents 홈에서 60초 내 발견 (b) 해당 pane 화면을 읽을 수 있음
 (c) **30분 시청 동안 데스크톱 레이아웃 무변화** (d) 백그라운드 왕복 10회에 강제종료 0
-(e) **폰보다 넓은 pane(예: 200컬럼)에서 커서와 최신 출력이 화면에 보인다** — [`03-blockers.md`](./03-blockers.md) B4 완화가 실제로 동작함.
+(e) **폰보다 넓은 pane(예: 200컬럼)에서 커서와 최신 출력에 도달할 수 있다** — 서버 크롭에서 살아남는 것과
+폰 뷰포트 안에 보이는 것은 별개다([`03-blockers.md`](./03-blockers.md) B4). v1 기준은 **수동 이동(핀치줌·가로스크롤) 후 도달 가능**이고,
+"열자마자 보인다"를 원하면 클라이언트가 ANSI 커서 위치로 **auto-pan/follow**하는 동작이 별도로 필요하다 — 그건 v1 범위 밖.
 
 ### M3 — 입력 (와이어 쓰기 없이)
 소프트 키보드 → `pane.send_input{text}` · 액세서리 키 행(Enter/Esc/Ctrl-C/화살표/Tab) → `keys[]` ·

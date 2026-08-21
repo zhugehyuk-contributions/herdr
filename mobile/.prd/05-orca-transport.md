@@ -9,8 +9,9 @@ git clone --depth 1 https://github.com/stablyai/orca.git
 
 ⚠️ **주의**: 아래 "그대로 적용" 판정은 orca가 **WebSocket** 위에서 얻은 결과다. herdr 앱은 ssh
 exec 채널을 쓰고 RN의 WebSocket과 달리 OS가 관리해 주지 않는다. **전송이 바뀌면 재검증 대상**이며,
-M1 착수 전 ssh 스파이크(실기기, transport 1 + exec 채널 2, 30분 백그라운드 후 복귀 시 생존/재연결 소요 측정)로
-숫자를 확보해야 한다.
+M1 착수 전 ssh 스파이크가 **일정 게이트**다 — 실기기에서 실제 RN ssh 채널로 (transport 1 + exec 채널 2,
+30분 백그라운드 후 복귀) **L1(반열림 검출)과 X1(재연결 후 구독 replay)을 각각 1회 이상 통과**시키고
+생존/재연결 소요 숫자를 확보한다. 통과 전에는 이 표의 "그대로" 판정을 일정 근거로 쓰지 않는다.
 
 이 목록의 대부분은 WebSocket 얘기가 아니라 **OS가 JS 타이머를 정지시키고 소켓을 조용히 죽이는 것**에
 대한 얘기라 ssh 전송에도 그대로 적용된다. 출처는 orca `mobile/src/transport/` 와

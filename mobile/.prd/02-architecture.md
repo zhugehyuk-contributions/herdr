@@ -89,15 +89,22 @@ orca는 WebSocket이라 RN 기본 기능으로 끝났다. herdr은 ssh exec 채�
 expo-router + TS, pnpm, vitest. 터미널 엔진은 xterm을 WebView용으로 번들. 위치는 이 폴더(`mobile/`).
 공용 TS 코어는 `packages/herdr-client-ts` 워크스페이스 패키지로 두고 Metro `watchFolders`에 추가한다.
 
-**그대로 가져온다 (재작성 금지 — 포팅 대상)**
-- 프로젝트 스캐폴딩 · expo-router 라우트 트리 · 화면 골격(master-detail).
-- `mobile/src/transport/` 생존성 계층 **전체** — [`05-orca-transport.md`](./05-orca-transport.md)의 L1~L7 · X1~X6이 곧 그 코드다.
-- xterm WebView 브리지(`terminal-webview-html.ts` 계열)와 스크롤백 설정(B5의 v1 대체 수단).
-- 설정 · 연결로그 · 트러블슈팅 화면.
+이식은 **copy / adapt / rewrite 3등급**으로 나눈다 — "transport 계층을 통째로 복사한다"는 표현은
+같은 문서가 적어둔 WebSocket→ssh 차이와 모순되므로 쓰지 않는다(2026-08-22 외부 리뷰 지적).
+
+| 등급 | 대상 | 비고 |
+|---|---|---|
+| **copy** | 프로젝트 스캐폴딩 · expo-router 라우트 트리 · 화면 골격(master-detail) · 설정/연결로그/트러블슈팅 화면 · xterm WebView 브리지와 스크롤백 설정 | UI 셸은 전송과 무관 |
+| **port** (로직·테스트는 그대로, I/O만 갈아끼움) | 재연결 **상태기계**와 정책 — [`05-orca-transport.md`](./05-orca-transport.md) L1~L7 · X1~X6의 **판단 규칙**과 그 테스트 | 백오프·워치독·single-flight·구독 replay는 전송 무관 |
+| **rewrite** | ssh I/O 어댑터 전체 · 생존성 **신호** 판정(`readyState` → "자식 살아있고 파이프 열렸는데 바이트가 안 옴", close code → exit status/stderr) · 오류 모델 | §2.4의 네이티브 모듈이 여기 |
 
 **덜어낸다**: 페어링 · E2EE · 릴레이(ssh가 대체) · `git.*`/`files.*`/tasks 화면(herdr JSON API에 대응 메서드 없음).
 
 **새로 짠다 (orca에 등가물이 없다)**: ssh 네이티브 모듈(§2.4 — 최대 신규 작업) ·
 pane(split) 레벨 내비게이션(orca는 tab=terminal 1:1) · herdr 와이어 코덱 3종(§2.2).
+
+> **재사용률을 숫자로 주장하지 않는다.** UI 셸·라우트·xterm·정책은 재사용되지만 **임계 경로(ssh 어댑터 ·
+> 오류 모델 · herdr 코덱 · pane 모델)는 신규**다. 전제 2는 달성 가능한 목표이되, 일정 착시를 만들지 않으려면
+> 계약을 "transport 전체 코드 포팅"이 아니라 **"상태기계·테스트는 포팅, I/O 어댑터는 재작성"**으로 읽어야 한다.
 
 ---

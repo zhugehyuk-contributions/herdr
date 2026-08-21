@@ -1,6 +1,6 @@
 # 03 — 선행 차단 요소 (herdr 쪽이 먼저 바뀌어야 하는 것)
 
-앱 코드보다 앞선다. **B1(프로토콜 완전일치)이 1순위이며 앱의 존재 조건**이고, 나머지는 전부 그다음이다.
+앱 코드보다 앞선다. **B1(프로토콜 식별)이 1순위이며 앱의 존재 조건**이고, 나머지는 전부 그다음이다.
 B1의 문제 제기는 herdr-mx **#70**("Fleet upgrade window")에 올라와 있다 — 단 **설계가 아니라 토론 이슈**이고,
 2026-07-16 생성 이후 **무갱신·코멘트 0** (`gh issue view 70` `[v]`, 2026-08-22 확인).
 
@@ -110,9 +110,14 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
   단 `alt_screen_read_spec`의 가드가 좁다 (`src/server/headless.rs:3172-3199` `[v]`) — **전부** 만족해야 발동한다:
   `format=Text` · `source=Recent|RecentUnwrapped` · attach 소유자 없음 · 대기 중 read 없음 ·
   에이전트가 인식됨 · **`state == AgentState::Idle`**.
-- **따라서 "`pane.read` 반복 호출 금지"는 과대였다.** `AgentState::Blocked`("Agent needs human input and is
-  blocked on a response", `src/detect/mod.rs` `[v]`)는 가드에 걸려 **스크롤되지 않는다** — 즉 앱의 **1순위
-  대상인 blocked pane**을 읽는 것은 이 부작용이 없다. 위험한 것은 **idle 상태의 인식된 에이전트 pane**이다.
+- **따라서 "`pane.read` 반복 호출 금지"는 과대했다.** 단 **상태 이름으로 안전을 선언하면 안 된다**
+  (2026-08-22 외부 리뷰 지적, 확인함): 가드는 `terminal.state`를 **서버가 요청을 평가하는 그 순간** 읽는다
+  (`src/server/headless.rs:3191-3199` `[v]`). 클라이언트가 `agent.list`에서 `Blocked`를 본 뒤 read가 서버에
+  닿기 전에 `Idle`로 바뀌면 **스크롤 분기는 그대로 발동한다.** 즉 "blocked pane 읽기는 안전"이 아니라
+  **"평가 시점에 Blocked이면 분기를 건너뛴다"**일 뿐이고, previously-blocked pane은 안전하지 않다.
+- **따라서 v1 계약**: `intent`가 와이어에 노출되기(또는 기본값이 `Passive`가 되기) 전까지,
+  **살아있는 pane에 `format=Text` + `source=Recent|RecentUnwrapped` 조합을 보내지 않는다.**
+  단발 스냅샷이 필요하면 그 서버 픽스(5줄)를 **선행**시켜라.
 - **그래도 결론은 그대로**: pane 화면은 observe 스트림으로 간다. 다만 **진짜 이유는 스크롤이 아니라
   `revision:0`**이다 — `pane.read`로는 무엇이 언제 바뀌었는지 알 수 없다. `pane.read`는 **단발 스냅샷 용도로만** 쓴다.
 - **서버 픽스(선택)**: `intent`를 와이어에 노출하거나 기본값을 `Passive`로(5줄). M6 이전에는 불필요.
