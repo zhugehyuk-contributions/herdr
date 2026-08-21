@@ -39,6 +39,11 @@ use crate::server::render_stream::ClientRenderState;
 const FIXTURE_COLS: u16 = 100;
 const FIXTURE_ROWS: u16 = 30;
 
+/// Observe target for the `ObserveTerminal` vector. Non-ASCII on purpose: it makes the vector
+/// witness that the bincode `String` length prefix is a BYTE count (16 here) and not a character
+/// count (6), which is the boundary a hand-written encoder gets wrong silently.
+const FIXTURE_OBSERVE_TARGET: &str = "한글:터미널";
+
 /// Past this, an inline `framed_hex` stops being reviewable in a diff; the vector carries a
 /// prefix + digest instead.
 const INLINE_BYTES_LIMIT: usize = 50 * 1024;
@@ -157,6 +162,37 @@ fn hello_vector() -> Value {
         "framed_hex": hex(&framed(&hello)),
         "note": "`keybindings` is itself an enum: `Server` is a bare tag, `Local { keys_toml }` \
                  carries a string. src/protocol/wire.rs:368"
+    })
+}
+
+/// The message that actually starts the stream. `Hello` only attaches the connection; without
+/// `ObserveTerminal` a client handshakes successfully and then sits there receiving nothing, so a
+/// non-Rust client needs its bytes pinned just as much as the handshake's.
+///
+/// The target deliberately uses a non-ASCII string: the bincode `String` length prefix counts
+/// UTF-8 BYTES, and a hand-rolled encoder that counts characters produces a frame the server
+/// mis-decodes rather than an obvious error.
+fn observe_terminal_vector() -> Value {
+    let observe = ClientMessage::ObserveTerminal {
+        target: FIXTURE_OBSERVE_TARGET.to_owned(),
+    };
+
+    json!({
+        "name": "observe_terminal",
+        "direction": "client_to_server",
+        "message": "ObserveTerminal",
+        "field_order": ["target"],
+        "fields": {
+            "target": FIXTURE_OBSERVE_TARGET,
+            "target_utf8_len": FIXTURE_OBSERVE_TARGET.len(),
+            "target_char_count": FIXTURE_OBSERVE_TARGET.chars().count()
+        },
+        "framed_hex": hex(&framed(&observe)),
+        "note": "ObserveTerminal carries EXACTLY ONE field (src/protocol/wire.rs:471). Its \
+                 neighbour ControlTerminal (src/protocol/wire.rs:477) has the same `target` plus a \
+                 `takeover: bool`; encoding that shape here appends a byte the server reads as \
+                 garbage. `target` is a bincode String: varint(UTF-8 byte length) + raw bytes — \
+                 note target_utf8_len != target_char_count here on purpose."
     })
 }
 
@@ -318,7 +354,7 @@ fn fixture_document() -> Value {
     }
 
     let observe_terminal_tag = variant_tag(&ClientMessage::ObserveTerminal {
-        target: "w1:p1".to_owned(),
+        target: FIXTURE_OBSERVE_TARGET.to_owned(),
     });
     let welcome_tag = variant_tag(&ServerMessage::Welcome {
         version: PROTOCOL_VERSION,
@@ -340,7 +376,27 @@ fn fixture_document() -> Value {
             "bincode": "bincode 2.x `config::standard()` — varint ints, LE, no fixed-width \
                         headers; enum discriminants are varints, `Option` is a 0x00/0x01 tag, \
                         `Vec<u8>`/`String` are varint length + raw bytes.",
-            "max_frame_size": crate::protocol::MAX_FRAME_SIZE,
+            // The cap is a RULE, not a value: recording one number here taught readers to build a
+            // reader that rejects legal frames. Both arms plus the choice, or nothing.
+            "max_frame_size": {
+                "text": crate::protocol::MAX_FRAME_SIZE,
+                "graphics": crate::protocol::MAX_GRAPHICS_FRAME_SIZE,
+                "chosen_per_frame": "NOT a single value. The server picks `text` \
+                    (MAX_FRAME_SIZE, src/protocol/wire.rs:27) when the frame carries no kitty \
+                    graphics and `graphics` (MAX_GRAPHICS_FRAME_SIZE, src/protocol/wire.rs:32) \
+                    when it does. Kitty graphics are not a separate message: they are spliced \
+                    into the ANSI byte stream by insert_graphics_before_sync_end \
+                    (src/server/render_stream.rs:109), so on the TerminalAnsi path they arrive \
+                    inside TerminalFrame.bytes. A reader whose ceiling is below `graphics` \
+                    therefore rejects a legal frame, and an oversized length prefix cannot be \
+                    resynchronized — the connection flaps.",
+                "reader_rule": "Mirror the server: server_frame_size_cap(kitty_graphics_enabled) \
+                    -> graphics ? MAX_GRAPHICS_FRAME_SIZE : MAX_FRAME_SIZE. A reader that does \
+                    not know the peer's graphics setting must use `graphics`. Any value BETWEEN \
+                    the two arms is always wrong.",
+                "source": "src/server/headless.rs:4231-4235 (server's per-frame choice); \
+                    src/client/mod.rs:6483-6491 (server_frame_size_cap, the client-side mirror)"
+            },
             "source": "src/protocol/wire.rs:1125 (write_message)"
         },
         "enums": {
@@ -349,7 +405,14 @@ fn fixture_document() -> Value {
             "ClientMessage": { "ObserveTerminal": observe_terminal_tag },
             "ServerMessage": { "Welcome": welcome_tag, "Terminal": terminal_tag }
         },
-        "vectors": [hello_vector(), welcome_vector(), terminal_frame_vector()],
+        // Appended, never reordered: `fixtures_decode_back_through_the_rust_codec` and the TS
+        // cross-check both address the first three positionally.
+        "vectors": [
+            hello_vector(),
+            welcome_vector(),
+            terminal_frame_vector(),
+            observe_terminal_vector()
+        ],
         "nondeterminism": nondeterminism(),
         "live_cross_check": {
             "source": "tests/observe_terminal_ansi.rs, 2 consecutive runs on macOS arm64, \
@@ -464,6 +527,61 @@ fn fixtures_decode_back_through_the_rust_codec() {
         }
         other => panic!("expected Hello, got {other:?}"),
     }
+
+    // ObserveTerminal: the bytes must decode back to the exact one-field variant, and the recorded
+    // caps must still be the constants they claim to mirror.
+    let observe = vectors
+        .iter()
+        .find(|vector| vector["name"] == "observe_terminal")
+        .expect("observe_terminal vector");
+    let observe_bytes = decode_hex(
+        observe["framed_hex"]
+            .as_str()
+            .expect("observe framed_hex"),
+    );
+    let (observe_len, payload) = split_frame(&observe_bytes);
+    assert_eq!(
+        observe_len,
+        payload.len(),
+        "observe length prefix disagrees with body"
+    );
+    let (observe_msg, consumed): (ClientMessage, usize) =
+        bincode::serde::decode_from_slice(payload, bincode::config::standard())
+            .expect("observe payload decodes as ClientMessage");
+    assert_eq!(
+        consumed,
+        payload.len(),
+        "observe payload has trailing bytes — ObserveTerminal has exactly one field"
+    );
+    match observe_msg {
+        ClientMessage::ObserveTerminal { target } => {
+            assert_eq!(target, FIXTURE_OBSERVE_TARGET);
+        }
+        other => panic!("expected ObserveTerminal, got {other:?}"),
+    }
+    assert_eq!(
+        observe["fields"]["target_utf8_len"].as_u64(),
+        Some(FIXTURE_OBSERVE_TARGET.len() as u64)
+    );
+    assert_ne!(
+        observe["fields"]["target_utf8_len"],
+        observe["fields"]["target_char_count"],
+        "the observe target must stay non-ASCII or it stops witnessing the byte-vs-char boundary"
+    );
+
+    let framing = &document["framing"]["max_frame_size"];
+    assert_eq!(
+        framing["text"].as_u64(),
+        Some(crate::protocol::MAX_FRAME_SIZE as u64)
+    );
+    assert_eq!(
+        framing["graphics"].as_u64(),
+        Some(crate::protocol::MAX_GRAPHICS_FRAME_SIZE as u64)
+    );
+    assert!(
+        framing["chosen_per_frame"].is_string() && framing["reader_rule"].is_string(),
+        "the framing block must record the CHOICE RULE, not just two numbers"
+    );
 
     let welcome_hex = vectors[1]["framed_hex"]
         .as_str()

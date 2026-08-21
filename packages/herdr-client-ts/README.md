@@ -11,7 +11,7 @@ those three:
 | # | Piece | Direction |
 |---|---|---|
 | 1 | the `[u32 LE length][bincode payload]` envelope, **incrementally** | both |
-| 2 | `ClientMessage::Hello` encode | client → server |
+| 2 | `ClientMessage::Hello` + `ClientMessage::ObserveTerminal` encode | client → server |
 | 3 | `ServerMessage::Welcome` / `ServerMessage::Terminal` decode | server → client |
 
 ## Usage
@@ -23,6 +23,7 @@ import {
   ServerMessageReader,
   assertWelcomeAccepted,
   encodeHelloFrame,
+  encodeObserveTerminalFrame,
 } from "@herdr/client-ts";
 
 socket.write(
@@ -43,6 +44,8 @@ socket.on("data", (chunk: Uint8Array) => {
       // Throws on rejection, version skew, or a downgraded encoding.
       assertWelcomeAccepted(message, { encoding: RenderEncoding.TerminalAnsi });
       handshaked = true;
+      // `Hello` only attaches the connection. Nothing streams until this goes out.
+      socket.write(encodeObserveTerminalFrame("w1:p1"));
     } else if (handshaked) {
       terminal.write(message.bytes); // TerminalFrame.bytes -> xterm
     }
@@ -66,6 +69,12 @@ socket.on("data", (chunk: Uint8Array) => {
   prefix said it was complete* is `CorruptError`. `IncompleteError` never escapes a whole frame.
 - **`seq` is a `bigint`.** `TerminalFrame.seq` is a `u64` and a long-lived stream outruns
   `Number.MAX_SAFE_INTEGER`'s guarantees.
+- **The frame ceiling is a rule, not a number.** The server picks the cap per frame — 2 MiB without
+  Kitty graphics, 32 MiB with (`src/server/headless.rs:4231-4235`), mirrored by
+  `server_frame_size_cap` (`src/client/mod.rs:6483-6491`). `serverFrameSizeCap(kittyGraphicsEnabled)`
+  is that same rule; `FrameReader` defaults to its larger arm because graphics are spliced *into*
+  `TerminalFrame.bytes` (`src/server/render_stream.rs:109`) and a rejected length prefix cannot be
+  resynchronized — the connection flaps. **Any value between the two caps is always wrong.**
 - **Ordinals live in one file.** `src/constants.ts` — they are *fork-local*; see the warning at the
   top of that file and `mobile/.prd/03-blockers.md` B1.
 
@@ -77,8 +86,10 @@ socket.on("data", (chunk: Uint8Array) => {
   (`src/protocol/wire.rs:1096`, applied at `src/server/render_stream.rs:88`). The `TerminalAnsi`
   arm does **not** compress (`render_stream.rs:113-122`), which is why a `TerminalAnsi` client can
   live without an inflater — but a client that ever accepts `SemanticFrame` needs one.
-- **Any other `ClientMessage`** — including `ObserveTerminal` (tag 12), which the app must send to
-  start the stream. Its tag is in `constants.ts`; its encoder is not here.
+- **Any other `ClientMessage`.** `Input`, `Resize`, `Detach`, `ControlTerminal` (writable control,
+  tag 13 — same `target` as `ObserveTerminal` plus a `takeover: bool`) and the rest are not encoded
+  here; their tags are not even transcribed. `Hello` + `ObserveTerminal` is exactly enough to open a
+  read-only stream.
 - **Layout identification.** Equal `PROTOCOL_VERSION` does not prove equal wire layout across the
   mx/upstream fork line (B1).
 - **Transport, reconnect, backpressure, ANSI interpretation.**

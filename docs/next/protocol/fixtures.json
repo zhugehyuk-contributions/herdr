@@ -24,7 +24,13 @@
   "framing": {
     "bincode": "bincode 2.x `config::standard()` — varint ints, LE, no fixed-width headers; enum discriminants are varints, `Option` is a 0x00/0x01 tag, `Vec<u8>`/`String` are varint length + raw bytes.",
     "layout": "[u32LE payload_len][bincode payload]",
-    "max_frame_size": 2097152,
+    "max_frame_size": {
+      "chosen_per_frame": "NOT a single value. The server picks `text` (MAX_FRAME_SIZE, src/protocol/wire.rs:27) when the frame carries no kitty graphics and `graphics` (MAX_GRAPHICS_FRAME_SIZE, src/protocol/wire.rs:32) when it does. Kitty graphics are not a separate message: they are spliced into the ANSI byte stream by insert_graphics_before_sync_end (src/server/render_stream.rs:109), so on the TerminalAnsi path they arrive inside TerminalFrame.bytes. A reader whose ceiling is below `graphics` therefore rejects a legal frame, and an oversized length prefix cannot be resynchronized — the connection flaps.",
+      "graphics": 33554432,
+      "reader_rule": "Mirror the server: server_frame_size_cap(kitty_graphics_enabled) -> graphics ? MAX_GRAPHICS_FRAME_SIZE : MAX_FRAME_SIZE. A reader that does not know the peer's graphics setting must use `graphics`. Any value BETWEEN the two arms is always wrong.",
+      "source": "src/server/headless.rs:4231-4235 (server's per-frame choice); src/client/mod.rs:6483-6491 (server_frame_size_cap, the client-side mirror)",
+      "text": 2097152
+    },
     "source": "src/protocol/wire.rs:1125 (write_message)"
   },
   "live_cross_check": {
@@ -137,6 +143,21 @@
       "name": "terminal_frame_first_full",
       "note": "The frame CONTENT is synthesized (a fixed 100x30 FrameData), but the bytes are produced by the production path: ClientRenderState::prepare_frame -> BlitEncoder (src/server/render_stream.rs:89, src/protocol/render_ansi.rs:68). A live server's frame content is not reproducible - see `nondeterminism`. Terminal messages are NOT deflate-wrapped: compress_server_message is only applied on the semantic-frame branch (src/server/render_stream.rs:88), so a TerminalAnsi client never has to inflate ServerMessage::Compressed for these. `framed_hex` is OMITTED here: TerminalFrame.bytes is 55921 bytes (> 51200), so the full frame would be ~111866 hex chars and unreviewable in a diff. Verify instead with framed_header_hex (byte-exact framing + scalar fields), bytes_prefix_hex (first 512 payload bytes) and bytes_sha256 over all 55921 payload bytes.",
       "synthesized": true
+    },
+    {
+      "direction": "client_to_server",
+      "field_order": [
+        "target"
+      ],
+      "fields": {
+        "target": "한글:터미널",
+        "target_char_count": 6,
+        "target_utf8_len": 16
+      },
+      "framed_hex": "120000000c10ed959ceab8803aed84b0ebafb8eb8490",
+      "message": "ObserveTerminal",
+      "name": "observe_terminal",
+      "note": "ObserveTerminal carries EXACTLY ONE field (src/protocol/wire.rs:471). Its neighbour ControlTerminal (src/protocol/wire.rs:477) has the same `target` plus a `takeover: bool`; encoding that shape here appends a byte the server reads as garbage. `target` is a bincode String: varint(UTF-8 byte length) + raw bytes — note target_utf8_len != target_char_count here on purpose."
     }
   ]
 }

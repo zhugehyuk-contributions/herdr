@@ -4,11 +4,15 @@ import {
   DEFAULT_MAX_FRAME_SIZE,
   FrameReader,
   OversizedFrameError,
+  RUST_MAX_FRAME_SIZE,
+  RUST_MAX_GRAPHICS_FRAME_SIZE,
   RenderEncoding,
   ServerMessageReader,
   UnsupportedVariantError,
+  decodeServerMessage,
   encodeHello,
   frameMessage,
+  serverFrameSizeCap,
 } from "../src/index.js";
 import { frameHex, fromHex, toHex } from "./helpers.js";
 import { TERMINAL_SMALL_FULL, WELCOME_OK_ANSI } from "./vectors.js";
@@ -120,7 +124,8 @@ describe("FrameReader", () => {
 
   it("hands back frames decoded before the oversized one", () => {
     const header = new Uint8Array(4);
-    new DataView(header.buffer).setUint32(0, 9_000_000, true);
+    // Must exceed the default ceiling, which is the graphics cap (see the cap-rule tests below).
+    new DataView(header.buffer).setUint32(0, RUST_MAX_GRAPHICS_FRAME_SIZE + 1, true);
     const chunk = new Uint8Array(WELCOME_FRAME.length + 4);
     chunk.set(WELCOME_FRAME, 0);
     chunk.set(header, WELCOME_FRAME.length);
@@ -134,8 +139,86 @@ describe("FrameReader", () => {
     }
   });
 
-  it("defaults to an 8 MiB ceiling", () => {
-    expect(DEFAULT_MAX_FRAME_SIZE).toBe(8 * 1024 * 1024);
+  it("mirrors the server's per-frame cap rule", () => {
+    // `server_frame_size_cap` (src/client/mod.rs:6483-6491), which mirrors the server's own
+    // per-frame choice (src/server/headless.rs:4231-4235).
+    expect(serverFrameSizeCap(false)).toBe(RUST_MAX_FRAME_SIZE);
+    expect(serverFrameSizeCap(true)).toBe(RUST_MAX_GRAPHICS_FRAME_SIZE);
+    expect(RUST_MAX_FRAME_SIZE).toBe(2 * 1024 * 1024); // src/protocol/wire.rs:27
+    expect(RUST_MAX_GRAPHICS_FRAME_SIZE).toBe(32 * 1024 * 1024); // src/protocol/wire.rs:32
+  });
+
+  it("defaults to the graphics cap so it can never reject a legal frame", () => {
+    expect(DEFAULT_MAX_FRAME_SIZE).toBe(serverFrameSizeCap(true));
+    // The bug this pins: any ceiling strictly between the two caps rejects legal graphics frames
+    // while still admitting more than the text-only cap. There is no correct value in between.
+    expect(DEFAULT_MAX_FRAME_SIZE).toBeGreaterThanOrEqual(serverFrameSizeCap(false));
+    expect(DEFAULT_MAX_FRAME_SIZE).toBeGreaterThanOrEqual(serverFrameSizeCap(true));
+  });
+
+  it("accepts a length prefix at exactly the graphics cap instead of poisoning", () => {
+    const reader = new FrameReader();
+    const header = new Uint8Array(4);
+    new DataView(header.buffer).setUint32(0, RUST_MAX_GRAPHICS_FRAME_SIZE, true);
+    // The rejection happens on the length prefix alone, before any payload arrives — which is why
+    // a too-small ceiling flaps the connection rather than dropping one frame.
+    expect(reader.push(header)).toHaveLength(0);
+    expect(reader.hasPartialFrame).toBe(true);
+  });
+
+  it("still rejects a frame past the graphics cap", () => {
+    const reader = new FrameReader();
+    const header = new Uint8Array(4);
+    new DataView(header.buffer).setUint32(0, RUST_MAX_GRAPHICS_FRAME_SIZE + 1, true);
+
+    let thrown: unknown;
+    try {
+      reader.push(header);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(OversizedFrameError);
+    expect((thrown as OversizedFrameError).claimed).toBe(RUST_MAX_GRAPHICS_FRAME_SIZE + 1);
+    expect((thrown as OversizedFrameError).max).toBe(RUST_MAX_GRAPHICS_FRAME_SIZE);
+  });
+
+  /**
+   * The regression itself, end to end: a `Terminal` frame whose inlined Kitty graphics push it
+   * past the old 8 MiB default but leave it inside `MAX_GRAPHICS_FRAME_SIZE`. Graphics reach a
+   * `TerminalAnsi` client inside `TerminalFrame.bytes` (`insert_graphics_before_sync_end`,
+   * src/server/render_stream.rs:109), so this frame is legal and must decode.
+   */
+  it("decodes a graphics-sized Terminal frame that the old 8 MiB default rejected", () => {
+    const bytesLen = 8 * 1024 * 1024 + 1024;
+    // 0d seq=1 width=100 height=30 full=1, then the `bytes` varint: fc + u32 LE length.
+    const head = fromHex("0d01641e01fc");
+    const lengthBytes = new Uint8Array(4);
+    new DataView(lengthBytes.buffer).setUint32(0, bytesLen, true);
+    const payloadLen = head.length + lengthBytes.length + bytesLen;
+
+    const framed = new Uint8Array(4 + payloadLen);
+    new DataView(framed.buffer).setUint32(0, payloadLen, true);
+    framed.set(head, 4);
+    framed.set(lengthBytes, 4 + head.length);
+    framed[4 + head.length + lengthBytes.length] = 0x1b; // an ESC, so it looks like a real blit
+
+    expect(payloadLen).toBeGreaterThan(8 * 1024 * 1024);
+    expect(payloadLen).toBeLessThan(RUST_MAX_GRAPHICS_FRAME_SIZE);
+
+    const frames = new FrameReader().push(framed);
+    expect(frames).toHaveLength(1);
+    const message = decodeServerMessage(frames[0]!);
+    expect(message.type).toBe("terminal");
+    if (message.type !== "terminal") return;
+    expect(message.bytes.length).toBe(bytesLen);
+    expect(message.width).toBe(100);
+    expect(message.height).toBe(30);
+    expect(message.full).toBe(true);
+
+    // The other arm of the rule still bites: a reader that knows graphics are off keeps 2 MiB.
+    expect(() =>
+      new FrameReader({ maxFrameSize: serverFrameSizeCap(false) }).push(framed),
+    ).toThrow(OversizedFrameError);
   });
 });
 

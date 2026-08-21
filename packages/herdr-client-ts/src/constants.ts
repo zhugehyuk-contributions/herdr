@@ -31,25 +31,50 @@ export const PROTOCOL_VERSION = 20;
 /** Length of the `u32` little-endian frame length prefix (`src/protocol/wire.rs:45`). */
 export const LENGTH_PREFIX_BYTES = 4;
 
-/**
- * Default ceiling for a single frame payload accepted by {@link FrameReader}.
- *
- * The Rust client's policy is a hard switch — {@link RUST_MAX_FRAME_SIZE} (2 MiB) with Kitty
- * graphics off, {@link RUST_MAX_GRAPHICS_FRAME_SIZE} (32 MiB) with it on
- * (`src/client/mod.rs:6485-6491`), matching the server's per-frame choice
- * (`src/server/headless.rs:4231-4235`). This codec defaults to 8 MiB: comfortably above real
- * terminal-ANSI traffic (a 100x30 full repaint measured ~56 KB) and far below "allocate whatever
- * the peer claims". A client that enables Kitty graphics — whose bytes are inlined into
- * `TerminalFrame.bytes` — should pass `maxFrameSize: RUST_MAX_GRAPHICS_FRAME_SIZE` for parity
- * with the desktop client.
- */
-export const DEFAULT_MAX_FRAME_SIZE = 8 * 1024 * 1024;
-
-/** `src/protocol/wire.rs:27` — the server's own cap for ordinary frames. */
+/** `src/protocol/wire.rs:27` — `MAX_FRAME_SIZE`, the server's cap for a graphics-free frame. */
 export const RUST_MAX_FRAME_SIZE = 2 * 1024 * 1024;
 
-/** `src/protocol/wire.rs:32` — the server's cap when Kitty graphics are enabled. */
+/** `src/protocol/wire.rs:32` — `MAX_GRAPHICS_FRAME_SIZE`, the cap for a frame carrying graphics. */
 export const RUST_MAX_GRAPHICS_FRAME_SIZE = 32 * 1024 * 1024;
+
+/**
+ * The frame ceiling is a RULE, not a number.
+ *
+ * The server picks a cap per frame: {@link RUST_MAX_FRAME_SIZE} when the frame carries no Kitty
+ * graphics, {@link RUST_MAX_GRAPHICS_FRAME_SIZE} when it does
+ * (`src/server/headless.rs:4231-4235`). Every Rust reader mirrors that choice through
+ * `server_frame_size_cap` (`src/client/mod.rs:6483-6491`), whose own doc comment states the
+ * failure mode: *"every reader must use the larger cap when kitty graphics are enabled —
+ * otherwise a large graphics frame fails framing and flaps the connection."*
+ *
+ * This is not a graphics-clients-only concern for the mobile/`TerminalAnsi` path: Kitty graphics
+ * are NOT a separate message, they are spliced into the ANSI byte stream by
+ * `insert_graphics_before_sync_end` (`src/server/render_stream.rs:109`), so they arrive *inside*
+ * `TerminalFrame.bytes` and inflate the very frame this codec has to accept.
+ *
+ * Picking any value between the two caps is the worst of both worlds: it rejects legal frames
+ * while still admitting frames larger than the text-only ceiling. And rejection is not a soft
+ * failure — an oversized length prefix desynchronizes the stream irrecoverably
+ * ({@link FrameReader} poisons itself), so the client can only drop the connection and reconnect.
+ */
+export function serverFrameSizeCap(kittyGraphicsEnabled: boolean): number {
+  return kittyGraphicsEnabled ? RUST_MAX_GRAPHICS_FRAME_SIZE : RUST_MAX_FRAME_SIZE;
+}
+
+/**
+ * Default ceiling for a single frame payload accepted by {@link FrameReader}: the *larger* arm of
+ * {@link serverFrameSizeCap}, i.e. the biggest frame the server is ever permitted to emit.
+ *
+ * Chosen so the default can never reject a legal frame. The desktop client can afford the tighter
+ * cap because it knows its own `kitty_graphics_enabled` setting; this codec is handed a socket and
+ * does not, so the only safe default is the ceiling that covers both arms. Cost of the larger
+ * default is bounded: {@link FrameReader} buffers the bytes that actually arrive and never
+ * preallocates the claimed length, so a bogus prefix costs a comparison, not 32 MiB.
+ *
+ * A caller that knows graphics are off may tighten it with
+ * `new FrameReader({ maxFrameSize: serverFrameSizeCap(false) })`.
+ */
+export const DEFAULT_MAX_FRAME_SIZE = serverFrameSizeCap(true);
 
 /** `RenderEncoding` (`src/protocol/wire.rs:53`). */
 export const RenderEncoding = {
@@ -88,12 +113,15 @@ export type ClientLaunchMode = (typeof ClientLaunchMode)[keyof typeof ClientLaun
 
 export const CLIENT_LAUNCH_MODE_ORDER = ["App", "TerminalAttach"] as const;
 
-/** `ClientMessage` wire tags (`src/protocol/wire.rs:366`). Only `Hello` is encoded by this package. */
+/**
+ * `ClientMessage` wire tags (`src/protocol/wire.rs:366`). `Hello` and `ObserveTerminal` are the two
+ * this package encodes — between them they are enough to open a read-only terminal stream.
+ */
 export const ClientMessageTag = {
   Hello: 0,
   /**
-   * Not encoded here (see README "Not covered"); kept so the tag lives with its siblings.
-   * Frozen by `client_message_wire_tags_preserve_protocol_15_order` (`src/protocol/wire.rs:1448`).
+   * `src/protocol/wire.rs:471`. Frozen by
+   * `client_message_wire_tags_preserve_protocol_15_order` (`src/protocol/wire.rs:1448`).
    */
   ObserveTerminal: 12,
 } as const;

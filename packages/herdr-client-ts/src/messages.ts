@@ -106,6 +106,37 @@ export function encodeHelloFrame(params: HelloParams): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
+// Client -> Server: ObserveTerminal
+// ---------------------------------------------------------------------------
+
+/**
+ * Encodes `ClientMessage::ObserveTerminal` (variant 12) exactly as bincode would.
+ *
+ * The declaration carries exactly one field (`src/protocol/wire.rs:471-474`):
+ * `ObserveTerminal { target: String }` — unlike its neighbour `ControlTerminal`
+ * (`:477-482`), which adds a `takeover: bool`. Sending the two-field shape here would leave a
+ * trailing byte the server decodes as garbage.
+ *
+ * `target` is a bincode `String`: a varint of its **UTF-8 byte length** followed by the raw bytes.
+ * Byte length, not character count — `tests/support/mod.rs::send_observe_terminal` uses Rust's
+ * `str::len()` for the same reason.
+ *
+ * Without this message the handshake completes and then nothing happens: `Hello` only attaches the
+ * connection, `ObserveTerminal` is what makes the server start streaming `ServerMessage::Terminal`.
+ */
+export function encodeObserveTerminal(target: string): Uint8Array {
+  return new ByteWriter(16)
+    .writeVarint(ClientMessageTag.ObserveTerminal)
+    .writeString(target)
+    .toBytes();
+}
+
+/** {@link encodeObserveTerminal} wrapped in the `[u32 LE length][payload]` envelope. */
+export function encodeObserveTerminalFrame(target: string): Uint8Array {
+  return frameMessage(encodeObserveTerminal(target));
+}
+
+// ---------------------------------------------------------------------------
 // Server -> Client: Welcome, Terminal
 // ---------------------------------------------------------------------------
 

@@ -8,9 +8,14 @@ import {
   DEFAULT_MAX_FRAME_SIZE,
   FrameReader,
   RENDER_ENCODING_ORDER,
+  RUST_MAX_FRAME_SIZE,
+  RUST_MAX_GRAPHICS_FRAME_SIZE,
   ServerMessageTag,
   decodeServerMessage,
   encodeHelloFrame,
+  encodeObserveTerminalFrame,
+  serverFrameSizeCap,
+  utf8Encode,
   type HelloParams,
 } from "../src/index.js";
 import { fromHex, toHex } from "./helpers.js";
@@ -42,11 +47,19 @@ interface FixtureVector {
   synthesized?: boolean | string;
 }
 
+/** Both arms of the server's per-frame cap choice, plus the rule that selects between them. */
+interface FixtureFrameSizeCap {
+  text?: number;
+  graphics?: number;
+  chosen_per_frame?: string;
+  reader_rule?: string;
+}
+
 interface FixtureFile {
   protocol_version?: number;
   abi?: unknown;
   enums?: Record<string, unknown>;
-  framing?: { max_frame_size?: number };
+  framing?: { max_frame_size?: FixtureFrameSizeCap };
   vectors?: FixtureVector[];
 }
 
@@ -256,10 +269,47 @@ describe.skipIf(!HAS_FIXTURES)("docs/next/protocol/fixtures.json cross-check", (
     }
   });
 
-  it("accepts frames as large as the server is allowed to send", () => {
-    const serverMax = fixtures!.framing?.max_frame_size;
-    if (typeof serverMax === "number") {
-      expect(DEFAULT_MAX_FRAME_SIZE).toBeGreaterThanOrEqual(serverMax);
+  /**
+   * The cap the fixtures record is a *rule* with two arms, not a number. The previous version of
+   * this check read a single `max_frame_size` number and only asserted `>=`, which passed happily
+   * while the codec's default sat between the two Rust caps and rejected legal graphics frames.
+   */
+  it("matches both arms of the server's frame-size rule", () => {
+    const cap = fixtures!.framing?.max_frame_size;
+    expect(cap, "framing.max_frame_size must record both caps, not one value").toBeTypeOf("object");
+    expect(cap!.text, "framing.max_frame_size.text").toBe(RUST_MAX_FRAME_SIZE);
+    expect(cap!.graphics, "framing.max_frame_size.graphics").toBe(RUST_MAX_GRAPHICS_FRAME_SIZE);
+
+    // The TS helper must reproduce the server's per-frame choice, arm for arm.
+    expect(serverFrameSizeCap(false)).toBe(cap!.text);
+    expect(serverFrameSizeCap(true)).toBe(cap!.graphics);
+
+    // And the default must cover the larger arm, or a legal graphics frame flaps the connection.
+    expect(DEFAULT_MAX_FRAME_SIZE).toBe(cap!.graphics);
+
+    // The rule has to be written down, not inferred from two integers.
+    expect(typeof cap!.chosen_per_frame, "framing.max_frame_size.chosen_per_frame").toBe("string");
+    expect(typeof cap!.reader_rule, "framing.max_frame_size.reader_rule").toBe("string");
+  });
+
+  it("re-encodes the ObserveTerminal vector to the same bytes", () => {
+    const vectors = (fixtures!.vectors ?? []).filter(
+      (vector) => vector.message === "ObserveTerminal" && typeof vector.framed_hex === "string",
+    );
+    expect(vectors.length, "no ObserveTerminal vector to re-encode").toBeGreaterThan(0);
+
+    for (const vector of vectors) {
+      const target = fieldOf(vector.fields ?? {}, "target");
+      expect(typeof target, `${vector.name}.target`).toBe("string");
+      expect(toHex(encodeObserveTerminalFrame(target as string)), vector.name).toBe(
+        vector.framed_hex,
+      );
+
+      // The corpus records the byte length separately; that is the number the varint carries.
+      const utf8Len = fieldOf(vector.fields ?? {}, "target_utf8_len");
+      if (typeof utf8Len === "number") {
+        expect(utf8Encode(target as string).length, `${vector.name}.target_utf8_len`).toBe(utf8Len);
+      }
     }
   });
 

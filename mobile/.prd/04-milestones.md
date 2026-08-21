@@ -14,7 +14,10 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
 `DIVERGENCE.md`는 "currently tracking: upstream v0.8.0"이므로 **정확히 한 릴리즈 밀렸다.**
 
 > **충돌 해소 규칙 (스킬 규약, 이 계획의 전제이기도 하다)**: upstream이 **중간 삽입한 enum variant는 tail로
-> 이동**하고 **기존 wire tag를 불변으로 유지**한다. upstream 바이너리와의 wire 호환은 **비목표**(fork 피어끼리만 통신).
+> 이동**하고 **기존 wire tag를 불변으로 유지**한다.
+> **이 규칙은 레포 코드 안에 전례와 함께 이미 문서화돼 있다** — `src/protocol/wire.rs:469-470` `[v]`:
+> *"Appended after the mx variants so their bincode wire tags stay stable across the upstream v0.7.4 merge."*
+> 즉 `ObserveTerminal`(태그 12) 자신이 지난 머지에서 그 규칙으로 배치된 산물이다. upstream 바이너리와의 wire 호환은 **비목표**(fork 피어끼리만 통신).
 > → **mx의 태그는 머지를 넘어 보존되므로 M1의 TS 코덱을 지금 써도 머지 후 유효하다.** 이것이 R3 하에서
 > M1을 병렬 착수할 수 있는 근거다([`06-open-decisions.md`](./06-open-decisions.md) §M-1 실측).
 

@@ -13,11 +13,28 @@
  * requested_encoding, 0 (FullApp), 0 (Server), launch_mode])`. Its output for
  * `(version=20, cols=80, rows=24, encoding=0, launch=0)` is `00 14 50 18 08 10 00 00 00 00`,
  * byte-identical to `HELLO_SEMANTIC_APP_80X24`.
+ *
+ * `OBSERVE_TERMINAL_W1_P1` was likewise reconciled against
+ * `tests/support/mod.rs::send_observe_terminal(stream, "w1:p1")`, which builds
+ * `encode_varint_u32(12) ++ encode_varint_u32(target.len()) ++ target.as_bytes()`. Note
+ * `str::len()` is the BYTE length, which is why the UTF-8 vector below is the load-bearing one.
  */
 
 export const HELLO_SEMANTIC_APP_80X24 = "00145018081000000000";
 export const HELLO_ANSI_ATTACH_300X100 = "0014fb2c0164081001000001";
 export const HELLO_ANSI_ATTACH_65535_NO_CELLPX = "0014fbfffffbffff000001000001";
+
+/** `ClientMessage::ObserveTerminal { target: "w1:p1" }` — tag 0x0c, len 0x05, then the ASCII. */
+export const OBSERVE_TERMINAL_W1_P1 = "0c0577313a7031";
+/** An empty target still costs the length varint: `0c 00`, never a bare tag. */
+export const OBSERVE_TERMINAL_EMPTY = "0c00";
+/** "한글:터미널" — 6 chars but 0x10 = 16 bytes; the varint counts bytes. */
+export const OBSERVE_TERMINAL_UTF8 = "0c10ed959ceab8803aed84b0ebafb8eb8490";
+export const OBSERVE_TERMINAL_UTF8_TEXT = "한글:터미널";
+/** 250 × "a": the last length that fits in a single varint byte (0xfa). */
+export const OBSERVE_TERMINAL_LEN_250 = "0cfa" + "61".repeat(250);
+/** 251 × "a": one byte longer, so the length switches to the 0xfb u16 marker. */
+export const OBSERVE_TERMINAL_LEN_251 = "0cfbfb00" + "61".repeat(251);
 
 export const WELCOME_OK_ANSI = "00140100";
 export const WELCOME_OK_SEMANTIC = "00140000";

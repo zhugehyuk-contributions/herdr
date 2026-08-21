@@ -3,7 +3,8 @@
  *
  * Scope is deliberately three things (mobile/.prd/02-architecture.md §2.2):
  *   1. the `[u32 LE length][bincode payload]` envelope, incrementally,
- *   2. `ClientMessage::Hello` encode,
+ *   2. `ClientMessage::Hello` encode — plus `ClientMessage::ObserveTerminal`, without which the
+ *      handshake succeeds and no stream ever starts,
  *   3. `ServerMessage::Welcome` / `ServerMessage::Terminal` decode.
  *
  * No Node built-ins are used, so the package runs unchanged under Hermes/React Native.
@@ -24,6 +25,7 @@ export {
   RenderEncoding,
   SERVER_MESSAGE_VARIANT_NAMES,
   ServerMessageTag,
+  serverFrameSizeCap,
 } from "./constants.js";
 
 export {
@@ -57,6 +59,8 @@ export {
   decodeWelcome,
   encodeHello,
   encodeHelloFrame,
+  encodeObserveTerminal,
+  encodeObserveTerminalFrame,
   type HandshakeExpectation,
   type HelloParams,
   type ServerMessage,

@@ -63,6 +63,25 @@ enum ClientMessage {
         keybindings: ClientKeybindings,
         launch_mode: ClientLaunchMode,
     },
+    // Filler so `ObserveTerminal` lands on the mx wire tag 12. Real names, for the record
+    // (frozen by `client_message_wire_tags_preserve_protocol_15_order`, src/protocol/wire.rs:1448):
+    // Input, ClipboardImage, Resize, Detach, AttachTerminal, AttachScroll, InputEvents,
+    // OpenSettings, OpenKeybindHelp, Ping, RequestFullFrame.
+    V1,
+    V2,
+    V3,
+    V4,
+    V5,
+    V6,
+    V7,
+    V8,
+    V9,
+    V10,
+    V11,
+    /// `src/protocol/wire.rs:471-474` — exactly one field, a `String`.
+    ObserveTerminal {
+        target: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -151,6 +170,39 @@ fn main() {
             surface_mode: ClientSurfaceMode::FullApp,
             keybindings: ClientKeybindings::Server,
             launch_mode: ClientLaunchMode::TerminalAttach,
+        },
+    );
+    // ObserveTerminal is what actually starts the stream; the string-length boundaries below are
+    // the ones a hand-rolled bincode `String` writer gets wrong.
+    emit(
+        "OBSERVE_TERMINAL_W1_P1",
+        &ClientMessage::ObserveTerminal {
+            target: "w1:p1".to_string(),
+        },
+    );
+    emit(
+        "OBSERVE_TERMINAL_EMPTY",
+        &ClientMessage::ObserveTerminal {
+            target: String::new(),
+        },
+    );
+    emit(
+        "OBSERVE_TERMINAL_UTF8",
+        &ClientMessage::ObserveTerminal {
+            // 6 chars, 16 UTF-8 bytes: the length prefix counts BYTES, not chars.
+            target: "\u{d55c}\u{ae00}:\u{d130}\u{bbf8}\u{b110}".to_string(),
+        },
+    );
+    emit(
+        "OBSERVE_TERMINAL_LEN_250",
+        &ClientMessage::ObserveTerminal {
+            target: "a".repeat(250),
+        },
+    );
+    emit(
+        "OBSERVE_TERMINAL_LEN_251",
+        &ClientMessage::ObserveTerminal {
+            target: "a".repeat(251),
         },
     );
     emit(
