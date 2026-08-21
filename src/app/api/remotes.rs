@@ -1,6 +1,6 @@
 use crate::api::schema::{
     RemoteAddParams, RemoteRemoveParams, RemoteRenameParams, RemoteSetAutoUpdateParams,
-    RemoteSetEnabledParams, ResponseResult,
+    RemoteSetEnabledParams, RemoteSetSessionParams, ResponseResult,
 };
 use crate::app::App;
 
@@ -20,6 +20,7 @@ impl App {
         match self.state.remote_registry.add_excluding_targets(
             params.name,
             params.target,
+            params.session,
             params.keybindings,
             &main_server_remote_targets(),
         ) {
@@ -94,6 +95,27 @@ impl App {
             .remote_registry
             .set_auto_update(&params.remote_id, params.auto_update)
         {
+            Ok(remote) => {
+                self.state.mark_session_dirty();
+                encode_success(id, ResponseResult::RemoteEnabledChanged { remote })
+            }
+            Err(err) => encode_error(id, err.code(), err.message()),
+        }
+    }
+
+    /// Point a remote at a different session. Mirrors `handle_remote_set_auto_update`; the excluded
+    /// targets are the main server's own target, so re-pointing a local remote can't collide with
+    /// the session this server is running.
+    pub(super) fn handle_remote_set_session(
+        &mut self,
+        id: String,
+        params: RemoteSetSessionParams,
+    ) -> String {
+        match self.state.remote_registry.set_session(
+            &params.remote_id,
+            params.session,
+            &main_server_remote_targets(),
+        ) {
             Ok(remote) => {
                 self.state.mark_session_dirty();
                 encode_success(id, ResponseResult::RemoteEnabledChanged { remote })
@@ -380,6 +402,134 @@ mod tests {
             error_code(
                 &mut app,
                 r#"{"id":"set","method":"remote.set_auto_update","params":{"remote_id":"missing","auto_update":true}}"#,
+            ),
+            "remote_not_found"
+        );
+    }
+
+    #[test]
+    fn remote_add_persists_the_requested_session() {
+        let mut app = test_app();
+
+        let add = call(
+            &mut app,
+            r#"{"id":"add","method":"remote.add","params":{"name":"x","target":"user@x","session":"work"}}"#,
+        );
+
+        assert_eq!(add["result"]["type"], "remote_added");
+        assert_eq!(add["result"]["remote"]["session"], "work");
+
+        let list = call(
+            &mut app,
+            r#"{"id":"list","method":"remote.list","params":{}}"#,
+        );
+        assert_eq!(list["result"]["remotes"][0]["session"], "work");
+
+        let snapshot = capture_snapshot(&app);
+        assert_eq!(
+            snapshot.remote_registry.remotes[0].session.as_deref(),
+            Some("work")
+        );
+    }
+
+    #[test]
+    fn remote_add_treats_default_and_empty_sessions_as_the_default_session() {
+        let mut app = test_app();
+
+        let explicit_default = call(
+            &mut app,
+            r#"{"id":"add","method":"remote.add","params":{"name":"x","target":"user@x","session":"default"}}"#,
+        );
+        assert!(explicit_default["result"]["remote"]
+            .get("session")
+            .is_none());
+
+        let empty = call(
+            &mut app,
+            r#"{"id":"add2","method":"remote.add","params":{"name":"y","target":"user@y","session":""}}"#,
+        );
+        assert!(empty["result"]["remote"].get("session").is_none());
+
+        let snapshot = capture_snapshot(&app);
+        assert_eq!(snapshot.remote_registry.remotes[0].session, None);
+        assert_eq!(snapshot.remote_registry.remotes[1].session, None);
+    }
+
+    #[test]
+    fn remote_add_rejects_an_invalid_session_name() {
+        let mut app = test_app();
+
+        assert_eq!(
+            error_code(
+                &mut app,
+                r#"{"id":"add","method":"remote.add","params":{"name":"x","target":"user@x","session":"bad name!"}}"#,
+            ),
+            "invalid_session_name"
+        );
+        assert!(app.state.remote_registry.remotes.is_empty());
+    }
+
+    #[test]
+    fn remote_set_session_persists_marks_dirty_and_lists() {
+        let mut app = test_app();
+        let add = call(
+            &mut app,
+            r#"{"id":"add","method":"remote.add","params":{"name":"x","target":"user@x"}}"#,
+        );
+        let remote_id = add["result"]["remote"]["id"].as_str().unwrap().to_string();
+        app.state.session_dirty = false;
+
+        let set = format!(
+            r#"{{"id":"sess","method":"remote.set_session","params":{{"remote_id":"{remote_id}","session":"work"}}}}"#
+        );
+        let response = call(&mut app, &set);
+
+        assert_eq!(response["result"]["type"], "remote_enabled_changed");
+        assert_eq!(response["result"]["remote"]["id"], remote_id);
+        assert_eq!(response["result"]["remote"]["session"], "work");
+        assert!(app.state.session_dirty);
+
+        let snapshot = capture_snapshot(&app);
+        assert_eq!(
+            snapshot.remote_registry.remotes[0].session.as_deref(),
+            Some("work")
+        );
+
+        let list = call(
+            &mut app,
+            r#"{"id":"list","method":"remote.list","params":{}}"#,
+        );
+        assert_eq!(list["result"]["remotes"][0]["session"], "work");
+    }
+
+    #[test]
+    fn remote_set_session_invalid_name_leaves_the_registry_unchanged() {
+        let mut app = test_app();
+        let add = call(
+            &mut app,
+            r#"{"id":"add","method":"remote.add","params":{"name":"x","target":"user@x","session":"work"}}"#,
+        );
+        let remote_id = add["result"]["remote"]["id"].as_str().unwrap().to_string();
+        app.state.session_dirty = false;
+
+        let set = format!(
+            r#"{{"id":"sess","method":"remote.set_session","params":{{"remote_id":"{remote_id}","session":"bad name!"}}}}"#
+        );
+        assert_eq!(error_code(&mut app, &set), "invalid_session_name");
+        assert!(!app.state.session_dirty);
+        assert_eq!(
+            app.state.remote_registry.remotes[0].session.as_deref(),
+            Some("work")
+        );
+    }
+
+    #[test]
+    fn remote_set_session_unknown_id_returns_not_found() {
+        let mut app = test_app();
+        assert_eq!(
+            error_code(
+                &mut app,
+                r#"{"id":"sess","method":"remote.set_session","params":{"remote_id":"missing","session":"work"}}"#,
             ),
             "remote_not_found"
         );

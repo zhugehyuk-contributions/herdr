@@ -230,6 +230,83 @@ fn request_round_trips_for_server_agent_manifests() {
 }
 
 #[test]
+fn request_round_trips_for_remote_set_session() {
+    let request = Request {
+        id: "req_remote_set_session".into(),
+        method: Method::RemoteSetSession(RemoteSetSessionParams {
+            remote_id: "remote-1".into(),
+            session: Some("work".into()),
+        }),
+    };
+
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "remote.set_session");
+    assert_eq!(json["params"]["session"], "work");
+    let restored: Request = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, request);
+}
+
+#[test]
+fn remote_set_session_omits_an_absent_session() {
+    // An absent `session` means the remote's default session; it must not serialize the key so an
+    // older server parses the request unchanged.
+    let request = Request {
+        id: "req_remote_clear_session".into(),
+        method: Method::RemoteSetSession(RemoteSetSessionParams {
+            remote_id: "remote-1".into(),
+            session: None,
+        }),
+    };
+
+    let json = serde_json::to_value(&request).unwrap();
+    assert!(json["params"].get("session").is_none());
+    let restored: Request = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, request);
+}
+
+#[test]
+fn request_round_trips_for_session_list() {
+    let request = Request {
+        id: "req_session_list".into(),
+        method: Method::SessionList(EmptyParams::default()),
+    };
+
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "session.list");
+    let restored: Request = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, request);
+}
+
+#[test]
+fn remote_add_round_trips_an_optional_session() {
+    let request = Request {
+        id: "req_remote_add".into(),
+        method: Method::RemoteAdd(RemoteAddParams {
+            name: Some("dev".into()),
+            target: "user@dev".into(),
+            session: Some("work".into()),
+            keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
+        }),
+    };
+
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "remote.add");
+    assert_eq!(json["params"]["session"], "work");
+    let restored: Request = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, request);
+
+    // Legacy params without the key still parse, to the default session.
+    let legacy: Request = serde_json::from_str(
+        r#"{"id":"req_remote_add","method":"remote.add","params":{"target":"user@dev"}}"#,
+    )
+    .unwrap();
+    let Method::RemoteAdd(params) = legacy.method else {
+        panic!("expected remote.add");
+    };
+    assert_eq!(params.session, None);
+}
+
+#[test]
 fn request_round_trips_for_agent_explain() {
     let request = Request {
         id: "req_agent_explain".into(),

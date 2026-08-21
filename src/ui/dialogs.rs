@@ -22,12 +22,23 @@ use crate::terminal::TerminalRuntimeRegistry;
 // these views before calling the `render_*_overlay` functions below. The
 // `dialogs_does_not_reference_client_supervisor` test enforces this.
 
-/// View for the add-remote modal. `focused_is_target` selects which of the two fields draws the
+/// C1: which add-remote field is focused. A ui-owned copy of the client's `AddRemoteField` — the
+/// one-way `ui` <- `client` layering forbids naming the supervisor type here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddRemoteFieldView {
+    Target,
+    Name,
+    Session,
+}
+
+/// View for the add-remote modal. `focused_field` selects which of the three fields draws the
 /// focused (filled) style + cursor block.
 pub(crate) struct AddRemoteOverlayView<'a> {
     pub target: &'a str,
     pub name: &'a str,
-    pub focused_is_target: bool,
+    /// C1: the OPTIONAL session; empty renders blank and means the remote's default session.
+    pub session: &'a str,
+    pub focused_field: AddRemoteFieldView,
     pub error: Option<&'a str>,
     /// When true, the status row shows an animated "connecting" line instead of an error. Takes
     /// precedence over `error` (the worker clears the error when it starts).
@@ -855,7 +866,8 @@ pub(crate) fn confirm_close_button_rects(inner: Rect) -> (Rect, Rect) {
 /// opening upward) so it floats over the live content like the global launcher menu. Used by BOTH
 /// the renderer and the compositor's content-copy exclusion / hit-test.
 pub(crate) fn add_remote_popup_rect(area: Rect) -> Option<Rect> {
-    bottom_left_popup_rect(area, 54, 9)
+    // C1: 10 (was 9) — one more row for the optional `session` field.
+    bottom_left_popup_rect(area, 54, 10)
 }
 
 /// Fixed inner rect for the add-remote overlay. Returns `None` when the host is too small to fit
@@ -965,7 +977,7 @@ pub(crate) fn render_add_remote_overlay(
     let Some(inner) = render_panel_shell(frame, popup, palette.accent, palette.panel_bg) else {
         return;
     };
-    if inner.height < 5 {
+    if inner.height < 6 {
         return;
     }
 
@@ -973,28 +985,39 @@ pub(crate) fn render_add_remote_overlay(
         Constraint::Length(1), // header
         Constraint::Length(1), // target label/input
         Constraint::Length(1), // name label/input
+        Constraint::Length(1), // C1: session label/input (optional)
         Constraint::Length(1), // gap
         Constraint::Length(1), // error
         Constraint::Min(0),    // actions live on inner.height - 1
     ])
-    .areas::<6>(inner);
+    .areas::<7>(inner);
 
     render_modal_header(frame, rows[0], "add remote", palette);
 
+    // The label column stays aligned across all three rows: `render_add_remote_field` pads with two
+    // trailing spaces, so the labels are passed pre-padded to a common width.
     render_add_remote_field(
         frame,
         rows[1],
-        "target",
+        "target ",
         view.target,
-        view.focused_is_target,
+        view.focused_field == AddRemoteFieldView::Target,
         palette,
     );
     render_add_remote_field(
         frame,
         rows[2],
-        "name",
+        "name   ",
         view.name,
-        !view.focused_is_target,
+        view.focused_field == AddRemoteFieldView::Name,
+        palette,
+    );
+    render_add_remote_field(
+        frame,
+        rows[3],
+        "session",
+        view.session,
+        view.focused_field == AddRemoteFieldView::Session,
         palette,
     );
 
@@ -1003,12 +1026,12 @@ pub(crate) fn render_add_remote_overlay(
         frame.render_widget(
             Paragraph::new(format!(" {} {stage}", view.spinner))
                 .style(Style::default().fg(palette.accent)),
-            rows[4],
+            rows[5],
         );
     } else if let Some(error) = view.error {
         frame.render_widget(
             Paragraph::new(format!(" {error}")).style(Style::default().fg(palette.red)),
-            rows[4],
+            rows[5],
         );
     }
 
@@ -1717,6 +1740,219 @@ pub(crate) fn render_worktree_picker_overlay(
             inner.width,
             1,
         ),
+    );
+}
+
+/// C4/C5: one ui-owned row of the session picker. The trailing `new session…` row is NOT one of
+/// these — the renderer appends it, so it survives the loading and error states (C6).
+pub(crate) struct SessionPickerRowView<'a> {
+    pub label: &'a str,
+    /// A session with a live server on the remote host.
+    pub running: bool,
+    /// The session this host is attached to right now (marked with a leading `●`).
+    pub is_current: bool,
+}
+
+/// C4: the picker popup rect — footer-anchored like the worktree picker it mirrors, sized to
+/// `row_count` (which ALREADY includes the trailing `new session…` row).
+pub(crate) fn session_picker_popup_rect(area: Rect, row_count: usize) -> Option<Rect> {
+    let height = (row_count.max(1) as u16).saturating_add(4).min(14);
+    bottom_left_popup_rect(area, 48, height)
+}
+
+/// C5: the rect of picker row `index` inside `inner`. ONE helper for render and hit-test, so a
+/// click lands on the row it is painted on. `None` once the row scrolls past the body.
+pub(crate) fn session_picker_row_rect(inner: Rect, index: usize) -> Option<Rect> {
+    let body_height = inner.height.saturating_sub(2);
+    if index >= body_height as usize {
+        return None;
+    }
+    Some(Rect::new(
+        inner.x,
+        inner.y.saturating_add(1 + index as u16),
+        inner.width,
+        1,
+    ))
+}
+
+/// C4/C5/C6: render the session picker — a header, the remote's sessions (current one marked `●`,
+/// running ones flagged), then ALWAYS a trailing `new session…` row. The trailing row is drawn even
+/// while `loading` or on `error`, which is what keeps C6 reachable when a remote's server is too old
+/// to answer `session.list`. `selected` indexes rows INCLUDING that trailing row.
+pub(crate) fn render_session_picker_overlay(
+    palette: &Palette,
+    loading: bool,
+    error: Option<&str>,
+    rows: &[SessionPickerRowView<'_>],
+    selected: usize,
+    frame: &mut Frame,
+    popup: Rect,
+) {
+    let Some(inner) = render_panel_shell(frame, popup, palette.accent, palette.panel_bg) else {
+        return;
+    };
+    if inner.height < 2 {
+        return;
+    }
+
+    render_modal_header(
+        frame,
+        Rect::new(inner.x, inner.y, inner.width, 1),
+        "session",
+        palette,
+    );
+
+    let selected_style = Style::default()
+        .fg(panel_contrast_fg(palette))
+        .bg(palette.accent);
+    let new_session_index = rows.len();
+    for index in 0..=new_session_index {
+        let Some(row_rect) = session_picker_row_rect(inner, index) else {
+            break;
+        };
+        let is_selected = index == selected;
+        let text = match rows.get(index) {
+            Some(row) => {
+                let marker = if row.is_current { "●" } else { " " };
+                let running = if row.running { "  (running)" } else { "" };
+                format!(" {marker} {}{running}", row.label)
+            }
+            // The always-present trailing row (C6).
+            None => " + new session…".to_string(),
+        };
+        let style = if is_selected {
+            selected_style
+        } else if rows.get(index).is_some_and(|row| row.is_current) {
+            Style::default()
+                .fg(palette.text)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(palette.text)
+        };
+        frame.render_widget(
+            Paragraph::new(truncate_end(&text, inner.width as usize)).style(style),
+            row_rect,
+        );
+    }
+
+    // The status line doubles as the key hint, so a loading/failed list still explains what the
+    // trailing row does.
+    let status = if loading {
+        " loading sessions…".to_string()
+    } else if let Some(error) = error {
+        format!(" {error}")
+    } else {
+        " ↵ switch   esc cancel".to_string()
+    };
+    let status_style = if !loading && error.is_some() {
+        Style::default().fg(palette.red)
+    } else {
+        Style::default().fg(palette.overlay0)
+    };
+    frame.render_widget(
+        Paragraph::new(truncate_end(&status, inner.width as usize)).style(status_style),
+        Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            1,
+        ),
+    );
+}
+
+/// C6: the new-session input popup rect — footer-anchored, mirroring the rename overlay.
+pub(crate) fn new_session_popup_rect(area: Rect) -> Option<Rect> {
+    bottom_left_popup_rect(area, 48, 7)
+}
+
+/// C6: the (switch, cancel) button rects inside the new-session popup's inner rect. Mirrors
+/// `rename_workspace_button_rects`.
+pub(crate) fn new_session_button_rects(inner: Rect) -> (Rect, Rect) {
+    let rects = action_button_row_rects(
+        inner,
+        &[
+            ActionButtonSpec {
+                hint: Some("↵"),
+                label: "switch",
+            },
+            ActionButtonSpec {
+                hint: Some("esc"),
+                label: "cancel",
+            },
+        ],
+        2,
+        inner.height.saturating_sub(1),
+    );
+    (rects[0], rects[1])
+}
+
+/// C6: render the new-session text input. Mirrors `render_rename_workspace_overlay` (one focused
+/// field + an inline red error + switch/cancel buttons). An empty submit means the default session,
+/// which the hint line spells out.
+pub(crate) fn render_new_session_overlay(
+    palette: &Palette,
+    name: &str,
+    error: Option<&str>,
+    // True while `remote.set_session` is in flight — the overlay stays open across the round-trip
+    // so a rejection can replace this line with the reason.
+    in_flight: bool,
+    frame: &mut Frame,
+    popup: Rect,
+) {
+    let Some(inner) = render_panel_shell(frame, popup, palette.accent, palette.panel_bg) else {
+        return;
+    };
+    if inner.height < 4 {
+        return;
+    }
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // header
+        Constraint::Length(1), // input
+        Constraint::Length(1), // error / hint
+        Constraint::Min(0),    // actions live on inner.height - 1
+    ])
+    .areas::<4>(inner);
+
+    render_modal_header(frame, rows[0], "new session", palette);
+    render_add_remote_field(frame, rows[1], "session", name, true, palette);
+
+    match (error, in_flight) {
+        (Some(error), _) => frame.render_widget(
+            Paragraph::new(format!(" {error}")).style(Style::default().fg(palette.red)),
+            rows[2],
+        ),
+        (None, true) => frame.render_widget(
+            Paragraph::new(" switching session…").style(Style::default().fg(palette.accent)),
+            rows[2],
+        ),
+        (None, false) => frame.render_widget(
+            Paragraph::new(" empty = the remote's default session")
+                .style(Style::default().fg(palette.overlay0)),
+            rows[2],
+        ),
+    }
+
+    let (submit_rect, cancel_rect) = new_session_button_rects(inner);
+    render_action_button(
+        frame,
+        submit_rect,
+        Some("↵"),
+        "switch",
+        Style::default()
+            .fg(panel_contrast_fg(palette))
+            .bg(palette.accent)
+            .add_modifier(Modifier::BOLD),
+    );
+    render_action_button(
+        frame,
+        cancel_rect,
+        Some("esc"),
+        "cancel",
+        Style::default()
+            .fg(palette.text)
+            .bg(palette.surface0)
+            .add_modifier(Modifier::BOLD),
     );
 }
 

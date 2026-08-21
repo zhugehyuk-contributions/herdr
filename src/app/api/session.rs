@@ -1,7 +1,7 @@
 use crate::api::schema::{ResponseResult, SessionSnapshot};
 use crate::app::App;
 
-use super::responses::encode_success;
+use super::responses::{encode_error, encode_success};
 
 impl App {
     pub(super) fn handle_session_snapshot(&mut self, id: String) -> String {
@@ -11,6 +11,15 @@ impl App {
                 snapshot: Box::new(self.session_snapshot()),
             },
         )
+    }
+
+    /// List the sessions of the host this server runs on. Answered by whichever server the request
+    /// lands on, so a client asking a remote's bridged api socket enumerates THAT host's sessions.
+    pub(super) fn handle_session_list(&mut self, id: String) -> String {
+        match crate::session::list_sessions() {
+            Ok(sessions) => encode_success(id, ResponseResult::SessionList { sessions }),
+            Err(err) => encode_error(id, "session_list_failed", err.to_string()),
+        }
     }
 
     fn session_snapshot(&self) -> SessionSnapshot {
@@ -107,6 +116,25 @@ mod tests {
         assert_eq!(
             snapshot.focused_pane_id.as_deref(),
             Some(snapshot.panes[0].pane_id.as_str())
+        );
+    }
+
+    #[test]
+    fn session_list_returns_the_hosts_sessions() {
+        let mut app = app_with_two_tabs();
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_sessions".into(),
+            method: Method::SessionList(EmptyParams::default()),
+        });
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::SessionList { sessions } = success.result else {
+            panic!("expected session list response");
+        };
+        assert!(
+            sessions.iter().any(|session| session.default),
+            "session.list must include the default session: {sessions:?}"
         );
     }
 }

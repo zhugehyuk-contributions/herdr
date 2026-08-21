@@ -423,6 +423,14 @@ pub(crate) enum SidebarHitTarget {
     RenameWorkspaceCancel,
     ConfirmCloseWorkspaceConfirm,
     ConfirmCloseWorkspaceCancel,
+    /// C5: a row of the open session picker — listed sessions plus the trailing `new session…`
+    /// row, indexed together. A `Down(Left)` here activates it (switch / open the input).
+    SessionPickerRow {
+        index: usize,
+    },
+    // C6: the new-session input's action buttons, mirroring the rename overlay's pair.
+    NewSessionSubmit,
+    NewSessionCancel,
 }
 
 #[derive(Clone)]
@@ -472,6 +480,9 @@ struct ClientSidebarSnapshot {
     new_worktree: Option<crate::client::supervisor::NewWorktreeForm>,
     confirm_delete_worktree: Option<crate::client::supervisor::ConfirmDeleteWorktree>,
     worktree_picker: Option<crate::client::supervisor::WorktreePicker>,
+    // C4/C5/C6: the host-menu session follow-on overlays (picker + new-session input).
+    session_picker: Option<crate::client::supervisor::SessionPicker>,
+    new_session: Option<crate::client::supervisor::NewSessionForm>,
     // #47: the one drag offset (cols, rows) shared by EVERY overlay, cloned from the model. Render,
     // hit-test, and the content-exclusion rect shift the open overlay's default popup by this.
     overlay_drag_offset: (i16, i16),
@@ -1435,17 +1446,11 @@ impl ClientCompositor {
         // hide + the content copy run per-frame in `overlay_content_onto_shell`; we capture only
         // the model-derived modal-open flag here (the SAME condition as the old inline block) so
         // the cached shell carries it without re-reading the model on a reused content frame.
-        let modal_open = model.add_remote_form().is_some()
-            || model.new_workspace_picker().is_some()
-            || model.remote_manage_overlay().is_some()
-            // #47: the one client menu — now includes the launcher, which is modal too (the cursor
-            // is hidden behind it, matching the two context menus).
-            || model.client_menu().is_some()
-            || model.rename_workspace_form().is_some()
-            || model.confirm_close_workspace().is_some()
-            || model.new_worktree_form().is_some()
-            || model.confirm_delete_worktree().is_some()
-            || model.worktree_picker().is_some();
+        // Same set as before, but sourced from the EXHAUSTIVE `client_overlay_open` match instead of
+        // a hand-written `||` chain (the shape that silently made the two session overlays
+        // keyboard-dead). `new_workspace_picker` is a separate model field, not a
+        // `ClientOverlayState` variant, so it is still ORed in explicitly.
+        let modal_open = model.any_overlay_open();
 
         ComposedShell {
             frame,
@@ -1599,12 +1604,23 @@ impl ClientCompositor {
             if snapshot.confirm_close_workspace.is_some() {
                 return hit_test_confirm_close_workspace(&snapshot, popup, x, y);
             }
+            // C5: the session picker is CLICKABLE ("클릭해서 선택할수 있고"), unlike the
+            // keyboard-only worktree overlays below. It is modal all the same: a press that misses
+            // every row resolves to nothing, never to a sidebar row beneath it.
+            if snapshot.session_picker.is_some() {
+                return hit_test_session_picker(&snapshot, popup, x, y);
+            }
+            if snapshot.new_session.is_some() {
+                return hit_test_new_session(&snapshot, popup, x, y);
+            }
         }
         // Worktree-menu parity: the worktree follow-on overlays are keyboard-driven; while one is
         // open it owns the host rect (a click resolves to nothing rather than a row beneath it).
         if snapshot.new_worktree.is_some()
             || snapshot.confirm_delete_worktree.is_some()
             || snapshot.worktree_picker.is_some()
+            || snapshot.session_picker.is_some()
+            || snapshot.new_session.is_some()
         {
             return None;
         }
@@ -2368,6 +2384,8 @@ impl ClientSidebarSnapshot {
             new_worktree: model.new_worktree_form().cloned(),
             confirm_delete_worktree: model.confirm_delete_worktree().cloned(),
             worktree_picker: model.worktree_picker().cloned(),
+            session_picker: model.session_picker().cloned(),
+            new_session: model.new_session_form().cloned(),
         };
         // #53: ONE computation of the open overlay's geometry, from the just-built view. Every read
         // site (render / hit-test / hover-test / exclusion / drag / #56 hover overlay) reads this
@@ -2467,8 +2485,18 @@ fn render_client_shell(
                 let view = crate::ui::AddRemoteOverlayView {
                     target: &form.target,
                     name: &form.name,
-                    focused_is_target: form.focused_field
-                        == crate::client::supervisor::AddRemoteField::Target,
+                    session: &form.session,
+                    focused_field: match form.focused_field {
+                        crate::client::supervisor::AddRemoteField::Target => {
+                            crate::ui::AddRemoteFieldView::Target
+                        }
+                        crate::client::supervisor::AddRemoteField::Name => {
+                            crate::ui::AddRemoteFieldView::Name
+                        }
+                        crate::client::supervisor::AddRemoteField::Session => {
+                            crate::ui::AddRemoteFieldView::Session
+                        }
+                    },
                     error: form.error.as_deref(),
                     in_progress: form.in_progress,
                     progress: form.progress.as_deref(),
@@ -2610,6 +2638,43 @@ fn render_client_shell(
                         picker.error.as_deref(),
                         &rows,
                         picker.selected,
+                        frame,
+                        popup,
+                    );
+                }
+            }
+            // C4/C5: the session picker. Supervisor rows are mapped into ui-owned views here (the
+            // one-way `ui` <- `client` layering); the trailing `new session…` row is the renderer's.
+            if let Some(picker) = &snapshot.session_picker {
+                if let Some(popup) = overlay_popup {
+                    let rows: Vec<crate::ui::SessionPickerRowView> = picker
+                        .items
+                        .iter()
+                        .map(|item| crate::ui::SessionPickerRowView {
+                            label: &item.label,
+                            running: item.running,
+                            is_current: item.is_current,
+                        })
+                        .collect();
+                    crate::ui::render_session_picker_overlay(
+                        &snapshot.app.palette,
+                        picker.loading,
+                        picker.error.as_deref(),
+                        &rows,
+                        picker.selected,
+                        frame,
+                        popup,
+                    );
+                }
+            }
+            // C6: the new-session text input.
+            if let Some(form) = &snapshot.new_session {
+                if let Some(popup) = overlay_popup {
+                    crate::ui::render_new_session_overlay(
+                        &snapshot.app.palette,
+                        &form.name,
+                        form.error.as_deref(),
+                        form.in_flight,
                         frame,
                         popup,
                     );
@@ -2949,6 +3014,11 @@ fn open_overlay_popup_rect(
         crate::ui::confirm_delete_worktree_popup_rect(anchor_area)
     } else if let Some(picker) = snapshot.worktree_picker.as_ref() {
         crate::ui::worktree_picker_popup_rect(anchor_area, picker.items.len())
+    } else if let Some(picker) = snapshot.session_picker.as_ref() {
+        // `row_count` already includes the always-present trailing `new session…` row.
+        crate::ui::session_picker_popup_rect(anchor_area, picker.row_count())
+    } else if snapshot.new_session.is_some() {
+        crate::ui::new_session_popup_rect(anchor_area)
     } else {
         None
     }?;
@@ -3031,6 +3101,47 @@ fn hit_test_rename_workspace(
     }
     if rect_contains(cancel_rect, x, y) {
         return Some(SidebarHitTarget::RenameWorkspaceCancel);
+    }
+    None
+}
+
+/// C5: hit-test the session picker's rows. Geometry derives from the (drag-shifted) `popup` via
+/// `popup_inner` + `session_picker_row_rect` — the SAME helper the renderer draws with, so a click
+/// lands on the row the user sees. Indexes listed sessions AND the trailing `new session…` row.
+fn hit_test_session_picker(
+    snapshot: &ClientSidebarSnapshot,
+    popup: Rect,
+    x: u16,
+    y: u16,
+) -> Option<SidebarHitTarget> {
+    let picker = snapshot.session_picker.as_ref()?;
+    let inner = popup_inner(popup);
+    for index in 0..picker.row_count() {
+        let Some(row_rect) = crate::ui::session_picker_row_rect(inner, index) else {
+            break;
+        };
+        if rect_contains(row_rect, x, y) {
+            return Some(SidebarHitTarget::SessionPickerRow { index });
+        }
+    }
+    None
+}
+
+/// C6: hit-test the new-session input's switch/cancel buttons. Mirrors `hit_test_rename_workspace`.
+fn hit_test_new_session(
+    snapshot: &ClientSidebarSnapshot,
+    popup: Rect,
+    x: u16,
+    y: u16,
+) -> Option<SidebarHitTarget> {
+    snapshot.new_session.as_ref()?;
+    let inner = popup_inner(popup);
+    let (submit_rect, cancel_rect) = crate::ui::new_session_button_rects(inner);
+    if rect_contains(submit_rect, x, y) {
+        return Some(SidebarHitTarget::NewSessionSubmit);
+    }
+    if rect_contains(cancel_rect, x, y) {
+        return Some(SidebarHitTarget::NewSessionCancel);
     }
     None
 }
@@ -7007,7 +7118,10 @@ mod tests {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
         let (mut model, remote_id) = mixed_supervisor_model();
         let mut compositor = ClientCompositor::new(26);
-        let host = (60u16, 16u16);
+        // C3 grew the host menu by one row (the session readout), so the host needs one more row of
+        // headroom for the +2 drag below to land unclamped — the assertion here is that a drag moves
+        // the popup by EXACTLY the delta, not that it hits the bottom clamp.
+        let host = (60u16, 17u16);
         // a cursor-anchored host context menu, anchored well inside the screen so it can move freely.
         model.open_host_context_menu(remote_id, "x".into(), 10, 4);
 

@@ -3647,6 +3647,13 @@
                 "null"
               ]
             },
+            "session": {
+              "description": "Optional session to attach to on the remote. Absent/empty/`\"default\"` = the remote's\ndefault session.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "target": {
               "type": "string"
             }
@@ -3716,6 +3723,24 @@
           "required": [
             "remote_id",
             "enabled"
+          ],
+          "type": "object"
+        },
+        "RemoteSetSessionParams": {
+          "description": "Point an existing remote at a different session. Absent/empty/`\"default\"` = the remote's\ndefault session.",
+          "properties": {
+            "remote_id": {
+              "type": "string"
+            },
+            "session": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "remote_id"
           ],
           "type": "object"
         },
@@ -4720,6 +4745,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/RemoteSetAutoUpdateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "remote.set_session",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RemoteSetSessionParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "session.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
             }
           },
           "required": [
@@ -9122,6 +9179,25 @@
             },
             {
               "properties": {
+                "sessions": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/SessionInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "session_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "sessions"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "settings": {
                   "$ref": "#/schemas/success_response/$defs/UiSettingsInfo"
                 },
@@ -10135,6 +10211,33 @@
           },
           "required": [
             "live_handoff"
+          ],
+          "type": "object"
+        },
+        "SessionInfo": {
+          "properties": {
+            "default": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "running": {
+              "type": "boolean"
+            },
+            "session_dir": {
+              "type": "string"
+            },
+            "socket_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "default",
+            "running",
+            "socket_path",
+            "session_dir"
           ],
           "type": "object"
         },

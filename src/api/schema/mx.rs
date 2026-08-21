@@ -12,6 +12,10 @@ pub struct RemoteAddParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub target: String,
+    /// Optional session to attach to on the remote. Absent/empty/`"default"` = the remote's
+    /// default session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     #[serde(default)]
     pub keybindings: crate::remote_registry::RemoteKeybindingsSnapshot,
 }
@@ -31,6 +35,15 @@ pub struct RemoteRenameParams {
 pub struct RemoteSetAutoUpdateParams {
     pub remote_id: String,
     pub auto_update: bool,
+}
+
+/// Point an existing remote at a different session. Absent/empty/`"default"` = the remote's
+/// default session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RemoteSetSessionParams {
+    pub remote_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
