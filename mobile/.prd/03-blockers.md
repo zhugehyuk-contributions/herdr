@@ -64,6 +64,11 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
 - **막는 것**: 렌더가 `while y < area.height && rows.next()` 식으로 잘린다 (`src/pane/terminal.rs:1956-1962` `[i]`).
   observe는 PTY를 리사이즈하지 않으므로([`02-architecture.md`](./02-architecture.md) §2.3), 40컬럼 폰이 200×50 pane을 보면
   **좌상단 40×N만** 보인다 — 커서와 최신 출력이 화면 밖이다.
+- **메커니즘 확정 (2026-08-22 리시트 실측 `[v]`)**: 프레임은 **pane 크기가 아니라 클라이언트가 선언한 크기**로
+  온다 — 클라이언트가 100×30을 선언하자 pane PTY가 23×53인 채로 `TerminalFrame{width:100,height:30}`이 왔다
+  (`tests/observe_terminal_ansi.rs`). 서버가 pane 내용을 **폰 뷰포트로 다시 렌더**한다. 그러나 **줄바꿈은
+  pane의 컬럼 수에 그대로 묶여 있다**(리플로우 없음). 즉 프레임 크기를 키워도 읽기 문제는 안 풀린다 —
+  **pane 폭의 문제**이지 프레임 크기의 문제가 아니다.
 - **왜 치명적**: M2(읽기 전용 v1)가 목적의 절반인데, 그게 잘린 코너를 보여준다. 실기기 전에는 안 보이는 종류의 결함이다.
 - **v1 답 (서버 변경 0)**: `Hello`의 cols/rows를 **폰 해상도가 아니라 대상 pane의 실제 크기**로 보낸다(`pane.get` 선조회).
   xterm은 PTY 폭 그대로 렌더하고 폰은 핀치줌/가로스크롤로 본다. observe라서 데스크톱은 그대로다.
@@ -78,6 +83,22 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
 - **범위**: 매치를 `TerminalObserve`까지 넓히되 **공유 runtime을 스크롤하면 안 된다**(데스크톱 뷰가 같이 움직인다)
   → per-client 뷰포트가 필요하므로 사실상 B4의 서버 변경안과 같은 작업이다.
   **v1은 xterm 자체 스크롤백 버퍼로 대체**한다(orca는 5000줄 `[i]`). M6.
+
+### B13. TerminalAnsi 프레임은 압축되지 않고 셀마다 재-SGR한다 — 모바일 대역폭
+
+> 2026-08-22 신설. `tests/observe_terminal_ansi.rs` 리시트를 돌리다 실측으로 드러났다. **계획에 없던 비용이다.**
+
+- **실측**: 100×30 풀 프레임 1장 = **55,925 바이트 ≈ 18.6 B/cell** `[v]`. `BlitEncoder`가 **모든 셀 앞에**
+  `ESC[row;colH` + 전체 SGR를 낸다 — 같은 스타일이 이어져도 런을 합치지 않는다.
+- **더 나쁜 것**: `ServerMessage::Terminal`은 **deflate되지 않는다.** 압축은 semantic 분기에만 걸려 있고
+  (`src/server/render_stream.rs:87-89` — 주석이 "full frames are ~hundreds of KB of per-cell data"라며 도입 이유를
+  적어둔다), ANSI 분기(`:105-123`)는 `encoded.bytes`를 **그대로** 보낸다 `[v]`.
+- **함의**: TerminalAnsi를 고른 이유는 "코덱 부담 최소"였는데, 그 경로는 **semantic 경로가 이미 받고 있는
+  deflate를 포기하는 경로**이기도 하다. 셀룰러에서 제일 먼저 아플 지점이고, 풀 프레임은 pane 전환 · 재연결 ·
+  `RequestFullFrame`마다 나온다. → [`06-open-decisions.md`](./06-open-decisions.md) 결정 1의 비용란에 반영됨.
+- **완화 (서버 변경 0)**: 풀 프레임 **빈도**를 줄인다 — B6(`RetargetTerminal`)가 pane 전환당 풀 프레임을 없앤다.
+- **서버 변경**: ① ANSI 분기에도 `compress_server_message`를 적용(대칭화, 소규모 — **M0에 끼울 만큼 작다**)
+  ② `BlitEncoder`가 동일 스타일 런을 합치게(더 큰 작업, M6).
 
 ### B8. JSON API는 요청 1개 = 연결 1개
 

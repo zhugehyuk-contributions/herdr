@@ -38,7 +38,9 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
 증거 표기 — `[v]` 직접 열어 확인 · `[i]` 조사 리포트 전언, 재검증 안 함 · `[추정]` 코드 근거 없음.
 경로는 herdr 레포 루트 기준.
 
-1. **렌더러.** `TerminalAnsi` + xterm WebView(권장: 코덱 부담 최소, orca 재사용 최대, 동결 대상 5필드)
+1. **렌더러.** `TerminalAnsi` + xterm WebView(권장: 코덱 부담 최소, orca 재사용 최대, 동결 대상 5필드.
+   **단 실측 비용 2개**: ⓐ xterm 종속 — 셀을 자기 UI로 재해석 불가 ⓑ **대역폭** — 풀 프레임이 압축 없이
+   ~18.6 B/cell로 온다([`03-blockers.md`](./03-blockers.md) B13 `[v]`). semantic 경로는 deflate를 받는데 ANSI 경로는 못 받는다)
    vs `SemanticFrame` + 네이티브 셀 렌더러(자유도 높고 herdr UI를 폰용으로 재해석 가능, 대신
    bincode/FNV/deflate/델타를 전부 손으로 + 매 범프마다 유지보수). **한 번 고르면 되돌리기 비싸다.**
 2. **pane 뷰 폭 정책.** PTY 폭 그대로 렌더 + 핀치줌(서버 변경 0, 지금 가능) vs observe 뷰포트를 herdr에

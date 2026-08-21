@@ -62,7 +62,12 @@ ssh 어댑터 인터페이스(노드=`ssh2`, RN=네이티브 모듈) · JSON API
 observe 세션 상태기계.
 **단독 가치**: CLI로도 쓸 수 있는 TS SDK — herdr을 스크립트로 조종하는 다른 도구의 기반.
 **됐다** = 노드에서 실서버 대상으로 ① 세션 스냅샷 파싱 ② `agent.list` 파싱 ③ observe로 `Terminal`
-프레임 100개 수신, **그 동안 해당 pane 크기가 불변임을 `pane.get`으로 확인** ④ 픽스처 코퍼스 테스트 green.
+프레임 100개 수신, **그 동안 해당 pane의 PTY 크기가 불변** ④ 픽스처 코퍼스 테스트 green.
+- ⚠️ **`pane.get`으로는 크기를 못 본다** — `PaneInfo`에 width/height 필드가 없다 (`src/api/schema/panes.rs:398-430` `[v]`).
+  검증은 pane 안에서 `stty size`를 실행해 읽는다(`pane.send_input` + `pane.wait_for_output`) — 리시트가 쓴 방법이다.
+- ⚠️ **크기 안정화 후에 측정한다.** 새 pane은 서버 PTY 크기로 시작해 **첫 가상 렌더에서 레이아웃 rect로 리사이즈**된다
+  (`src/server/headless.rs:4074` `resize_panes = pane_infos.is_empty()`). 이 드리프트는 클라이언트와 무관하므로,
+  연속 2회 같은 값이 나올 때까지 기다린 뒤 기준값으로 삼는다.
 
 ### M2 — 읽기 전용 앱 v1
 리모트 목록 / Agents 홈 / 워크스페이스–탭–pane 브라우저 / **pane 뷰어(observe + TerminalAnsi + xterm WebView)**.

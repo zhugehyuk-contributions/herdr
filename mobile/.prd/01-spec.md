@@ -22,6 +22,8 @@ expo-router, xterm.js WebView 터미널). 구조와 transport 생존성 해법�
 페어링/E2EE/릴레이 계층은 herdr에서 필요 없다 — ssh가 그 역할을 한다.
 
 Status: **기획만 존재. 앱 코드 0줄.** 이 문서군은 구현 전 계약이지 구현 기록이 아니다.
+단 계획의 핵심 축(observe + `TerminalAnsi`)은 **2026-08-22에 실측으로 닫혔다** —
+`tests/observe_terminal_ansi.rs`([`02-architecture.md`](./02-architecture.md) §2.2).
 
 Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSION = 20`.
 증거 표기 — `[v]` 직접 열어 확인 · `[i]` 조사 리포트 전언, 재검증 안 함 · `[추정]` 코드 근거 없음.
@@ -29,7 +31,7 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
 
 | | |
 |---|---|
-| 앱 코드 | **0줄** — 이 폴더는 아직 기획뿐이다 |
+| 앱 코드 | **0줄** — 이 폴더는 아직 기획뿐이다 (herdr 쪽 리시트 테스트 1개는 존재) |
 | 베이스 | `feat/mobile-client` @ `aa9f6e14` = v0.8.0-mx.1, protocol 20 |
 | 게이트 | clippy clean · nextest **3574/3574** (1 flaky, 2 leaky) |
 | 다음 | [`06-open-decisions.md`](./06-open-decisions.md)의 열린 결정 4개를 오너가 확정 → M0 착수 |
