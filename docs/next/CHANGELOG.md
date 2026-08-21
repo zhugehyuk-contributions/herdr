@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+- Added a session choice for remotes: the add-remote dialog takes an optional `session`, and a host's right-click menu shows the session it is attached to, lists the sessions that exist on that host, and can switch it (including to a brand-new name). Previously every remote attached the far side's `default` session.
+- Added `session.list` and `remote.set_session` socket API methods, and an optional `session` on `remote.add`.
+
+### Fixed
+- Fixed a failed remote management request (enable/disable, remove, auto-update, session switch) being discarded silently instead of reporting on the host banner.
+
 ## [0.7.5-mx.1] - 2026-08-05
 
 ### Added

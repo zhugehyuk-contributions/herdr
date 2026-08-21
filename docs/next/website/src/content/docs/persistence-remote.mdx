@@ -102,6 +102,24 @@ Use `--session` with `--remote` to attach to a named session on the remote host:
 herdr --remote workbox --session agents
 ```
 
+Remotes added from inside the client can pin a session too. Without one, a remote
+attaches the far side's `default` session.
+
+Set it when you add the remote: the add-remote dialog has an optional `session`
+field under `target` and `name`. Leave it empty for the default session.
+
+Change it later from the host's context menu. Right-click a host in the sidebar
+and the menu shows a `session <name>` row with the session that host is currently
+attached to. Activating that row lists the sessions that exist on that host, with
+the current one marked; pick one and Herdr re-attaches the host to it. The last
+row, `new session…`, takes a name that is not in the list yet — useful for
+starting a fresh session on the remote, and the way to re-point a host whose
+session list could not be fetched.
+
+Switching a host's session drops its connection and dials it back up on the new
+session; the host's panes on the old session keep running and are still there
+when you switch back.
+
 ## Direct terminal attach
 
 Full Herdr attach opens the whole workspace UI. Direct attach opens one server-owned terminal in your current terminal.
