@@ -419,8 +419,12 @@ fn completion_command_prints_zsh_script_without_session_startup() {
         "zsh completions should not suggest equals-style direction values: {stdout}"
     );
     assert!(
-        !stdout.contains("live-handoff"),
-        "internal server handoff command should not be completed: {stdout}"
+        !stdout.contains("_herdr__subcmd__server__subcmd__live-handoff"),
+        "internal `server live-handoff` recovery command should not be completed: {stdout}"
+    );
+    assert!(
+        stdout.contains("'live-handoff:"),
+        "the top-level live-handoff command should be completed: {stdout}"
     );
 }
 
