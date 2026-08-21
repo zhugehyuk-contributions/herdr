@@ -69,6 +69,53 @@ describe('mock fixture invariants', () => {
     expect(rollUp(['idle'])).toBe('idle')
   })
 
+  it('answers as a *different box* when the seed changes, without changing the tree size', () => {
+    // herdr's JSON API is per-server: `workspace.list` describes the box you asked. Stage 5's
+    // Agents home is the union over every remote, so the fixture has to be able to answer as more
+    // than one box — otherwise every remote would report an identical tree and the screen would
+    // look right while proving nothing.
+    const base = mockWorkspaces()
+    const other = mockWorkspaces({ ...DEFAULT_SCENARIO, seed: 1 })
+    expect(other).toHaveLength(base.length)
+    expect(other.map((workspace) => workspace.label)).not.toEqual(
+      base.map((workspace) => workspace.label)
+    )
+    expect(mockPanes({ ...DEFAULT_SCENARIO, seed: 1 })).toHaveLength(mockPanes().length)
+  })
+
+  it('is deterministic: the same scenario always produces the same tree', () => {
+    expect(mockPanes({ ...DEFAULT_SCENARIO, seed: 3 })).toEqual(
+      mockPanes({ ...DEFAULT_SCENARIO, seed: 3 })
+    )
+    // ...and an absent seed is seed 0, so every pre-stage-5 caller is unaffected.
+    expect(mockPanes()).toEqual(mockPanes({ ...DEFAULT_SCENARIO, seed: 0 }))
+  })
+
+  it('only ever keys state_labels by a status the server would accept', () => {
+    // `normalize_state_labels` (src/app/api/panes.rs:1676-1681) rejects any key outside the
+    // AgentStatus enum, so a fixture with a free-form key would be a payload the server cannot
+    // emit — and the phone would learn to read a field that never arrives.
+    const allowed = new Set(['idle', 'working', 'blocked', 'done', 'unknown'])
+    for (const seed of [0, 1, 2, 3]) {
+      for (const pane of mockPanes({ ...DEFAULT_SCENARIO, seed })) {
+        for (const [key, value] of Object.entries(pane.state_labels ?? {})) {
+          expect(allowed, `state_labels key ${key}`).toContain(key)
+          // Only the *current* status may carry a label; a label for another status is dead weight
+          // the UI would never show (src/ui/sidebar.rs:2268-2272 looks up exactly one key).
+          expect(key).toBe(pane.agent_status)
+          expect(value.length).toBeGreaterThan(0)
+        }
+      }
+    }
+  })
+
+  it('carries the pane state label onto the agent row, as src/app/agents.rs:392 does', () => {
+    const panes = new Map(mockPanes().map((pane) => [pane.pane_id, pane]))
+    for (const agent of mockAgents()) {
+      expect(agent.state_labels).toEqual(panes.get(agent.pane_id)?.state_labels)
+    }
+  })
+
   it('reports each workspace pane_count/tab_count consistently with pane.list', () => {
     const panes = mockPanes()
     for (const workspace of mockWorkspaces()) {

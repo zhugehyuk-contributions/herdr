@@ -17,8 +17,10 @@
 //   · `OrcaLogo` (`:9`, `:182`) — brand, not code (§0).
 //   · `RpcClientProvider` (`:10`, `:161`) — stage 6. Replaced by the snapshot provider below, which
 //     is the smallest thing that lets stage 3 mount before a transport exists.
-// Screens: only the two routes that exist. orca lists fourteen; the rest are ported in later stages
-// or dropped, and expo-router warns about a `Stack.Screen` with no file.
+// Screens: only the three routes that exist. orca lists fourteen; the rest are ported in later
+// stages or dropped, and expo-router warns about a `Stack.Screen` with no file. `nodes` is the one
+// route with no orca counterpart at this position — orca's host catalog *is* its `index`, and
+// herdr's home is the Agents view instead (01-spec.md decision 3), so the catalog needs a name.
 import { useCallback } from 'react'
 import { View, StyleSheet } from 'react-native'
 import { Stack } from 'expo-router'
@@ -62,6 +64,7 @@ export default function RootLayout() {
           }}
         >
           <Stack.Screen name="index" options={{ headerShown: false }} />
+          <Stack.Screen name="nodes" options={{ headerShown: false }} />
           <Stack.Screen name="h" options={{ headerShown: false }} />
         </Stack>
       </View>

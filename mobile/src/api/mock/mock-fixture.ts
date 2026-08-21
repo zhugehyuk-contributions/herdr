@@ -28,6 +28,17 @@ export type MockScenario = {
   workspaceCount: number
   /** Panes per workspace, spread over `ceil(panesPerWorkspace / 2)` tabs. */
   panesPerWorkspace: number
+  /**
+   * **Which server is answering.** herdr's JSON API is per-server: `workspace.list` / `pane.list` /
+   * `agent.list` describe the box you asked, and only `remote.list` describes the fleet
+   * (`../herdr-api-types.ts`, `RemoteSnapshot`). Stage 5's Agents home is the union over every
+   * remote, so the fixture has to be able to answer *as a different box* — this offsets the
+   * deterministic wheels so remote 1 is not a copy of remote 0.
+   *
+   * `remote.list` deliberately ignores it: the phone learns the fleet from the server it reached.
+   * Absent = 0, so every pre-existing caller gets byte-identical output.
+   */
+  seed?: number
 }
 
 export const DEFAULT_SCENARIO: MockScenario = {
@@ -51,8 +62,42 @@ const AGENT_NAMES = ['claude', 'codex', 'build', 'shell', 'tail'] as const
 /** Deterministic status wheel: index 0 blocked, so every fixture has the state the app exists for. */
 const STATUS_WHEEL: AgentStatus[] = ['blocked', 'working', 'done', 'idle', 'working', 'unknown']
 
-function statusAt(index: number): AgentStatus {
-  return STATUS_WHEEL[index % STATUS_WHEEL.length]!
+/**
+ * Custom status text, keyed by the status it belongs to. This is not decoration: the server's own
+ * sidebar renders `state_labels[status]` and falls back to the bare status word
+ * (`src/ui/sidebar.rs:2268-2272`, `src/ui/status.rs:221-229`), and the API refuses any key outside
+ * the `AgentStatus` enum (`src/app/api/panes.rs:1676-1681`). So a fixture that put a free-form key
+ * here would be a payload the server cannot emit.
+ */
+const BLOCKED_LABELS = ['waiting for approval', 'permission prompt'] as const
+const WORKING_LABELS = [
+  'running cargo nextest',
+  'writing mockup html',
+  'reviewing PR #91',
+  'reading src/api/server.rs'
+] as const
+
+function seedOf(scenario: MockScenario): number {
+  return scenario.seed ?? 0
+}
+
+function statusAt(index: number, seed = 0): AgentStatus {
+  return STATUS_WHEEL[(index + seed) % STATUS_WHEEL.length]!
+}
+
+function workspaceLabelAt(index: number, seed = 0): string {
+  return WORKSPACE_LABELS[(index + seed) % WORKSPACE_LABELS.length]!
+}
+
+/** `{}` for states with nothing custom to say, which is the common case on a real server. */
+function stateLabelsFor(status: AgentStatus, flat: number): Record<string, string> {
+  if (status === 'blocked') {
+    return { blocked: BLOCKED_LABELS[flat % BLOCKED_LABELS.length]! }
+  }
+  if (status === 'working') {
+    return { working: WORKING_LABELS[flat % WORKING_LABELS.length]! }
+  }
+  return {}
 }
 
 /** `remote.list` — the fleet as the answering server knows it. Index 0 is the server itself. */
@@ -80,8 +125,9 @@ export function mockRemotes(scenario: MockScenario = DEFAULT_SCENARIO): RemoteDe
 /** `workspace.list`. `agent_status` is the roll-up the server computes over the workspace's panes. */
 export function mockWorkspaces(scenario: MockScenario = DEFAULT_SCENARIO): WorkspaceInfo[] {
   const panes = mockPanes(scenario)
+  const seed = seedOf(scenario)
   return Array.from({ length: scenario.workspaceCount }, (_, index) => {
-    const label = WORKSPACE_LABELS[index % WORKSPACE_LABELS.length]!
+    const label = workspaceLabelAt(index, seed)
     const workspaceId = `ws-${index + 1}`
     const own = panes.filter((pane) => pane.workspace_id === workspaceId)
     const tabIds = [...new Set(own.map((pane) => pane.tab_id))]
@@ -94,10 +140,10 @@ export function mockWorkspaces(scenario: MockScenario = DEFAULT_SCENARIO): Works
       tab_count: tabIds.length,
       active_tab_id: tabIds[0] ?? `${workspaceId}-tab-1`,
       agent_status: rollUp(own.map((pane) => pane.agent_status)),
-      branch: index % 3 === 0 ? 'main' : `feat/mobile-${index + 1}`,
-      git: { repo_key: `repo-${label}`, is_linked_worktree: index % 3 !== 0 },
+      branch: (index + seed) % 3 === 0 ? 'main' : `feat/mobile-${index + 1}`,
+      git: { repo_key: `repo-${label}`, is_linked_worktree: (index + seed) % 3 !== 0 },
       worktree:
-        index % 3 === 0
+        (index + seed) % 3 === 0
           ? null
           : {
               repo_key: `repo-${label}`,
@@ -126,13 +172,14 @@ export function rollUp(statuses: readonly AgentStatus[]): AgentStatus {
 /** `pane.list`. Two panes per tab, so `tab_id` is a real grouping and not a 1:1 alias of the pane. */
 export function mockPanes(scenario: MockScenario = DEFAULT_SCENARIO): PaneInfo[] {
   const panes: PaneInfo[] = []
+  const seed = seedOf(scenario)
   let flat = 0
   for (let ws = 0; ws < scenario.workspaceCount; ws += 1) {
     const workspaceId = `ws-${ws + 1}`
     for (let index = 0; index < scenario.panesPerWorkspace; index += 1) {
       const tabNumber = Math.floor(index / 2) + 1
-      const agent = AGENT_NAMES[flat % AGENT_NAMES.length]!
-      const status = statusAt(flat)
+      const agent = AGENT_NAMES[(flat + seed) % AGENT_NAMES.length]!
+      const status = statusAt(flat, seed)
       panes.push({
         pane_id: `${workspaceId}-p${index + 1}`,
         terminal_id: `term-${workspaceId}-${index + 1}`,
@@ -147,14 +194,14 @@ export function mockPanes(scenario: MockScenario = DEFAULT_SCENARIO): PaneInfo[]
           status === 'idle'
             ? null
             : { source: 'herdr', agent, kind: 'id', value: `sess-${workspaceId}-${index + 1}` },
-        cwd: `/Users/z/2lab.ai/${WORKSPACE_LABELS[ws % WORKSPACE_LABELS.length]}`,
+        cwd: `/Users/z/2lab.ai/${workspaceLabelAt(ws, seed)}`,
         foreground_cwd: null,
         label: `${tabNumber}-${(index % 2) + 1}`,
         title: agent,
         terminal_title: `${agent} — ${workspaceId}`,
         terminal_title_stripped: `${agent} — ${workspaceId}`,
         scroll: { offset_from_bottom: 0, max_offset_from_bottom: 5000, viewport_rows: 44 },
-        state_labels: {},
+        state_labels: stateLabelsFor(status, flat),
         tokens: {}
       })
       flat += 1
@@ -197,7 +244,9 @@ export function mockAgents(scenario: MockScenario = DEFAULT_SCENARIO): AgentInfo
       launch_pending: false,
       screen_detection_skipped: false,
       state_change_seq: pane.revision,
-      state_labels: {},
+      // `src/app/agents.rs:392` copies the pane's labels straight onto the agent row, so the two
+      // views cannot disagree here either.
+      state_labels: pane.state_labels ?? {},
       tokens: {}
     }))
 }

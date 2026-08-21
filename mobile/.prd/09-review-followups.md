@@ -64,6 +64,14 @@
 | **N4** | `Compressed` 인플레이터 부재 | `src/messages.ts` | `[확정]` · 낮음 — `wire.rs:462-467`이 말하는 desync 원인 **둘 중 나머지 절반**("compressed frame that failed to inflate")은 이 코덱에서 **시도조차 불가**하다. `TerminalAnsi` 전용인 한 도달하지 않으나, `SemanticFrame`을 받아들이는 순간 되살아난다 |
 | **N3** | `id: ""` 예외는 **서버 봉투 자체의 구멍**이다 | `src/api/server.rs:159-172`, 인코드 폴백 `:819` | `[확정]` — `invalid_request`는 클라이언트가 **상관시킬 수 없는 유일한 응답**이다. 요청1개=연결1개인 지금은 무해하나, id 기반 상관 계층은 이 API에 대해 **완전히 엄격해질 수 없다** |
 
+## B3. 앱 이식 중 드러난 서버 쪽 갭 (2026-08-22, M2 5단계)
+
+| # | 항목 | 근거 | 등급 |
+|---|---|---|---|
+| **S1** | **herdr 와이어에 시계가 없다** | `AgentInfo`/`PaneInfo` 어디에도 타임스탬프가 없다(스키마 실측). `revision`/`state_change_seq`는 카운터지 시각이 아니다 | `[확정]` · **서버 이슈 후보.** 결과: **최종 보고 없이 죽은 에이전트가 영원히 `working`으로 읽힌다.** orca는 `updatedAt` 30분 decay로 처리하는데 herdr엔 그 재료가 없다. 목업의 `· 4m` / `· 2m41s` 열도 구현 불가. **필드 추가 없이는 못 고친다** |
+| **S2** | `manual_label`을 pane 핸들로 쓰고 있다 | 스키마상 이 필드는 pane의 **수동 개명**이다. 4단계 mock이 거기에 herdr 표기(`1-1`)를 넣었고 5단계가 그대로 소비했다 | `[확정]` · 낮음 — 실서버에선 개명 안 된 pane이 `pane_id`로 폴백한다(테스트 고정). **6단계 실배선 때 확인 필요** |
+| **S3** | `oxfmt --check`가 무신호다 | 설정 파일 부재로 기본값 동작(`No config found, using defaults`) → `src`+`app`만 돌려도 **116/116 전부** format issue. `.prd/assets/mockup.html`에선 파싱 에러 exit 2 | `[확정]` — **`cargo fmt --check` 무신호(01-spec)의 2호기.** 손대면 안 된다: 재포맷은 **byte-identical 75개를 전부 깨뜨려 이식 불변식을 파괴**한다 |
+
 ## C. 확정됐으나 이번 범위 밖 (다음 유닛)
 
 | # | 항목 | 위치 | 등급 |

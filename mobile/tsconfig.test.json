@@ -13,7 +13,11 @@
     "src/api/mock/mock-api-schema.test.ts",
     "src/storage/sidebar-width.test.ts",
     "src/theme/monotone-discipline.test.tsx",
-    "src/app-shell/route-shell-mount.test.tsx"
+    "src/app-shell/route-shell-mount.test.tsx",
+    "src/app-shell/agents-home-mount.test.tsx",
+    "src/agents/agent-display.test.ts",
+    "src/agents/fleet-agents.test.ts",
+    "src/panes/pane-tree.test.ts"
   ],
   "exclude": []
 }

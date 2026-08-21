@@ -21,21 +21,31 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import type { AgentInfo, PaneInfo, RemoteDefinition, WorkspaceInfo } from './herdr-api-types'
+import type { RemoteDefinition, RemoteSnapshot } from './herdr-api-types'
 
-/** The four list endpoints, as one value. */
+/**
+ * The four list endpoints, as one value — **per remote**.
+ *
+ * Stage 3 modelled this flat (`{remotes, workspaces, panes, agents}`), which quietly assumed one
+ * server. It is not one server: herdr's JSON API is per-box, so `workspace.list`/`pane.list`/
+ * `agent.list` only ever describe the box you asked, and only `remote.list` describes the fleet
+ * (`./herdr-api-types.ts`, `RemoteSnapshot`). Stage 5's Agents home is the union over every remote
+ * — "전 서버의 에이전트" (01-spec.md) — so the flat shape had nowhere to put the answer to "which
+ * box is this agent on", which is exactly the fact that makes the row usable.
+ *
+ * Workspace and pane ids are only unique *within* a remote (`ws-1` exists on every box), so any
+ * cross-remote key has to be composite. `../agents/fleet-agents.ts` is where that is done once.
+ */
 export type HerdrSnapshot = {
+  /** `remote.list` from the server the phone reached: the whole fleet, dialled or not. */
   remotes: RemoteDefinition[]
-  workspaces: WorkspaceInfo[]
-  panes: PaneInfo[]
-  agents: AgentInfo[]
+  /** One entry per remote actually queried. A disabled remote is not dialled, so it has none. */
+  perRemote: RemoteSnapshot[]
 }
 
 export const EMPTY_SNAPSHOT: HerdrSnapshot = {
   remotes: [],
-  workspaces: [],
-  panes: [],
-  agents: []
+  perRemote: []
 }
 
 export type SnapshotLoader = () => Promise<HerdrSnapshot>
@@ -113,6 +123,15 @@ export function useRemote(remoteId: string | undefined): RemoteDefinition | null
     return null
   }
   return snapshot.remotes.find((remote) => remote.id === remoteId) ?? null
+}
+
+/** The four lists for one remote, or null while loading / if that remote was not dialled. */
+export function useRemoteSnapshot(remoteId: string | undefined): RemoteSnapshot | null {
+  const { snapshot } = useHerdrSnapshot()
+  if (!remoteId) {
+    return null
+  }
+  return snapshot.perRemote.find((entry) => entry.remote.id === remoteId) ?? null
 }
 
 /** How a remote is addressed, for the one line of subtitle every list row shows. */

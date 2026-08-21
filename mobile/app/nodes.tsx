@@ -1,0 +1,81 @@
+// Not from orca. This is the remote list — orca's `app/index.tsx` (1,362 lines, `port` in the port
+// map §2.2) — moved off the home route, because decision 3 puts the Agents view there instead
+// (see `./index.tsx`). The body is the stage-3 scaffolding one grown up: the same provider, the
+// same route push, plus the per-remote roll-up the mockup's node list carries
+// (mockup.html:399-416, "4 spaces · 11 panes · 3 working").
+//
+// `MobileHostCard` (183 lines, graded `port`) is deliberately *not* ported yet. Its load-bearing
+// part is L7 — `showConnectionRetry` and the "… — tap to retry" affordance that only becomes
+// pressable on a `warning`/`unreachable` verdict (`WorktreeListRow`'s sibling,
+// `MobileHostCard.tsx:52`, and `05-orca-transport.md` L7). A retry button is `forceReconnect` on a
+// transport that does not exist until stage 6; porting the card now would mean porting a card whose
+// one interesting behaviour is stubbed. The row below shows reachability from the snapshot only,
+// and says nothing it cannot know.
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { useRouter } from 'expo-router'
+import { StatusDot } from '../src/components/StatusDot'
+import { BottomNav } from '../src/components/BottomNav'
+import { useHerdrSnapshot, remoteSubtitle } from '../src/api/snapshot-context'
+import { rollupText } from '../src/panes/pane-tree'
+import { mono } from '../src/theme/monotone'
+
+export default function NodeListScreen() {
+  const router = useRouter()
+  const { status, snapshot, error } = useHerdrSnapshot()
+  const byRemote = new Map(snapshot.perRemote.map((entry) => [entry.remote.id, entry]))
+
+  return (
+    <View style={styles.screen}>
+      <View style={styles.appbar}>
+        <Text style={styles.logo}>herdr</Text>
+        <Text style={styles.crumb}>/ nodes</Text>
+      </View>
+      {status === 'loading' ? <Text style={styles.meta}>Loading…</Text> : null}
+      {status === 'error' ? <Text style={styles.meta}>{error ?? 'Load failed'}</Text> : null}
+      <ScrollView style={styles.body}>
+        {snapshot.remotes.map((remote) => {
+          const entry = byRemote.get(remote.id)
+          // A disabled remote is never dialled, so it has no snapshot — and saying "0 panes" about
+          // a box we did not ask would be a lie the user cannot tell from a real zero.
+          const detail = remote.disabled
+            ? 'disabled'
+            : entry
+              ? `${remoteSubtitle(remote)} · ${entry.workspaces.length} spaces · ${entry.panes.length} panes · ${rollupText(entry.panes)}`
+              : remoteSubtitle(remote)
+          return (
+            <Pressable
+              key={remote.id}
+              accessibilityRole="button"
+              accessibilityLabel={`${remote.name} — ${detail}`}
+              onPress={() => router.push(`/h/${remote.id}`)}
+              style={styles.row}
+            >
+              <View style={styles.rowHead}>
+                <StatusDot state={remote.disabled ? 'disconnected' : 'connected'} />
+                <Text style={styles.name}>{remote.name}</Text>
+                <View style={styles.spacer} />
+                <Text style={styles.chevron}>›</Text>
+              </View>
+              <Text style={styles.meta}>{detail}</Text>
+            </Pressable>
+          )
+        })}
+      </ScrollView>
+      <BottomNav active="nodes" onSelect={(tab) => (tab === 'agents' ? router.push('/') : undefined)} />
+    </View>
+  )
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: mono.ink },
+  appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16, paddingTop: 24 },
+  logo: { color: mono.fg, fontSize: 20, fontWeight: '700' },
+  crumb: { color: mono.dim, fontSize: 13, marginLeft: 6 },
+  body: { flex: 1, paddingHorizontal: 16 },
+  row: { paddingVertical: 12 },
+  rowHead: { flexDirection: 'row', alignItems: 'center' },
+  name: { color: mono.fg, fontSize: 15 },
+  meta: { color: mono.dim, fontSize: 12 },
+  chevron: { color: mono.dim2, fontSize: 13 },
+  spacer: { flex: 1 }
+})

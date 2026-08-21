@@ -7,7 +7,8 @@
 // What it proves, end to end through the real shell files:
 //   1. `RootLayout` mounts, hides the splash on navigator layout, and installs the snapshot provider.
 //   2. Data from the stage-4 mock (`src/api/mock/`) reaches rendered `Text` nodes — named strings,
-//      not "no error thrown".
+//      not "no error thrown". Since stage 5 the mock answers *per remote*, so these assertions also
+//      pin that each screen reads the right box's lists (`src/api/snapshot-context.tsx`).
 //   3. `RemoteGroupLayout` is a *master-detail*: on a tablet-width window the remote screen renders
 //      twice (sidebar + detail Stack), on a phone-width window once.
 //
@@ -34,6 +35,10 @@ const splash = vi.hoisted(() => ({
 
 vi.mock('expo-splash-screen', () => splash)
 vi.mock('expo-status-bar', () => ({ StatusBar: 'StatusBar' }))
+// The ported orca chrome draws its chevrons with lucide icons, which pull in react-native-svg —
+// nothing this environment can render. Every other test that touches a lucide-using component
+// stubs it the same way (e.g. src/components/PickerModal.accessibility.test.ts:16).
+vi.mock('lucide-react-native', () => ({ ChevronDown: 'ChevronDown', ChevronRight: 'ChevronRight' }))
 
 vi.mock('expo-router', () => {
   function Stack({ children }: { children?: ReactNode }) {
@@ -93,7 +98,7 @@ vi.mock('react-native', () => {
 
 const { default: RootLayout } = await import('../../app/_layout')
 const { default: RemoteGroupLayout } = await import('../../app/h/_layout')
-const { default: RemoteListScreen } = await import('../../app/index')
+const { default: NodeListScreen } = await import('../../app/nodes')
 const { default: RemoteRoute } = await import('../../app/h/[remoteId]/index')
 
 /**
@@ -163,29 +168,30 @@ describe('root route shell', () => {
     expect(splash.hideAsync).toHaveBeenCalledTimes(1)
   })
 
-  it('delivers mock data to the home screen through the real provider', async () => {
-    routerState.screens = { index: createElement(RemoteListScreen) }
+  it('delivers mock data to the node list through the real provider', async () => {
+    routerState.screens = { nodes: createElement(NodeListScreen) }
     const target = await mountShell()
     const texts = textNodes(target)
 
     // Remote names and how each is addressed — remote.list, straight from the fixture.
     expect(texts).toContain('herdr')
     expect(texts).toContain('fable-m5max')
-    expect(texts).toContain('local')
     expect(texts).toContain('iq-64')
-    expect(texts).toContain('z@iq-64')
-    expect(texts).toContain('z@macmini')
-    // The disabled remote renders as disabled rather than as a target.
+    // Each dialled remote's row carries its own roll-up, computed from *that remote's* pane.list.
+    expect(texts).toContain('local · 4 spaces · 12 panes · 2 blocked · 4 working · 2 done · 2 unknown · 2 idle')
+    expect(texts).toContain('z@iq-64 · 4 spaces · 12 panes · 2 blocked · 4 working · 2 done · 2 unknown · 2 idle')
+    // The disabled remote renders as disabled — and *only* as disabled. A remote that was never
+    // dialled must not be given a count, because "0 panes" and "we did not ask" look identical.
     expect(texts).toContain('disabled')
-    // The agent.list roll-up: 12 panes, 2 blocked / 4 working after idle panes drop out.
-    expect(texts).toContain('2 blocked · 4 working')
+    expect(texts.filter((text) => text.startsWith('z@jump'))).toEqual([])
     expect(texts).not.toContain('Loading…')
   })
 
   it('routes a remote tap at the remote id, not at a host id', async () => {
-    routerState.screens = { index: createElement(RemoteListScreen) }
+    routerState.screens = { nodes: createElement(NodeListScreen) }
     const target = await mountShell()
     act(() => {
+      // The node rows come before the bottom nav in tree order, so [1] is the second remote.
       target.root.findAllByType(host('Pressable'))[1]!.props.onPress()
     })
     expect(routerState.pushed).toEqual(['/h/remote-2'])
@@ -208,12 +214,17 @@ describe('master-detail group layout', () => {
 
     // The remote the segment names, resolved out of remote.list.
     expect(texts).toContain('iq-64')
-    // workspace.list, with the pane/tab counts the fixture keeps consistent with pane.list.
-    expect(texts).toContain('herdr')
+    // workspace.list for *this remote* — remote-2's own tree, not the hub's. (The hub, remote-1,
+    // reports herdr/zbrain/gtimeline/llmux; remote-2 reports the next four. A screen reading a
+    // fleet-wide list would show the hub's here and this assertion is what catches that.)
     expect(texts).toContain('zbrain')
     expect(texts).toContain('gtimeline')
     expect(texts).toContain('llmux')
+    expect(texts).toContain('palladium')
+    expect(texts).not.toContain('herdr')
+    // The pane/tab counts the fixture keeps consistent with pane.list, and the per-row roll-up.
     expect(texts).toContain('3 panes · 2 tabs')
+    expect(texts).toContain('1 blocked · 1 working · 1 unknown')
     // One dot per workspace, and the blocked one is the inverted (ring) form, not a fill.
     expect(target.root.findAllByType(host('AnimatedView')).length).toBeGreaterThan(0)
   })
@@ -223,7 +234,7 @@ describe('master-detail group layout', () => {
     windowSize.height = 768
     const target = await mountShell()
     // 4 workspaces rendered in each of the two panes.
-    expect(textNodes(target).filter((text) => text === 'gtimeline')).toHaveLength(2)
+    expect(textNodes(target).filter((text) => text === 'palladium')).toHaveLength(2)
     // ...but no collapse affordance at the *base* route: orca's rule is that there is no reveal
     // button, so the sidebar may only be hidden when the detail pane holds something worth the
     // space (app/h/_layout.tsx:101-108, ported verbatim).
@@ -240,7 +251,7 @@ describe('master-detail group layout', () => {
 
   it('renders it once on a phone-width window — detail only', async () => {
     const target = await mountShell()
-    expect(textNodes(target).filter((text) => text === 'gtimeline')).toHaveLength(1)
+    expect(textNodes(target).filter((text) => text === 'palladium')).toHaveLength(1)
     expect(textNodes(target)).not.toContain('hide')
   })
 })

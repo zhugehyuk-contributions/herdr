@@ -54,9 +54,9 @@ the question is answerable by `grep`, not by memory:
 
 | Marker | Meaning | Count |
 |---|---|---|
-| `// Ported from orca <path>` | Copied from that orca path. 75 are byte-identical to the orca file after the three header lines; 11 differ (see below); 4 are named extractions from a larger orca file (`src/shared/runtime-terminal-theme.ts`, `src/storage/terminal-text-scales.ts`, `src/storage/sidebar-width.ts`, `src/transport/connection-state-types.ts`), whose headers carry a `:line-range` instead of a bare path. | 90 |
+| `// Ported from orca <path>` | Copied from that orca path. 75 are byte-identical to the orca file after the three header lines; 15 differ (see below); 5 are named extractions from a larger orca file (`src/shared/runtime-terminal-theme.ts`, `src/storage/terminal-text-scales.ts`, `src/storage/sidebar-width.ts`, `src/transport/connection-state-types.ts`, `src/agents/agent-display.ts`), whose headers carry a `:line-range` instead of a bare path. | 95 |
 | `// Rewritten for herdr` | orca's file is the shape but not the content. `metro.config.js`, `src/api/mock/mock-fixture.ts`, `src/api/mock/mock-api-handlers.ts`. | 3 |
-| `// Not from orca` | herdr-authored. | 15 |
+| `// Not from orca` | herdr-authored. | 23 |
 
 Machine check that nothing slipped in unmarked (the one file it reports,
 `src/terminal/terminal-webview-engine.generated.ts`, is the gitignored xterm build artefact —
@@ -67,7 +67,12 @@ grep -rLE 'Ported from orca|Rewritten for herdr|Not from orca' \
   mobile/src mobile/app mobile/scripts mobile/plugins mobile/vitest.config.ts mobile/vitest.setup.ts
 ```
 
-Of the eleven ported files that are not byte-identical, **seven** differ *only* because orca resolved
+The three numbers above are machine-checked, not counted by hand: for every file whose header names
+a bare orca path, strip the three header lines and diff the remainder against
+`git show 4fd93ead:<path>` in a clone of orca. At the time of writing that reports
+`75 identical / 15 differ / 5 extractions / 0 header paths missing from the orca tree`.
+
+Of the fifteen ported files that are not byte-identical, **seven** differ *only* because orca resolved
 two types and two pure functions through the desktop-shared directory `../../../src/shared/` (its
 `metro.config.js` watch folder) and herdr has no such directory:
 
@@ -84,7 +89,7 @@ two types and two pure functions through the desktop-shared directory `../../../
 `mobile/src/shared/` holds the five orca `src/shared` modules those specifiers now point at; they
 carry the same provenance header naming their original repo-root path.
 
-The remaining **four** are adaptations, not import fixes. Each names its own changes at the top of
+The remaining **eight** are adaptations, not import fixes. Each names its own changes at the top of
 the file; the summary is:
 
 | File | Change |
@@ -93,6 +98,16 @@ the file; the summary is:
 | `app/h/_layout.tsx` | Master-detail shell. `host` -> `remote` at the route-segment/identifier/title level, `HostProtocolGate` wrapper removed (stage 8), screen list cut from nine to one, palette swapped. Every load-bearing behaviour — window-aware clamp, `MIN_DETAIL_WIDTH`, the edge-handle `PanResponder` and its Android reason, the "no reveal button" rule, the stable detail-Stack position — is unchanged. |
 | `src/components/StatusDot.tsx` | Colour table -> the monotone ramp, and the `unreachable`/`auth-failed` dot becomes a ring (emphasis by inversion). Verdict-overrides-state structure unchanged. Type imports point at `src/transport/connection-state-types.ts` (extraction) because orca's transport layer is stage 6+. |
 | `src/components/AgentStateDot.tsx` | State vocabulary -> herdr's API `AgentStatus` (`idle\|working\|blocked\|done\|unknown`) instead of orca's `AgentDotState`; colour table -> the monotone ramp; `blocked` becomes a ring. The `working` rotation animation is orca's, unchanged. |
+| `src/components/AgentRow.tsx` (orca `WorktreeAgentRow.tsx`) | Lineage indent, the time-ago column and `unvisited` dropped — herdr's `AgentInfo` has no parent pointer and no timestamp of any kind. Optional second line + `onPress` added, because the Agents home is cross-remote and each row is its own tap target. |
+| `src/components/AgentSummary.tsx` (orca `WorktreeAgentSummary.tsx`) | `MobileAgentIcon` (orca's agent-brand SVG set) -> the agent's own name; `agentDotState(agent, now)` -> the wire's `agent_status`; palette -> the monotone ramp. `MAX_VISIBLE_AGENTS`, the `+N` overflow, the chevron pair, the accessibility contract and the `stopPropagation` are orca's, unchanged. |
+| `src/components/AgentList.tsx` (orca `WorktreeAgentList.tsx`) | The spawn-lineage flatten is dropped (`src/worktree/agent-row-lineage.ts`, 88 lines, is consequently not ported at all): herdr's `agent.list` publishes no `parentPaneKey`, so the flatten would be the identity. The collapse rule — summary chip iff more than one agent — is orca's. |
+| `src/components/WorkspaceListRow.tsx` (orca `WorktreeListRow.tsx`) | `AgentSpinner` -> `AgentStateDot`, because orca's spinner is hued by design and `src/theme/monotone-discipline.test.tsx` enforces the ramp on exactly this surface. PR/issue/Linear/GitLab badges, `WorktreeMetaGlyphs`, `MobileRepoIcon`, `unread`, lineage and long-press haptics dropped (all fed by orca RPCs herdr's JSON API does not have). The lineage toggle keeps its position and becomes the pane toggle. The three-column geometry, the transparent reserved accent border, `alignItems: 'flex-start'`, `displayBranch` and the `hideRepo` de-duplication rule are orca's. |
+
+`src/agents/agent-display.ts` is the fifth named extraction (orca
+`mobile/src/worktree/agent-row-display.ts:33-64`): orca's rule that an agent row never renders blank,
+over herdr's fields. orca's staleness decay, `formatTimeAgo` and the two-letter agent code table are
+not ported — the first two have no timestamp to read on herdr's wire, the third exists only as a
+fallback for an icon set that is not ported.
 
 Why the palette diverges at all: herdr's mobile mockup fixes a monotone grayscale ramp with emphasis
 by inversion (`mobile/.prd/assets/mockup.html:863`), while orca's `mobile-theme.ts` is hued. That
