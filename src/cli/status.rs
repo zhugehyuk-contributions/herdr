@@ -12,10 +12,14 @@ use crate::session::SessionInfo;
 /// wedged server must not hang `herdr status` before it prints the session
 /// table, which is exactly what tells you which other session to switch to.
 const SERVER_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
-/// One budget for the WHOLE session table, not one per session: N wedged
-/// sessions must not cost N x timeout. Probes stay serial (rather than a thread
-/// fan-out) because the ceiling is the same either way, the order stays
-/// deterministic, and the common all-healthy case answers in microseconds.
+/// One budget for the WHOLE ping phase of the session table, not one per
+/// session: N wedged sessions must not cost N x timeout. Probes stay serial
+/// (rather than a thread fan-out) because the ceiling is the same either way,
+/// the order stays deterministic, and the common all-healthy case answers in
+/// microseconds. Scope, precisely: it starts after `crate::session::list_sessions()`
+/// and so does NOT cover that call, which does its own untimed connect per
+/// session (`is_running_at`, src/session.rs) - bounding that lives in the
+/// session layer, not here.
 const SESSION_TABLE_BUDGET: Duration = Duration::from_secs(3);
 /// Do not open a connection we cannot bound: a zero-ish socket timeout is
 /// rejected outright on unix and means "block forever" once it reaches the
@@ -229,20 +233,11 @@ fn read_server_runtime_status() -> std::io::Result<ServerRuntimeStatus> {
         // it degrades instead of aborting the command. It is reported as its own
         // state rather than as `not running` because the remedy differs: a
         // wedged server must be stopped, not started.
-        Err(ApiClientError::Io(err)) if probe_timed_out(&err) => {
+        Err(ApiClientError::Io(err)) if super::probe_timed_out(&err) => {
             Ok(ServerRuntimeStatus::Unreachable)
         }
         Err(err) => Err(api_client_error_to_io(err)),
     }
-}
-
-/// A socket send/recv timeout surfaces as `WouldBlock` on unix and `TimedOut`
-/// on Windows; both mean the peer accepted us and then said nothing.
-fn probe_timed_out(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-    )
 }
 
 fn api_client_error_to_io(err: ApiClientError) -> std::io::Error {

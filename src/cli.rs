@@ -813,6 +813,17 @@ pub(super) fn server_not_running_error(err: &std::io::Error) -> bool {
     )
 }
 
+/// True when a bounded request hit its own deadline: a socket send/recv timeout
+/// surfaces as `WouldBlock` on unix and `TimedOut` on Windows, and both mean the
+/// peer accepted us and then said nothing. Shared so every bounded caller
+/// (status probes, live handoff) classifies the wedged case identically.
+pub(super) fn probe_timed_out(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    )
+}
+
 /// Maps an `ApiClientError` from a socket command into the io::Error that
 /// bubbles up to `main`. A dead-server connect failure is reported as a
 /// friendly `server_not_running` JSON error plus a recognizable marker; all

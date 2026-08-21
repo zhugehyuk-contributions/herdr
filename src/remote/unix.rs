@@ -1358,6 +1358,11 @@ enum RemoteServerStatus {
         live_handoff: bool,
     },
     NotRunning,
+    /// The remote reported `status: "unreachable"`: a process still owns that
+    /// session's API socket but stopped answering pings. It is PRESENT, not
+    /// absent - every decision here must treat it as a server that is in the
+    /// way, never as "there is nothing running, go ahead".
+    Unreachable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1381,13 +1386,23 @@ fn ensure_remote_server_ready(
     policy: RemotePrepPolicy,
 ) -> io::Result<()> {
     let status = remote_server_status(target, remote_herdr, session_name)?;
-    let RemoteServerStatus::Running {
-        version,
-        protocol,
-        live_handoff,
-    } = status
-    else {
-        return Ok(());
+    let (version, protocol, live_handoff) = match status {
+        RemoteServerStatus::Running {
+            version,
+            protocol,
+            live_handoff,
+        } => (version, protocol, live_handoff),
+        // Nothing to reconcile: the bridge starts a server when it attaches.
+        RemoteServerStatus::NotRunning => return Ok(()),
+        // Wedged. Falling through as if the server were absent would start a
+        // replacement against a socket the old process still owns, so stop here
+        // and name the manual remedy instead.
+        RemoteServerStatus::Unreachable => {
+            return Err(unreachable_remote_server_error(
+                target.destination(),
+                session_name,
+            ));
+        }
     };
 
     let Some(reason) =
@@ -1459,6 +1474,15 @@ fn ensure_remote_server_ready(
         stop_remote_server(target, remote_herdr, session_name)?;
     }
     Ok(())
+}
+
+/// A remote server that holds its API socket but answers nothing cannot be
+/// probed, handed off, or safely replaced: every automatic path from here would
+/// race a live process for that socket. Report it with the remedy instead.
+fn unreachable_remote_server_error(destination: &str, session_name: &str) -> io::Error {
+    io::Error::other(format!(
+        "the remote herdr server for session {session_name} on {destination} still owns its API socket but is not answering status pings; stop it on that host (`herdr --session {session_name} server stop`, or kill the process) and attach again"
+    ))
 }
 
 fn remote_server_restart_reason(
@@ -1536,36 +1560,26 @@ fn confirm_remote_install_with_running_server(
     let status = match remote_server_status(target, remote_herdr, session_name) {
         Ok(status) => status,
         Err(err) => {
-            if !io::stdin().is_terminal() {
-                return Err(io::Error::other(format!(
-                    "could not inspect the running remote herdr server on {dest} before installing: {err}; run from an interactive terminal to approve updating the remote binary"
-                )));
-            }
-            eprintln!(
+            return confirm_remote_install_without_server_details(&format!(
                 "could not inspect the running remote herdr server on {dest} before installing: {err}"
-            );
-            eprint!("continue installing the remote herdr binary? [Y/n] ");
-            io::stderr().flush()?;
-
-            let mut answer = String::new();
-            io::stdin().read_line(&mut answer)?;
-            let answer = answer.trim().to_ascii_lowercase();
-            if answer == "n" || answer == "no" {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "remote herdr install cancelled",
-                ));
-            }
-            return Ok(());
+            ));
         }
     };
-    let RemoteServerStatus::Running {
-        version,
-        protocol,
-        live_handoff,
-    } = status
-    else {
-        return Ok(());
+    let (version, protocol, live_handoff) = match status {
+        RemoteServerStatus::Running {
+            version,
+            protocol,
+            live_handoff,
+        } => (version, protocol, live_handoff),
+        RemoteServerStatus::NotRunning => return Ok(()),
+        // Wedged: a process is still there to be disturbed by the install, we
+        // just cannot describe it. Ask rather than silently replacing the binary
+        // under a live server.
+        RemoteServerStatus::Unreachable => {
+            return confirm_remote_install_without_server_details(&format!(
+                "the remote herdr server for session {session_name} on {dest} still owns its API socket but is not answering status pings"
+            ));
+        }
     };
     if live_handoff_enabled && live_handoff {
         return Ok(());
@@ -1605,6 +1619,31 @@ fn confirm_remote_install_with_running_server(
     Ok(())
 }
 
+/// The running remote server could not be described - the probe failed, or it
+/// is wedged and answers nothing. Either way a process may still be there, so
+/// this asks before replacing the binary underneath it.
+fn confirm_remote_install_without_server_details(detail: &str) -> io::Result<()> {
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::other(format!(
+            "{detail}; run from an interactive terminal to approve updating the remote binary"
+        )));
+    }
+    eprintln!("{detail}");
+    eprint!("continue installing the remote herdr binary? [Y/n] ");
+    io::stderr().flush()?;
+
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim().to_ascii_lowercase();
+    if answer == "n" || answer == "no" {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "remote herdr install cancelled",
+        ));
+    }
+    Ok(())
+}
+
 fn remote_server_status(
     target: &SshTarget,
     remote_herdr: &RemoteHerdr,
@@ -1627,6 +1666,9 @@ struct RemoteClientStatusJson {
 
 #[derive(Debug, Deserialize)]
 struct RemoteServerStatusJson {
+    /// Optional on purpose: a remote running an older herdr never emits this
+    /// field, and those remotes must keep parsing exactly as before.
+    status: Option<String>,
     running: bool,
     version: Option<String>,
     protocol: Option<u32>,
@@ -1638,6 +1680,9 @@ struct RemoteServerCapabilitiesJson {
     live_handoff: bool,
 }
 
+/// The one `running: false` status string that really means "no server here".
+const REMOTE_STATUS_NOT_RUNNING: &str = "not_running";
+
 fn parse_client_status_json(status: &str) -> Option<RemoteClientStatusJson> {
     serde_json::from_str(status).ok()
 }
@@ -1648,17 +1693,25 @@ fn parse_remote_server_status_json(status: &str) -> io::Result<RemoteServerStatu
             "could not parse remote server status JSON from `{status}`: {err}"
         ))
     })?;
-    if !parsed.running {
-        return Ok(RemoteServerStatus::NotRunning);
+    if parsed.running {
+        return Ok(RemoteServerStatus::Running {
+            version: parsed.version,
+            protocol: parsed.protocol,
+            live_handoff: parsed
+                .capabilities
+                .is_some_and(|capabilities| capabilities.live_handoff),
+        });
     }
 
-    Ok(RemoteServerStatus::Running {
-        version: parsed.version,
-        protocol: parsed.protocol,
-        live_handoff: parsed
-            .capabilities
-            .is_some_and(|capabilities| capabilities.live_handoff),
-    })
+    // `running: false` alone is ambiguous now that the remote can also report a
+    // wedged server that way. An older remote omits `status` entirely and then
+    // `running: false` still means "no server". Any other named state (today
+    // only `unreachable`) is a server that is still there and simply not
+    // answering, so it is deliberately NOT collapsed into `NotRunning`.
+    match parsed.status.as_deref() {
+        None | Some(REMOTE_STATUS_NOT_RUNNING) => Ok(RemoteServerStatus::NotRunning),
+        Some(_) => Ok(RemoteServerStatus::Unreachable),
+    }
 }
 
 fn confirm_remote_server_stop(
@@ -1834,23 +1887,34 @@ fn wait_for_remote_server_shutdown(
 ) -> io::Result<()> {
     let deadline = Instant::now() + REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT;
     loop {
-        if remote_server_status(target, remote_herdr, session_name)?
-            == RemoteServerStatus::NotRunning
-        {
-            return Ok(());
+        let status = remote_server_status(target, remote_herdr, session_name)?;
+        match status {
+            RemoteServerStatus::NotRunning => return Ok(()),
+            // `Unreachable` is NOT shutdown: the process still owns the session
+            // socket, it just stopped answering. Reporting success here would
+            // hand the caller a socket the old server is still holding, so keep
+            // polling and fail at the deadline like a server that keeps replying.
+            RemoteServerStatus::Running { .. } | RemoteServerStatus::Unreachable => {}
         }
         if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "shutdown was requested, but the old remote herdr server on {} is still responding after {} seconds",
-                    target.destination(),
-                    REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT.as_secs()
-                ),
-            ));
+            return Err(shutdown_timeout_error(target.destination(), &status));
         }
         thread::sleep(REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL);
     }
+}
+
+fn shutdown_timeout_error(destination: &str, status: &RemoteServerStatus) -> io::Error {
+    let state = match status {
+        RemoteServerStatus::Unreachable => "still holding its API socket without answering",
+        _ => "still responding",
+    };
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!(
+            "shutdown was requested, but the old remote herdr server on {destination} is {state} after {} seconds",
+            REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT.as_secs()
+        ),
+    )
 }
 
 fn version_label(version: Option<&str>) -> &str {
@@ -3471,6 +3535,84 @@ mod tests {
             )
             .unwrap(),
             RemoteServerStatus::NotRunning
+        );
+    }
+
+    #[test]
+    fn parse_remote_server_status_json_keeps_older_remotes_without_a_status_field_working() {
+        // A remote running an older herdr never emits `status`; `running: false`
+        // there still means "no server", and must not read as wedged.
+        assert_eq!(
+            parse_remote_server_status_json(r#"{"running":false,"version":null,"protocol":null}"#)
+                .unwrap(),
+            RemoteServerStatus::NotRunning
+        );
+        assert_eq!(
+            parse_remote_server_status_json(
+                r#"{"running":true,"version":"0.6.0","protocol":8,"capabilities":{"live_handoff":true}}"#
+            )
+            .unwrap(),
+            RemoteServerStatus::Running {
+                version: Some("0.6.0".into()),
+                protocol: Some(8),
+                live_handoff: true
+            }
+        );
+    }
+
+    #[test]
+    fn parse_remote_server_status_json_reads_a_wedged_server_as_unreachable_not_stopped() {
+        // Regression guard: `running: false` + `status: "unreachable"` is a
+        // server that still owns its socket. Collapsing it into `NotRunning`
+        // would let the caller start a replacement against that socket.
+        assert_eq!(
+            parse_remote_server_status_json(
+                r#"{"status":"unreachable","running":false,"version":null,"protocol":null}"#
+            )
+            .unwrap(),
+            RemoteServerStatus::Unreachable
+        );
+        // Any future not-running-but-named state stays on the conservative side.
+        assert_eq!(
+            parse_remote_server_status_json(r#"{"status":"draining","running":false}"#).unwrap(),
+            RemoteServerStatus::Unreachable
+        );
+    }
+
+    #[test]
+    fn shutdown_timeout_error_names_a_wedged_server_distinctly() {
+        let running = shutdown_timeout_error(
+            "host",
+            &RemoteServerStatus::Running {
+                version: None,
+                protocol: None,
+                live_handoff: false,
+            },
+        );
+        assert_eq!(running.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            running.to_string().contains("is still responding after"),
+            "{running}"
+        );
+
+        let wedged = shutdown_timeout_error("host", &RemoteServerStatus::Unreachable);
+        assert_eq!(wedged.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            wedged
+                .to_string()
+                .contains("still holding its API socket without answering"),
+            "{wedged}"
+        );
+    }
+
+    #[test]
+    fn unreachable_remote_server_error_points_at_the_manual_stop() {
+        let err = unreachable_remote_server_error("host", "work");
+        let message = err.to_string();
+        assert!(message.contains("session work on host"), "{message}");
+        assert!(
+            message.contains("herdr --session work server stop"),
+            "{message}"
         );
     }
 

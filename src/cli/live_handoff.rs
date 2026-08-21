@@ -192,8 +192,27 @@ fn handoff_session(target: &HandoffTarget, params: &ServerLiveHandoffParams) -> 
 /// Reuses the single-session mapping so a socket that went stale between
 /// listing and dialling reads as the actionable `server_not_running` text
 /// instead of a raw `Connection refused (os error 61)`.
+///
+/// The timeout is handled first because the generic mapping only recognizes
+/// connect failures: a server that accepted us and then went silent would
+/// otherwise print a bare `Resource temporarily unavailable (os error 35)` and
+/// hide the one fact that separates "wedged" from "glitched" - that the full
+/// budget elapsed. Same predicate as the status probe, so both agree on what a
+/// timeout is.
 fn request_error_message(err: ApiClientError, request_id: &str, client: &ApiClient) -> String {
+    if let ApiClientError::Io(io_err) = &err {
+        if super::probe_timed_out(io_err) {
+            return timeout_message();
+        }
+    }
     super::map_server_not_running_or_io(err, request_id, client).to_string()
+}
+
+fn timeout_message() -> String {
+    format!(
+        "no response within {}s; the server accepted the connection but never answered",
+        HANDOFF_REQUEST_TIMEOUT.as_secs()
+    )
 }
 
 fn classify_error_response(error: &serde_json::Value) -> HandoffStatus {
@@ -229,11 +248,13 @@ fn server_log_hint() -> String {
     )
 }
 
+/// Deliberately NOT prefixed `live handoff:` - that prefix belongs to the one
+/// summary line at the end, so `^live handoff:` stays a unique grep for it.
 fn blast_radius_line(targets: &[HandoffTarget]) -> String {
     let names: Vec<&str> = targets.iter().map(|target| target.name.as_str()).collect();
     let plural = if names.len() == 1 { "" } else { "s" };
     format!(
-        "live handoff: {} session{plural} ({})",
+        "targets: {} session{plural} ({})",
         names.len(),
         names.join(", ")
     )
@@ -481,12 +502,56 @@ mod tests {
     fn blast_radius_line_names_every_session_before_the_run() {
         assert_eq!(
             blast_radius_line(&targets(&[DEFAULT_SESSION_NAME, "dev", "usage"])),
-            "live handoff: 3 sessions (default, dev, usage)"
+            "targets: 3 sessions (default, dev, usage)"
         );
         assert_eq!(
             blast_radius_line(&targets(&["dev"])),
-            "live handoff: 1 session (dev)"
+            "targets: 1 session (dev)"
         );
+    }
+
+    #[test]
+    fn only_the_summary_line_carries_the_live_handoff_prefix() {
+        // `^live handoff:` has to identify exactly one line, or a script
+        // grepping for the summary also matches the preamble.
+        let preamble = blast_radius_line(&targets(&[DEFAULT_SESSION_NAME, "dev"]));
+        let outcomes = run_handoffs(&targets(&[DEFAULT_SESSION_NAME, "dev"]), |_| {
+            HandoffStatus::Ok
+        });
+        let mut lines = vec![preamble];
+        lines.extend(render_human_lines(&outcomes, "server logs under /cfg"));
+
+        let summaries: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.starts_with("live handoff:"))
+            .collect();
+        assert_eq!(summaries.len(), 1, "lines: {lines:?}");
+        assert_eq!(
+            summaries[0],
+            "live handoff: 2 ok, 0 skipped, 0 failed; server logs under /cfg"
+        );
+    }
+
+    #[test]
+    fn a_request_timeout_reports_the_budget_instead_of_a_raw_errno() {
+        // `WouldBlock` (unix) / `TimedOut` (windows) both mean the server took
+        // our connection and then said nothing for the whole 120s.
+        let client = ApiClient::for_target(ConnectionTarget::SocketPath(PathBuf::from(
+            "/tmp/herdr-test/wedged/herdr.sock",
+        )));
+        for kind in [std::io::ErrorKind::WouldBlock, std::io::ErrorKind::TimedOut] {
+            let message = request_error_message(
+                ApiClientError::Io(std::io::Error::from(kind)),
+                "cli:live-handoff:dev",
+                &client,
+            );
+            assert_eq!(
+                message,
+                "no response within 120s; the server accepted the connection but never answered",
+                "kind: {kind:?}"
+            );
+            assert!(!message.contains("os error"), "kind: {kind:?}: {message}");
+        }
     }
 
     #[test]
