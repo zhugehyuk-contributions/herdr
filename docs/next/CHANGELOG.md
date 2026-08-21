@@ -7,6 +7,7 @@
 - Added `session.list` and `remote.set_session` socket API methods, and an optional `session` on `remote.add`.
 
 ### Fixed
+- Fixed remote provisioning talking to the wrong server on a host running more than one session: the readiness check, live handoff and stop commands never passed `--session`, so for a remote attached to a named session the compatibility decision was made against the default session's server and a restart landed on unrelated panes. This also affected `herdr --remote <host> --session <name>` from the CLI.
 - Fixed a failed remote management request (enable/disable, remove, auto-update, session switch) being discarded silently instead of reporting on the host banner.
 
 ## [0.7.5-mx.1] - 2026-08-05
