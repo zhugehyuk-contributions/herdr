@@ -8,7 +8,15 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
 경로는 herdr 레포 루트 기준.
 
 ### M-1 — 지반 동기화 (M0 선행, 앱 코드 0줄) — **2026-08-22 신설**
-`update-upstream`으로 upstream/master **148커밋** 반영 + **#68**(기본 브랜치 `mx`에 push CI, 한 줄 diff)을 한 배치로.
+`update-upstream`으로 upstream **`v0.8.2`** 반영 + **#68**(기본 브랜치 `mx`에 push CI, 한 줄 diff)을 한 배치로.
+머지 단위는 브랜치 HEAD가 아니라 **최신 릴리즈 태그**다(스킬 규약). 실측: `v0.8.0..v0.8.2` = **133커밋**,
+`merge-tree` 충돌 **27개 파일**(`wire.rs`·`headless.rs`·`client/mod.rs`·`main.rs` 포함) `[v]`.
+`DIVERGENCE.md`는 "currently tracking: upstream v0.8.0"이므로 **정확히 한 릴리즈 밀렸다.**
+
+> **충돌 해소 규칙 (스킬 규약, 이 계획의 전제이기도 하다)**: upstream이 **중간 삽입한 enum variant는 tail로
+> 이동**하고 **기존 wire tag를 불변으로 유지**한다. upstream 바이너리와의 wire 호환은 **비목표**(fork 피어끼리만 통신).
+> → **mx의 태그는 머지를 넘어 보존되므로 M1의 TS 코덱을 지금 써도 머지 후 유효하다.** 이것이 R3 하에서
+> M1을 병렬 착수할 수 있는 근거다([`06-open-decisions.md`](./06-open-decisions.md) §M-1 실측).
 
 **왜 M0보다 먼저인가**: upstream 머지는 앱이 의존하는 태그를 **실제로 민다** —
 `ServerMessage::Terminal` 13→2, `ClientLaunchMode::TerminalAttach` 1→2 ([`03-blockers.md`](./03-blockers.md) B1 표 `[v]`).
