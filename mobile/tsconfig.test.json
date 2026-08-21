@@ -7,7 +7,13 @@
   },
   "include": [
     "src/terminal/terminal-frame-sink.test.ts",
-    "src/terminal/terminal-ansi-screen.test.ts"
+    "src/terminal/terminal-ansi-screen.test.ts",
+    "src/api/herdr-api-types.schema.test.ts",
+    "src/api/mock/mock-api-handlers.test.ts",
+    "src/api/mock/mock-api-schema.test.ts",
+    "src/storage/sidebar-width.test.ts",
+    "src/theme/monotone-discipline.test.tsx",
+    "src/app-shell/route-shell-mount.test.tsx"
   ],
   "exclude": []
 }

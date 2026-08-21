@@ -54,19 +54,21 @@ the question is answerable by `grep`, not by memory:
 
 | Marker | Meaning | Count |
 |---|---|---|
-| `// Ported from orca <path>` | Copied from that orca path. 49 are byte-identical to the orca file after the three header lines; 7 differ only in import specifiers (see below); 2 are named extractions from a larger orca file (`src/shared/runtime-terminal-theme.ts`, `src/storage/terminal-text-scales.ts`). | 58 |
-| `// Rewritten for herdr` | orca's file is the shape but not the content. `metro.config.js` only. | 1 |
-| `// Not from orca` | herdr-authored. | 3 |
+| `// Ported from orca <path>` | Copied from that orca path. 75 are byte-identical to the orca file after the three header lines; 11 differ (see below); 4 are named extractions from a larger orca file (`src/shared/runtime-terminal-theme.ts`, `src/storage/terminal-text-scales.ts`, `src/storage/sidebar-width.ts`, `src/transport/connection-state-types.ts`), whose headers carry a `:line-range` instead of a bare path. | 90 |
+| `// Rewritten for herdr` | orca's file is the shape but not the content. `metro.config.js`, `src/api/mock/mock-fixture.ts`, `src/api/mock/mock-api-handlers.ts`. | 3 |
+| `// Not from orca` | herdr-authored. | 15 |
 
-Machine check that nothing slipped in unmarked:
+Machine check that nothing slipped in unmarked (the one file it reports,
+`src/terminal/terminal-webview-engine.generated.ts`, is the gitignored xterm build artefact —
+`mobile/.gitignore:4`):
 
 ```
 grep -rLE 'Ported from orca|Rewritten for herdr|Not from orca' \
-  mobile/src mobile/scripts mobile/plugins mobile/vitest.config.ts mobile/vitest.setup.ts
+  mobile/src mobile/app mobile/scripts mobile/plugins mobile/vitest.config.ts mobile/vitest.setup.ts
 ```
 
-The seven ported files that are not byte-identical differ **only** because orca resolved two types and
-two pure functions through the desktop-shared directory `../../../src/shared/` (its
+Of the eleven ported files that are not byte-identical, **seven** differ *only* because orca resolved
+two types and two pure functions through the desktop-shared directory `../../../src/shared/` (its
 `metro.config.js` watch folder) and herdr has no such directory:
 
 | File | Change |
@@ -81,6 +83,22 @@ two pure functions through the desktop-shared directory `../../../src/shared/` (
 
 `mobile/src/shared/` holds the five orca `src/shared` modules those specifiers now point at; they
 carry the same provenance header naming their original repo-root path.
+
+The remaining **four** are adaptations, not import fixes. Each names its own changes at the top of
+the file; the summary is:
+
+| File | Change |
+|---|---|
+| `app/_layout.tsx` | Route shell. Pairing deep links, relay recovery, notification tap routing, `OrcaLogo` and `RpcClientProvider` removed (all `drop` or later-stage in the port map); screen list cut from fourteen to the two routes that exist; palette swapped to `src/theme/monotone.ts`. The splash timing, `screenOptions` and the "no `orientation` option" rule are orca's, verbatim. |
+| `app/h/_layout.tsx` | Master-detail shell. `host` -> `remote` at the route-segment/identifier/title level, `HostProtocolGate` wrapper removed (stage 8), screen list cut from nine to one, palette swapped. Every load-bearing behaviour — window-aware clamp, `MIN_DETAIL_WIDTH`, the edge-handle `PanResponder` and its Android reason, the "no reveal button" rule, the stable detail-Stack position — is unchanged. |
+| `src/components/StatusDot.tsx` | Colour table -> the monotone ramp, and the `unreachable`/`auth-failed` dot becomes a ring (emphasis by inversion). Verdict-overrides-state structure unchanged. Type imports point at `src/transport/connection-state-types.ts` (extraction) because orca's transport layer is stage 6+. |
+| `src/components/AgentStateDot.tsx` | State vocabulary -> herdr's API `AgentStatus` (`idle\|working\|blocked\|done\|unknown`) instead of orca's `AgentDotState`; colour table -> the monotone ramp; `blocked` becomes a ring. The `working` rotation animation is orca's, unchanged. |
+
+Why the palette diverges at all: herdr's mobile mockup fixes a monotone grayscale ramp with emphasis
+by inversion (`mobile/.prd/assets/mockup.html:863`), while orca's `mobile-theme.ts` is hued. That
+file stays byte-identical to orca so the ported modal/drawer chrome keeps compiling unmodified, and
+the new ramp lives beside it in `src/theme/monotone.ts` (`// Not from orca`). Only surfaces where
+colour *is* the meaning read from the new one; `src/theme/monotone-discipline.test.tsx` enforces it.
 
 `.oxlintrc.json` is also derived from orca (root config + mobile overlay, flattened); oxlint rejects
 unknown top-level keys, so its provenance note lives in `.oxlintrc.README.md`. `package.json`,
