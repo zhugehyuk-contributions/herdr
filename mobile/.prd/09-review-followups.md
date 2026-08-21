@@ -57,8 +57,10 @@
 
 | # | 항목 | 위치 | 등급 |
 |---|---|---|---|
-| **N1** | **`assertWelcomeAccepted`가 여전히 `PROTOCOL_VERSION`만 비교한다 — B1의 클라이언트 측 본체** | `src/messages.ts:249-262` | `[확정]` · **최우선.** A-⑦(`undecodableCount`)은 **증상을 한 줄로 진단 가능하게** 만들 뿐 **스큐를 탐지하지 못한다.** 진짜 수정은 **레이아웃 프로브** — 예: `ObserveTerminal` 후 첫 `Terminal`이 기대한 태그로 도착하는지 확인한 뒤에야 스트림을 healthy로 선언. mx·upstream이 둘 다 `20`인 한 버전 비교는 무의미하다 |
-| **N2** | `hostTimer` 무음 no-op의 **위험도 상승** | `src/transport.ts:167-192` | `[확정]` — C5와 같은 항목이나 A-⑩ 이후 **`subscribe()`가 영원히 대기**할 수 있게 됐다(ack를 기다리는데 타임아웃이 없다) |
+| ~~N1~~ | **✅ 닫힘 `571ead04`** — `WireLayoutProbe` 신설(`src/layoutProbe.ts`). 판정 = `한 태그 반복 ≥5 AND 디코드된 Terminal 0 AND armed`. 분포로 세는 근거는 서버 소스 논증(정상 트래픽은 이질적, 스큐는 단조 반복). 무장은 `send()`에서 호출자 프레임을 되읽어 감지 → 기존 호출자가 그대로 오탐 리시트가 된다(`[ssh] layout probe: undecodable=0 verdict=none`). **한계를 코드에 기재**: 추론이지 증명 아님 · 구조상 위음성 · 필드 이동 스큐엔 무력 · 진짜 해법은 M0-a. | `[해소]` A-⑦(`undecodableCount`)은 **증상을 한 줄로 진단 가능하게** 만들 뿐 **스큐를 탐지하지 못한다.** 진짜 수정은 **레이아웃 프로브** — 예: `ObserveTerminal` 후 첫 `Terminal`이 기대한 태그로 도착하는지 확인한 뒤에야 스트림을 healthy로 선언. mx·upstream이 둘 다 `20`인 한 버전 비교는 무의미하다 |
+| ~~N2~~ | **✅ 닫힘 `571ead04`** — `createHostTimer(host)`가 타이머 부재 시 throw(메시지가 빠진 능력과 고치는 법을 명명). 주입 경로는 그대로 우선. `setTimeout`/`clearTimeout` **둘 다** 요구 — 전자만 있으면 데드라인이 무장되고 취소 불가라 **멀쩡한 채널을 나중에 죽인다**. | `[해소]` — C5와 같은 항목이나 A-⑩ 이후 **`subscribe()`가 영원히 대기**할 수 있게 됐다(ack를 기다리는데 타임아웃이 없다) |
+| **N5** | `desynchronizesScreen`가 **default-yes 술어**다 | `src/errors.ts:41` | `[확정]` — `code !== "unsupported-variant"`라서 **향후 어떤 에러 코드든 조용히 "화면을 desync한다"를 상속**한다. 새 `layout-mismatch`는 판정이 먼저 단락시켜 도달하지 않지만 형태 자체가 함정이다 → allow-list로 뒤집어라 |
+| **N6** | `src/node/sshTransport.ts:169`가 전역 `setTimeout`을 직접 쓴다 | 같은 곳 | `[확정]` · 낮음 — Node에선 무해하나 **`src/node` 엔트리는 N2의 fail-fast 보장을 못 받는다** |
 | **N4** | `Compressed` 인플레이터 부재 | `src/messages.ts` | `[확정]` · 낮음 — `wire.rs:462-467`이 말하는 desync 원인 **둘 중 나머지 절반**("compressed frame that failed to inflate")은 이 코덱에서 **시도조차 불가**하다. `TerminalAnsi` 전용인 한 도달하지 않으나, `SemanticFrame`을 받아들이는 순간 되살아난다 |
 | **N3** | `id: ""` 예외는 **서버 봉투 자체의 구멍**이다 | `src/api/server.rs:159-172`, 인코드 폴백 `:819` | `[확정]` — `invalid_request`는 클라이언트가 **상관시킬 수 없는 유일한 응답**이다. 요청1개=연결1개인 지금은 무해하나, id 기반 상관 계층은 이 API에 대해 **완전히 엄격해질 수 없다** |
 
