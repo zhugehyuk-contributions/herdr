@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- Added `herdr live-handoff`: one command hands off every running session to the current binary, one session at a time over that session's own socket, reporting each session's result and exiting non-zero if any failed. A failing session no longer blocks the rest, and a global `--session <name>` narrows the run to one session. Previously each session had to be handed off by hand with `herdr server live-handoff --session <name>`.
+- Added a `sessions:` table to `herdr status`: it now lists every session on the machine — running and stopped — with each one's protocol, compatibility and version, and marks the session the `server:` block describes. Previously `herdr status` only ever showed the one session the shell was pointed at, so other running sessions were invisible. `herdr status --json` gains a matching `sessions` array.
 - Added a session choice for remotes: the add-remote dialog takes an optional `session`, and a host's right-click menu shows the session it is attached to, lists the sessions that exist on that host, and can switch it (including to a brand-new name). Previously every remote attached the far side's `default` session.
 - Added `session.list` and `remote.set_session` socket API methods, and an optional `session` on `remote.add`.
 

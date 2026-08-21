@@ -34,6 +34,8 @@ herdr status server
 herdr status client
 ```
 
+`herdr status` also prints a `sessions:` table covering every session on this machine — running and stopped — with each session's protocol, compatibility, and version, and a `*` marking the session the `server:` block above describes.
+
 API schema commands:
 
 ```bash
@@ -85,13 +87,15 @@ compinit
 ```bash
 herdr server
 herdr server stop
+herdr server live-handoff
+herdr live-handoff [--json]
 herdr server reload-config
 herdr server agent-manifests [--json]
 herdr server update-agent-manifests [--json]
 herdr server reload-agent-manifests
 ```
 
-`herdr server` runs the headless server explicitly. Use it for supervised or service-style setups. `reload-config` applies reloadable settings without restarting panes. `agent-manifests` shows the active agent detection manifest sources, cached remote versions, and last remote update results. `update-agent-manifests` fetches remote manifest updates immediately, reloads them into the running server, and prints the updated manifest status; pass `--json` for the raw status response. `reload-agent-manifests` reloads agent detection manifests into the running server after local override edits.
+`herdr server` runs the headless server explicitly. Use it for supervised or service-style setups. `reload-config` applies reloadable settings without restarting panes. `agent-manifests` shows the active agent detection manifest sources, cached remote versions, and last remote update results. `update-agent-manifests` fetches remote manifest updates immediately, reloads them into the running server, and prints the updated manifest status; pass `--json` for the raw status response. `reload-agent-manifests` reloads agent detection manifests into the running server after local override edits. `herdr server live-handoff` hands the running server's live panes to a new server started from the current binary. `herdr live-handoff` is the top-level form: it does the same for every running session, one at a time, reports each session's result, and exits non-zero if any session failed. A global `--session <name>` narrows it to that one session.
 
 ## Notifications
 
