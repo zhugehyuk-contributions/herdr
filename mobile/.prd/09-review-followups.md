@@ -412,4 +412,30 @@ RED-on-revert 3종 독립 재현(2층·4층·경합 가드). 게이트 72파일/
 | 대조군 `src/update.rs` (자가 업데이트 경로) | origin/mx **20** / branch **36** |
 | `origin/mx:src/remote/unix.rs:1946` | `fn download_release_asset` 존재 |
 
-upstream v0.8.2가 `unix.rs`를 `attach.rs`로 재편했을 뿐, **무체크섬 원격 설치 경로는 mx에 이미 있었다.** 결함은 실재하나 이 브랜치의 회귀가 아니다 → 별도 보안 이슈. 자가 업데이트는 검증하는데 원격 설치는 안 하는 비대칭이 결함의 본체다.
+upstream v0.8.2가 `unix.rs`를 `attach.rs`로 재편했을 뿐, **무체크섬 원격 설치 경로는 mx에 이미 있었다.**
+
+### 정정 — 위 측정은 baseline이 틀렸다 (2026-08-22, 합성 패널이 지적, dispatcher 재측정)
+
+`origin/mx` 직전 상태를 zero로 잡으면 "upstream이 줬는데 우리가 버린 것"이 **구조적으로 관측 불가능**하다. 올바른 zero는 이 머지 자신의 계약(mx ∪ upstream)이다. 그 계기로 재니 판정이 뒤집힌다:
+
+| 측정 | 값 |
+|---|---|
+| `git show ae8009e1^2:src/remote/attach.rs \| grep -ci sha256` (upstream 부모) | **22** |
+| 그중 `:1447` | `crate::checksum::verify_sha256(&path, expected)` — **실호출** |
+| `git show ae8009e1:src/remote/attach.rs \| grep -ci sha256` (머지 결과) | **2** — 테스트 픽스처 JSON + 주석뿐 |
+| `struct RemoteUpdateManifest` (`attach.rs:704-711`) | `sha256` 필드 **없음** → 매니페스트의 체크섬 맵이 역직렬화에서 증발 |
+| `attach.rs:3915-3938` | 그 증발을 **테스트가 고정한다** — `"sha256": {...}`를 포함한 매니페스트를 먹이고, 주석이 "upstream v0.8.2's `sha256` asset-checksum map is not merged … See DIVERGENCE.md" |
+
+⇒ **upstream v0.8.2는 이 결함의 수정본을 들고 왔고, 이 머지가 그것을 의도적으로 반려했다.** 귀속은 "기존 부채"도 "새 회귀"도 아닌 제3범주 — **머지-귀속 손실**이다.
+
+**합성 패널의 한 주장은 틀렸다**: `src/checksum.rs`는 머지를 넘어왔다 (`ae8009e1^2`·`ae8009e1`·`feat/mobile-client`·`origin/mx` 전부 존재). 사라진 것은 모듈이 아니라 **원격 설치 경로의 호출부**다. 자가 업데이트(`src/update.rs:657,740`)는 여전히 `verify_sha256`을 부른다. 즉 결함의 본체는 **자가 업데이트는 검증하는데 원격 설치는 안 하는 비대칭**이고, 복원 비용은 모듈 신설이 아니라 필드+호출부다.
+
+### 그런데 진짜 위험은 결함이 아니라 안치 장소다
+
+`DIVERGENCE.md:70-73`이 sha256 맵을 #355 keepalive 이연과 **같은 불릿**에 넣고 이렇게 끝난다 — 그 항목들을 `#[allow(dead_code)]` 뒤에 유지하는 이유는 "**so the next merge stays quiet here**". DIVERGENCE.md의 의미론은 "숙고 끝에 수용한 분기"이고, 저 문장은 그 파일이 **다음 머지에서 신호를 끄도록 설계**됐음을 명시한다. **보안 통제를 그 원장에 넣으면 다시 검토되지 않는다.**
+
+→ 조치 순서: ①`DIVERGENCE.md:70-73`에서 sha256 항목을 **빼내 오너 있는 이슈로 재기표** ②그다음 `RemoteUpdateManifest.sha256` 필드 + `resolve_release_asset` 호출부 복원(upstream이 이미 쓴 코드). 순서가 이렇다 — 원장에 남는 한 다음 머지에서도 안 보인다.
+
+### 그래도 차단이 아닌 이유
+
+차단은 노출을 **1도 줄이지 않는다**. mx는 이미 바이트 동일한 무체크섬 경로를 배포 중이고(`origin/mx:src/remote/unix.rs:1946` ↔ `attach.rs:1951`, 유일한 차이는 `private_download_dir` base가 `std::env::temp_dir()`→`remote_private_temp_base()`로 **강화**된 것), 머지를 거절하면 노출은 그대로인 채 모바일 작업과 upstream 133커밋(그 강화 포함)을 잃는다. 노출 조건도 좁다: `channel != "stable"`이면 다운로드 전 Err, 번들 페이로드나 `HERDR_REMOTE_BINARY`가 있으면 Download 티어 미도달, TLS가 전송을 덮으므로 남는 위협은 릴리즈 자산/오리진 치환.
