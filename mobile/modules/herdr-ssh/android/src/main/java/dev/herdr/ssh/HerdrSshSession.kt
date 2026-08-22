@@ -14,6 +14,7 @@ import java.io.OutputStream
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.security.Security
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.transport.verification.FingerprintVerifier
@@ -21,12 +22,39 @@ import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 import net.schmizz.sshj.userauth.keyprovider.OpenSSHKeyFile
 import net.schmizz.sshj.userauth.password.PasswordFinder
 import net.schmizz.sshj.userauth.password.Resource
+import org.bouncycastle.jce.provider.BouncyCastleProvider
 
 /** How many bytes a pump hands to JS at once. Chunk boundaries are meaningless to the framer. */
 private const val PUMP_BUFFER = 32 * 1024
 
+/**
+ * Replaces Android's cut-down "BC" security provider with the full BouncyCastle one.
+ *
+ * Android registers its own stripped BouncyCastle under the name "BC", and it takes precedence over
+ * the copy sshj depends on. The omission that matters here is X25519: `curve25519-sha256` is the
+ * key exchange every modern OpenSSH offers first, so the very first connection fails with
+ * `TransportException: no such algorithm: X25519 for provider BC` — long before authentication.
+ * Observed on an API 36 emulator, 2026-08-22; it is not reproducible on the JVM, where "BC" is
+ * already the full provider.
+ *
+ * Idempotent and called from [HerdrSshDialer.dial] rather than from an initializer, so the cost is
+ * paid by the first connection instead of by app start.
+ */
+private object BouncyCastleSetup {
+  private var installed = false
+
+  @Synchronized
+  fun ensureInstalled() {
+    if (installed) return
+    Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
+    Security.insertProviderAt(BouncyCastleProvider(), 1)
+    installed = true
+  }
+}
+
 object HerdrSshDialer {
   fun dial(config: HerdrSshConnectConfig): SSHClient {
+    BouncyCastleSetup.ensureInstalled()
     val client = SSHClient()
     // Host keys are policy, so the policy is a value in the source rather than an omission. A phone
     // has no `known_hosts` seeded by earlier sessions, and the credential at stake is an ssh key

@@ -44,6 +44,12 @@ android {
 
 dependencies {
   implementation 'com.hierynomus:sshj:0.40.0'
+  // Android ships a stripped BouncyCastle under the provider name "BC" and it wins over the one
+  // sshj pulls transitively, so key exchange dies with
+  //   TransportException: no such algorithm: X25519 for provider BC
+  // (observed on an API 36 emulator, 2026-08-22). The full provider has to be present AND has to
+  // replace the platform one at runtime — see BouncyCastleSetup in HerdrSshSession.kt.
+  implementation 'org.bouncycastle:bcprov-jdk18on:1.78'
   // Ed25519. sshj declares it as optional, and an `ssh-ed25519` key silently becomes "no
   // authentication methods available" without it — which is the default key type `ssh-keygen`
   // produces since OpenSSH 8.5, i.e. the common case, failing as an auth error.
