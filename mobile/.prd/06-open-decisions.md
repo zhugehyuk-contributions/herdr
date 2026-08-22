@@ -143,3 +143,24 @@ ssh 라이브러리가 정하고 있었고, 아무도 그걸 읽지 않았다.
   같은 비용 — `withExec` 등을 직접 구현) ④Citadel 상류에 apple 저장소 복귀를 제기.
 - **권고: ②를 지금, ③/④는 실기기 검증 이후.** 판단은 유저 몫이라 결정으로 올린다.
 
+## 실기기 검증 결과 — Android (2026-08-22, 에뮬레이터 실측)
+
+**Android 경로는 끝까지 돌았다.** API 36 arm64 에뮬레이터(`herdr-test` AVD)에서:
+
+| 단계 | 결과 |
+|---|---|
+| `expo prebuild --platform android` | ✅ (레포 오염 0) |
+| autolinking | ✅ `herdr-ssh -> ['herdr-ssh']` (모듈 27개 중 우리 것 포함) |
+| `:herdr-ssh:assembleDebug` | ✅ AAR, 클래스 25개 (`HerdrSshModule$definition$…$inlined$AsyncFunction$1..3` 포함 = Expo DSL이 **진짜** expo-modules-core로 특수화됨) |
+| `:app:assembleDebug` | ✅ `app-debug.apk` 246MB |
+| APK 내용 | ✅ `dev.herdr.ssh` 클래스 140개 · `net.schmizz`(sshj) 엔트리 3,711개 |
+| 설치·실행 | ✅ 크래시 없음 |
+| Hermes JS 로드 | ✅ Metro가 **3,243 모듈** 번들 → 앱이 수신 |
+| UI 렌더 | ✅ agents 뷰(모노톤, blocked 8 / working 16, 하단 탭 nodes\|agents) |
+
+**아직 아닌 것 — 정확히 하나**: 화면 데이터는 `src/api/mock/mock-fixture.ts` 목업이다. **기기에서 실제 ssh로 herdr 서버에 붙는 경로는 미실증**이다(에뮬레이터에 키·원격 미설정). 이걸 닫으려면 격리 스크래치 서버 + 폐기용 키가 필요하며, 유저 실인프라·실키를 에뮬레이터에 넣는 것은 하지 않는다.
+
+**툴체인 (다음 사람용)**: JDK **17** (Java 26은 `Unsupported class file major version 70`으로 gradle 실패) · Android SDK platform 36 + build-tools 36.0.0 · `ANDROID_HOME=/opt/homebrew/share/android-commandlinetools`.
+
+이 과정에서 결함 2건이 나왔고 둘 다 수정됐다 — gradle 평가 실패(`safeExtGet` 미정의)와 **모듈 등록 실패(`Class()`에 `Constructor` 필수)**. 후자는 컴파일로는 잡히지 않는다: `:herdr-ssh:assembleDebug`가 green이었고 스텁 타입체크도 green이었는데, Expo 빌더가 **등록 시점**에 던진다. 실행이 아니면 못 잡는 등급이다.
+
