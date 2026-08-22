@@ -103,6 +103,34 @@
 - **runtime/client 가이드레일** — 처음 "위반"으로 제기했으나 **`[기각]`**. 가이드레일은 *"Before **adding** state, API fields, events, commands, or socket messages"*를 게이트하는데 이 작업은 그중 아무것도 추가하지 않았고, `ObserveTerminal`은 `bffc4a82`(2026-06-30)로 **2개월 선행**한다 `[v]`. 기존 채널의 **두 번째 소비자**일 뿐이다. → 남은 것은 규칙이 아니라 **의존성 전략**이며 [`02-architecture.md`](./02-architecture.md) §Tensions의 **D8**로 재정의됨.
 - **"No god objects"** (`AGENTS.md` §Universal Project Rules) — `src/transport.ts` 591줄이 채널 분류·브리지 커맨드·호스트 타이머·NDJSON 버퍼링·구독·프레임 디코딩·진단·셸 인용을 전부 소유한다. **C2와 같이 처리하는 게 옳다** — 정책 통일과 모듈 분할은 같은 작업이다.
 
+## E. 게이트 위생 — `format:check`는 태어난 날부터 red다
+
+`npm run format:check`(oxfmt 0.52.0)는 **`f8aa2a44`에서 `.prd/`가 착륙한 이래 한 번도 green인 적이
+없다** `[v]` — 2026-08-22 실측: `exit=2`, `.prd/assets/mockup-v5-original.html`에서
+`SyntaxError: Unexpected closing tag "section"`으로 중단. 파서를 막는 그 파일을 제외해도
+**222개 중 216개**가 불일치다.
+
+원인은 코드가 더럽다가 아니라 **설정 부재**다(`No config found, using defaults`). 이 코드베이스는
+세미콜론 없음·홑따옴표인데 oxfmt 기본값은 그 반대다. `{semi:false, singleQuote:true,
+printWidth:100, trailingComma:"none"}`까지 맞추면 216 → **65개**로 떨어지지만 0이 되지 않는다 —
+남는 축은 실제 printWidth(≥106자 import가 존재)와 **oxfmt가 마크다운도 포맷한다**는 사실이다.
+후자는 `.prd/*.md` 전부를 재작성하며, 목업은 같은 URL 재발행 규율(`01-spec`)과 정면 충돌한다.
+
+**결정 필요 — 세 갈래, 조용히 고를 수 없다:**
+1. **채택** — 설정을 확정하고 `npm run format` 1회로 65~222파일 재포맷 커밋. 이후 green 유지.
+   비용은 리뷰 노이즈(기능 diff와 섞임) + 문서 재작성.
+2. **범위 축소** — `ignorePatterns`로 `.prd/` 전체를 빼고 소스에만 적용. 문서 churn은 없고
+   재포맷은 코드에만.
+3. **삭제** — `format`/`format:check` 스크립트와 oxfmt 의존을 제거. mobile은 **어떤 CI에도
+   배선돼 있지 않다** `[v]`(`.github/workflows/*.yml`·`justfile`에 `mobile` 참조 0건) — 아무도
+   돌리지 않는 red 스크립트는 게이트가 아니라 소음이다.
+
+**권고: ②.** 포맷터의 값어치는 코드에 있고 문서 재작성은 순손실이다. 다만 ③도 정직한 선택이며,
+어느 쪽이든 **"항상 red인 스크립트를 그대로 두는 것"만은 답이 아니다** — 그건 다음 사람에게
+게이트를 무시하도록 가르친다.
+
+---
+
 ---
 
 **규율**: 이 목록은 *n번째 문서화*가 아니라 **추적 큐**다. 항목을 닫을 때는 여기서 지우고 커밋 메시지에 근거를 남긴다.
