@@ -13,10 +13,11 @@
 import { describe, expect, it } from 'vitest'
 import { FakeClock, flushMicrotasks } from '../../test/fake-clock'
 import { ConnectionSupervisor, type SupervisedLink } from './connection-supervisor'
+import { ChannelCloseError, MISSING_BINARY_HINT } from './channel-failure'
 import { GIVE_UP_AFTER_ATTEMPTS, TRICKLE_RECONNECT_DELAY_MS } from './reconnect-policy'
 import { LIVENESS_IDLE_MS, LIVENESS_PROBE_TIMEOUT_MS } from './rpc-session-liveness-watchdog'
 import type { ConnectionState } from './connection-state-types'
-import type { HerdrChannelClose } from '@herdr/client-ts'
+import { describeClose, type HerdrChannelClose } from '@herdr/client-ts'
 import type { ObserveSubscription } from './observe-subscriptions'
 
 type DialMode = 'ok' | 'hang' | 'handshake-hang' | { close: HerdrChannelClose }
@@ -45,7 +46,14 @@ function harness(mode: DialMode = 'ok') {
         return new Promise<SupervisedLink>(() => {})
       }
       if (typeof mode_ === 'object') {
-        return Promise.reject(new Error(mode_.close.stderr ?? mode_.close.error?.message ?? 'dead'))
+        // A `ChannelCloseError`, not a bare one, because that is what a link factory whose channel
+        // died actually rejects with (`./observe-stream-link.ts`): a promise can only reject with an
+        // error, so the close has to ride on it. A harness that rejected with `new Error(stderr)`
+        // would model a *string* reaching the classifier and would therefore be unable to see the
+        // failure below, where the entire evidence is a field.
+        return Promise.reject(
+          new ChannelCloseError(describeClose('dial failed', mode_.close), mode_.close)
+        )
       }
       signalHandshaking()
       const entry = { terminated: false }
@@ -254,6 +262,28 @@ describe('L3 in the machine — the loop that must not stop', () => {
     h.setDial('ok')
     await h.advance(TRICKLE_RECONNECT_DELAY_MS)
     expect(h.supervisor.snapshot()).toMatchObject({ state: 'connected', reconnectAttempt: 0 })
+  })
+
+  it('a rejected dial is classified from the close’s fields, not from its message', async () => {
+    // The one asymmetry between the two ways a channel death reaches this class. A close reported
+    // through `handleLinkClosed` arrives as a struct; a close that killed a *dial* arrives as a
+    // promise rejection, and rebuilding `{ error }` from it discards every other field. `exitCode`
+    // is the case with no textual fallback at all — 127 is `missing-binary`, which is `fatal`, and
+    // a synthesized `{ error }` grades it `transport` and retries a box that has no herdr on it
+    // until the user force-quits.
+    const h = harness()
+    h.setDial({ close: { exitCode: 127 } })
+    h.supervisor.start()
+    await h.settle()
+
+    const snapshot = h.supervisor.snapshot()
+    expect(snapshot.failure).toMatchObject({
+      kind: 'missing-binary',
+      fatal: true,
+      hint: MISSING_BINARY_HINT
+    })
+    expect(snapshot.state).toBe('auth-failed')
+    expect(snapshot.armed).toBe(false)
   })
 
   it('one channel death is booked once, even when the close arrives twice', async () => {

@@ -46,7 +46,11 @@ import {
 } from './rpc-session-liveness-watchdog'
 import { ReconnectScheduler, type ReconnectDecision } from './reconnect-policy'
 import { isStaleForegroundDial } from './rpc-stale-dial'
-import { classifyChannelFailure, type ChannelFailure } from './channel-failure'
+import {
+  classifyChannelFailure,
+  closeOfDialRejection,
+  type ChannelFailure
+} from './channel-failure'
 import { classifyConnection, type ConnectionVerdict } from './connection-health'
 import {
   ObserveSubscriptionRegistry,
@@ -304,12 +308,14 @@ export class ConnectionSupervisor {
           if (generation !== this.generation || this.intentionallyClosed) {
             return
           }
-          this.onDead(
-            classifyChannelFailure(
-              { error: error instanceof Error ? error : new Error(String(error)) },
-              error
-            )
-          )
+          // Not `{ error }`. A dial that died on a real channel rejects with a `ChannelCloseError`
+          // carrying the whole `HerdrChannelClose` (`./channel-failure.ts`), and synthesizing one
+          // from the message instead would discard the two *fields* the fatal branches read —
+          // `exitCode === 127` for `missing-binary`, `stderr` for `Permission denied (publickey)`.
+          // Both would then fall through to `transport`, i.e. retried forever. The error still goes
+          // through as `handshakeError` because a wire-layout verdict arrives that way and nowhere
+          // else.
+          this.onDead(classifyChannelFailure(closeOfDialRejection(error), error))
         }
       )
   }

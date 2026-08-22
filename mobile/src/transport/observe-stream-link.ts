@@ -22,12 +22,14 @@ import {
   ClientLaunchMode,
   RenderEncoding,
   assertWelcomeAccepted,
+  describeClose,
   encodeHelloFrame,
   encodeObserveTerminalFrame,
   encodeRequestFullFrameFrame,
   type ServerMessageChannel
 } from '@herdr/client-ts'
 import { encodePingFrame } from './client-ping'
+import { ChannelCloseError } from './channel-failure'
 import type { SupervisedLink } from './connection-supervisor'
 import type { SupervisorLinkFactory } from './supervised-remote'
 import type { HerdrRemoteConnection } from './herdr-connection'
@@ -42,6 +44,9 @@ import type { HerdrRemoteConnection } from './herdr-connection'
  */
 export const HEALTH_LINK_COLS = 80
 export const HEALTH_LINK_ROWS = 24
+
+/** What a dial's rejection says when the channel died carrying no evidence whatsoever. */
+const DIAL_CLOSE_PREFIX = 'the stream closed before Welcome'
 
 export type ObserveStreamLinkOptions = {
   connection: HerdrRemoteConnection
@@ -66,11 +71,24 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
   const { connection } = options
   return (hooks) => {
     let channel: ServerMessageChannel | null = null
-    /** orca's `isStaleRpcSocketEvent` in one variable: only the current generation may report. */
+    /** The generation that finished the handshake — the only one `probe`/`terminate` may act on. */
     let activeToken: object | null = null
+    /**
+     * The generation currently allowed to *report*. orca's `isStaleRpcSocketEvent`
+     * (`rpc-socket-close-evidence.ts:36-48`), which used to be `activeToken`'s second job.
+     *
+     * Split off because the two claims start at different moments. `activeToken` cannot be claimed
+     * before `await handshake` below — a link that has not been accepted must not answer a probe —
+     * and a close that arrives *before* `Welcome` is precisely the one carrying the startup
+     * evidence the classifier needs (`Permission denied (publickey)` on stderr). One variable meant
+     * every such close was silently dropped; see `onClose`.
+     */
+    let dialToken: object | null = null
 
     const dial = async (signalHandshaking: () => void): Promise<SupervisedLink> => {
       const token = {}
+      // Before the first `await`, so a close delivered on the way up already has a claimant.
+      dialToken = token
       let welcomed: (() => void) | null = null
       let failed: ((error: Error) => void) | null = null
       const handshake = new Promise<void>((resolve, reject) => {
@@ -102,13 +120,35 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
         onUndecodable: () => hooks.noteInbound(),
         onError: (error) => failed?.(error),
         onClose: (close) => {
-          // A close before `Welcome` must also settle the dial, or the supervisor sits in
-          // `handshaking` with no timer — which is L5's park wearing a different hat.
-          failed?.(new Error(closeSummary(close)))
+          if (dialToken !== token) {
+            // A superseded generation dying late: either L5 abandoned this dial and redialled
+            // (`./connection-supervisor.ts` `notifyForeground`), or `terminate` below already
+            // handed the supervisor a synthesized close. Reporting now would book a second failure
+            // against the generation that replaced it, and the attempt counter is what L3's cap and
+            // L6's ladder both key off.
+            return
+          }
+          dialToken = null
           if (activeToken === token) {
             activeToken = null
-            hooks.reportClosed(close)
           }
+          // The close goes to the supervisor as the *struct*, before the dial is settled and
+          // whether or not the handshake ever completed. `classifyChannelFailure`
+          // (`./channel-failure.ts:142-181`) reads `stderr`/`exitCode`/`error` off a
+          // `HerdrChannelClose` to decide `fatal`, and a pre-`Welcome` close is exactly where the
+          // fatal evidence lives — ssh writes `Permission denied (publickey)` to stderr and the
+          // channel then dies with a generic `error`. Rejecting the dial with a rendered string was
+          // the only escape route, and the supervisor's dial-rejection path re-wraps that string as
+          // `{ error }`, so a refused key graded `transport` and L3 retried it forever.
+          hooks.reportClosed(close)
+          // A close before `Welcome` must also settle the dial, or the supervisor sits in
+          // `handshaking` with no timer — which is L5's park wearing a different hat. It rejects
+          // with a `ChannelCloseError` rather than a bare `Error` so this is a second complete
+          // route for the same evidence and not a fallback that quietly loses half of it: a promise
+          // can only reject with an error, and the supervisor's rejection path would otherwise
+          // rebuild the close from the message alone (`./connection-supervisor.ts`), where
+          // `exitCode` no longer exists as a field for the `missing-binary` verdict to read.
+          failed?.(new ChannelCloseError(describeClose(DIAL_CLOSE_PREFIX, close), close))
         }
       })
       channel = opened
@@ -146,6 +186,13 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
           if (activeToken === token) {
             activeToken = null
           }
+          // Renounced *before* `opened.close()`, because the close it provokes is one the supervisor
+          // already accounted for: L2 has it synthesize the close on every forced teardown
+          // (`./connection-supervisor.ts` `closeAndSynthesize`), so forwarding the real one too
+          // would double-book the death. This is the behaviour the old single-token guard had, kept.
+          if (dialToken === token) {
+            dialToken = null
+          }
           if (channel === opened) {
             channel = null
           }
@@ -179,27 +226,4 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
 
     return { dial, replay }
   }
-}
-
-function closeSummary(close: {
-  exitCode?: number | null
-  signal?: string | null
-  stderr?: string | null
-  error?: Error | null
-}): string {
-  if (close.error) {
-    return close.error.message
-  }
-  const parts: string[] = []
-  if (close.exitCode !== null && close.exitCode !== undefined) {
-    parts.push(`exit ${close.exitCode}`)
-  }
-  if (close.signal) {
-    parts.push(`signal ${close.signal}`)
-  }
-  const stderr = close.stderr?.trim()
-  if (stderr) {
-    parts.push(stderr)
-  }
-  return parts.length > 0 ? parts.join(' — ') : 'the stream closed before Welcome'
 }
