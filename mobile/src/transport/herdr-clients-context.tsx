@@ -1,4 +1,4 @@
-// Ported in shape from orca mobile/src/transport/client-context.tsx (453 lines, port map §2.3
+// Rewritten for herdr, from orca mobile/src/transport/client-context.tsx (453 lines, port map §2.3
 // grades it `port` and schedules it for stage 6)
 // at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
 // MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.

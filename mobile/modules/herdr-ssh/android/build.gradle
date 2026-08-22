@@ -1,0 +1,42 @@
+// Not from orca.
+//
+// ⚠️ UNVERIFIED: no Gradle sync and no build has been run against this file.
+//
+// Why sshj: it is the only maintained pure-JVM ssh client with a license that matches herdr's.
+// Apache-2.0 (same as this repo), v0.40.0 released 2026-06-29, repository last pushed 2026-07-10,
+// 2.6k stars. The alternatives were checked rather than assumed — JSch is abandoned upstream and its
+// live fork (`mwiede/jsch`) publishes no SPDX license identifier on GitHub, which is a worse
+// starting point than "Apache-2.0" for a dependency that ships in a released app.
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+apply plugin: 'expo-module-gradle-plugin'
+
+group = 'dev.herdr.ssh'
+version = '0.0.0'
+
+android {
+  namespace 'dev.herdr.ssh'
+  defaultConfig {
+    minSdkVersion safeExtGet('minSdkVersion', 24)
+    consumerProguardFiles 'proguard-rules.pro'
+  }
+  packagingOptions {
+    // BouncyCastle (pulled in by sshj) ships signature files that break the APK signer, and sshj
+    // ships duplicated service descriptors across its transitive jars.
+    exclude 'META-INF/BCKEY.SF'
+    exclude 'META-INF/BCKEY.DSA'
+    exclude 'META-INF/INDEX.LIST'
+    exclude 'META-INF/*.kotlin_module'
+  }
+}
+
+dependencies {
+  implementation 'com.hierynomus:sshj:0.40.0'
+  // Ed25519. sshj declares it as optional, and an `ssh-ed25519` key silently becomes "no
+  // authentication methods available" without it — which is the default key type `ssh-keygen`
+  // produces since OpenSSH 8.5, i.e. the common case, failing as an auth error.
+  implementation 'net.i2p.crypto:eddsa:0.3.0'
+  // sshj logs through slf4j. Without a binding Android prints a warning per connection and drops
+  // the lines; a no-op binding is the honest choice for a library that has no log destination here.
+  implementation 'org.slf4j:slf4j-nop:2.0.16'
+}

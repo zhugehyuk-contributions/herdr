@@ -64,9 +64,14 @@
       "package": "dev.herdr.mobile",
       "versionCode": 1
     },
+    "//herdrRemotes": "The ssh hosts the phone dials, read by modules/herdr-ssh (src/remote-config.ts). Empty means the app dials nobody and HerdrDataProvider falls back to the mock fixture \u2014 which is the state before this list is filled, not a bug. Entry shape: {id, name?, host, port?, username, privateKey, hostKeySha256, herdrBinary?, session?, env?}. \u26a0\ufe0f a privateKey here is a private key in the app bundle and in git: fine for a throwaway key against a lab host, wrong for anything else. The durable home is expo-secure-store and swapping to it changes modules/herdr-ssh/src/remote-config.ts and nothing above it.",
+    "extra": {
+      "herdrRemotes": []
+    },
     "plugins": [
       "expo-router",
       "./plugins/android-respect-rotation-lock.js",
+      "./plugins/with-herdr-ssh-spm.js",
       "expo-splash-screen",
       [
         "expo-build-properties",

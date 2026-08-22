@@ -27,6 +27,7 @@
 // only ever express "this text, then these keys". Two taps merge only when merging does not reorder
 // them — see {@link mergeChunk}.
 import { JsonApiError, type JsonApiClient } from '@herdr/client-ts'
+import { markRpcDeliveryUnknown } from '../transport/rpc-delivery-ambiguity'
 
 /** One `pane.send_input` payload, in the only shape the server can express (text, then keys). */
 export type PaneInputChunk = {
@@ -277,7 +278,17 @@ export class PaneInputSender {
       }
       // Everything else — a dead exec channel, a truncated line, a protocol error — leaves the
       // question open. X2: do not call it a failure.
-      return { delivery: 'unknown', reason: describe(error) }
+      //
+      // `markRpcDeliveryUnknown` is orca's own marker for this exact condition
+      // (`mobile/src/transport/rpc-delivery-ambiguity.ts`, ported byte-identical as part of M4). It
+      // is applied here so the two vocabularies are one: this file predates the port and reached
+      // the same three-valued conclusion independently, and a caller that inspects the *error*
+      // rather than the {@link PaneInputResult} — a retry helper, a log — now gets the same answer
+      // instead of a second, subtly different rule. The WeakSet costs nothing and never disagrees.
+      return {
+        delivery: 'unknown',
+        reason: describe(markRpcDeliveryUnknown(asError(error)))
+      }
     }
   }
 
@@ -298,6 +309,11 @@ export class PaneInputSender {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** The marker is a `WeakSet<Error>`, so a non-`Error` rejection has to become one to be tagged. */
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error))
 }
 
 /** The one line the header shows about the last write, in the mockup's status slot. */

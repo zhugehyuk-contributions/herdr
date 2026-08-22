@@ -24,7 +24,21 @@
     "src/session/pane-observer.test.ts",
     "src/api/live/live-snapshot-loader.test.ts",
     "src/api/herdr-data-provider.test.tsx",
-    "src/app-shell/pane-viewer-mount.test.tsx"
+    "src/app-shell/pane-viewer-mount.test.tsx",
+    "src/transport/reconnect-policy.test.ts",
+    "src/transport/rpc-session-liveness-watchdog.test.ts",
+    "src/transport/channel-failure.test.ts",
+    "src/transport/connection-health.test.ts",
+    "src/transport/observe-subscriptions.test.ts",
+    "src/transport/request-single-flight.test.ts",
+    "src/transport/protocol-compat.test.ts",
+    "src/transport/client-ping.test.ts",
+    "src/transport/connection-supervisor.test.ts",
+    "src/transport/rpc-delivery-ambiguity.test.ts",
+    "src/transport/revival-nudge.test.ts",
+    "modules/herdr-ssh/test/ssh-transport.test.ts",
+    "modules/herdr-ssh/test/remote-config.test.ts",
+    "modules/herdr-ssh/test/bundle-contract.test.ts"
   ],
   "exclude": []
 }

@@ -31,15 +31,7 @@ import * as SplashScreen from 'expo-splash-screen'
 import { mono } from '../src/theme/monotone'
 import { HerdrDataProvider } from '../src/api/herdr-data-provider'
 import { HerdrClientsProvider } from '../src/transport/herdr-clients-context'
-import type { HerdrRemoteConnection } from '../src/transport/herdr-connection'
-
-// Why empty, and why it is still here: reaching a herdr server means an ssh exec channel onto
-// `herdr remote-api-bridge`, and React Native has no ssh stack — the native module that would
-// supply one is mobile/.prd/02-architecture.md §2.4 N1 and is not written. Until it is, the app
-// dials nobody and `HerdrDataProvider` falls back to the mock fixture. The provider is mounted
-// anyway because it is the injection point: the Node harness mounts this same tree with a real
-// `SshHerdrTransport`, so the live path below is exercised by `test/live/` rather than by a phone.
-const APP_CONNECTIONS: readonly HerdrRemoteConnection[] = []
+import { useHerdrSshConnections } from '../modules/herdr-ssh'
 
 // Why: keeps the native splash screen visible until the React tree is mounted
 // and ready to render. Without this the user sees a blank white/black frame
@@ -47,6 +39,17 @@ const APP_CONNECTIONS: readonly HerdrRemoteConnection[] = []
 SplashScreen.preventAutoHideAsync()
 
 export default function RootLayout() {
+  // Was `const APP_CONNECTIONS = []`, with a comment saying it was empty because React Native has no
+  // ssh stack (mobile/.prd/02-architecture.md §2.4 N1). `modules/herdr-ssh` is that stack, and this
+  // hook is the whole junction: it reads `app.json`'s `expo.extra.herdrRemotes`, dials each one over
+  // the native module, and wraps the results as `HerdrRemoteConnection`s.
+  //
+  // Still `[]` in every build that has no configured remote and in every build with no native module
+  // — Expo Go, and the test environment two suites here mount this file in — so the fallback to the
+  // mock fixture is unchanged rather than removed. No settings UI exists yet; the list is a
+  // build-time value on purpose (see `modules/herdr-ssh/src/remote-config.ts`).
+  const connections = useHerdrSshConnections()
+
   // Why: hide the native splash only once the navigation Stack has been laid
   // out — this is the earliest moment the user will see actual app content.
   const onNavigatorLayout = useCallback(async () => {
@@ -57,7 +60,7 @@ export default function RootLayout() {
     // Which loader runs is `HerdrDataProvider`'s single decision (live when a remote is reachable,
     // the stage-4 fixture otherwise); nothing below here knows the difference, which is the point of
     // the seam (port map §5, "이 시점 전까지 mock으로 UI가 이미 완성돼 있어야 한다").
-    <HerdrClientsProvider connections={APP_CONNECTIONS}>
+    <HerdrClientsProvider connections={connections}>
       <HerdrDataProvider>
         <View style={styles.root} onLayout={onNavigatorLayout}>
           <StatusBar style="light" />

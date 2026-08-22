@@ -16,6 +16,11 @@ export default defineConfig({
     onConsoleLog: (log) => !log.includes('react-test-renderer is deprecated'),
     // .tsx too: component tests exist (react-test-renderer + mocked react-native) and were
     // silently never collected, so render-level regressions shipped untested.
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx']
+    //
+    // `modules/` for the same reason, one directory over: a local Expo module lives outside `src/`
+    // by autolinking convention (`expo-modules-autolinking` resolves `./modules` as
+    // `nativeModulesDir` — build/commands/autolinkingOptions.js:170-174), and its TypeScript half is
+    // the only part of the native ssh path that can be tested without a device.
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'modules/**/*.test.ts']
   }
 })
