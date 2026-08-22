@@ -44,6 +44,7 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
 > `observe_terminal_streams_ansi_bytes_without_resizing_pane`이 격리 서버를 띄워 `TerminalAnsi`로 핸드셰이크하고
 > `ObserveTerminal`을 보낸 뒤 **실제 ANSI 바이트를 받는다** —
 > `TerminalFrame{seq:1,width:100,height:30,full:true,bytes:55925}`, 선두가 `ESC[?2026h ESC[?25l … ESC[2J ESC[1;1H`.
+> **주의**: 이 `bytes:55925`는 2026-08-22 **upstream v0.8.2 머지 이전** 실측이다. 머지 후 동일 조건 재실측 = **3,276 B** (약 17배 축소, upstream #2675). 기록은 당시 관측으로 보존하되 현재 크기는 [`03-blockers.md`](./03-blockers.md) B13 갱신 블록을 본다.
 > **동시에 pane PTY 크기가 불변**임도 확인(23×53 → 23×53). 인코딩을 `SemanticFrame`으로 바꾸면 테스트가
 > 실패하므로(변이 검사) 진짜로 이 분기를 구별한다. 게이트: nextest PASS(재실행 확인), clippy 무경고.
 > **이전 판에서 "유일한 미검증 축"이었던 것이 닫혔다.** 부산물로 [`03-blockers.md`](./03-blockers.md) B13(대역폭)이 드러났다.

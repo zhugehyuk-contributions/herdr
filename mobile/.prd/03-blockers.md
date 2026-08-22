@@ -69,6 +69,18 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
   (`tests/observe_terminal_ansi.rs`). 서버가 pane 내용을 **폰 뷰포트로 다시 렌더**한다. 그러나 **줄바꿈은
   pane의 컬럼 수에 그대로 묶여 있다**(리플로우 없음). 즉 프레임 크기를 키워도 읽기 문제는 안 풀린다 —
   **pane 폭의 문제**이지 프레임 크기의 문제가 아니다.
+- **새 레버 (2026-08-22, upstream v0.8.2 머지) `[v]`**: pane 폭이 이제 **서버 설정 값**이다.
+  upstream #2829가 `server.headless_cols` / `server.headless_rows`를 도입했다 —
+  `src/config.rs:53-54` `DEFAULT_HEADLESS_COLS: u16 = 120` · `DEFAULT_HEADLESS_ROWS: u16 = 40`,
+  읽기 지점 `src/config.rs:96 headless_size()`, 0 검증 `:104`. **머지 전에는 이 상수 자체가 없었다**
+  (`git show d06d5333:src/config.rs`에 부재). 위 진단이 "프레임 크기가 아니라 **pane 폭**의 문제"라고
+  못박았는데, 바로 그 pane 폭에 처음으로 손잡이가 생긴 것이다.
+  - **주의 1 — 기본값은 오히려 나빠졌다**: 헤드리스 그리드가 커져 라이브 pane PTY가 23×53 → **39×93**.
+    같은 폰 뷰포트에서 잘려나가는 양이 늘었다.
+  - **주의 2 — 서버 전역이다**: 폰을 위해 좁히면 **데스크톱 pane도 같이 좁아진다.** 클라이언트별 설정이
+    아니므로 "폰만 좁게"는 이 노브로 안 된다 — 그건 여전히 서버 측 per-client 뷰포트(B4 본체) 작업이다.
+  - **따라서**: 이건 B4의 해결이 아니라 **처음 생긴 부분 완화 선택지**다. 단말 1대에 폰 위주로 붙는
+    사용 패턴이라면 설정 한 줄로 읽기 문제를 크게 줄일 수 있고, 그 판단은 실기기 확인 후에 한다.
 - **왜 치명적**: M2(읽기 전용 v1)가 목적의 절반인데, 그게 잘린 코너를 보여준다. 실기기 전에는 안 보이는 종류의 결함이다.
 - **v1 답 (서버 변경 0)**: `Hello`의 cols/rows를 **폰 해상도가 아니라 대상 pane의 실제 크기**로 보낸다(`pane.get` 선조회).
   xterm은 PTY 폭 그대로 렌더하고 폰은 핀치줌/가로스크롤로 본다. observe라서 데스크톱은 그대로다.
@@ -85,6 +97,20 @@ Base: `feat/mobile-client` @ `aa9f6e14` = herdr **v0.8.0-mx.1**, `PROTOCOL_VERSI
   **v1은 xterm 자체 스크롤백 버퍼로 대체**한다(orca는 5000줄 `[i]`). M6.
 
 ### B13. TerminalAnsi 프레임은 압축되지 않고 셀마다 재-SGR한다 — 모바일 대역폭
+
+> **2026-08-22 갱신 (upstream v0.8.2 머지) — 아래 "셀마다 재-SGR" 실측은 더 이상 유효하지 않다.**
+> upstream #2675(`36074530`)가 `write_all_cells`를 재작성했다: 인접 셀에서 `ESC[row;colH`를 생략하고
+> (`next_inline_col`), SGR은 **변경 시에만** 재발행한다(`last_sgr` 메모). 그 함수는 observe 라이브 경로가
+> **실제로 지나는** 함수다 — `src/server/render_stream.rs:101` → `BlitEncoder::encode` →
+> `src/protocol/render_ansi.rs:483` `if full_redraw { write_all_cells(...) }` `[v]`.
+> **재실측**: 100×30 풀 프레임 = **3,276 B 라이브**(`tests/observe_terminal_ansi.rs` 2회),
+> TS 클라이언트가 소켓·ssh로 받은 값 3,274 B, fixture 3,292 B — **55,925 → 3,276, 약 17배 축소** `[v]`.
+> 셀당 18.6 B → **약 1.09 B/cell**.
+> **결과**: 이 블로커의 *크기* 축은 사실상 해소됐다. trinity 리뷰가 남긴 "55KB 프레임을 RN 브리지로
+> 마샬링" 리스크는 없어졌고, 아래 완화책(B6 `RetargetTerminal`로 풀 프레임 **빈도**를 줄이는 것)은
+> **크기만 놓고 보면 더 이상 load-bearing이 아니다** — B6는 지연 시간 이유로 유지된다(M6 실측 21ms).
+> **여전히 참인 것**: `ServerMessage::Terminal`은 지금도 deflate되지 않는다(아래 두 번째 불릿).
+> 압축 부재 자체는 변하지 않았고, 바뀐 것은 압축되지 않는 페이로드의 크기다.
 
 > 2026-08-22 신설. `tests/observe_terminal_ansi.rs` 리시트를 돌리다 실측으로 드러났다. **계획에 없던 비용이다.**
 
