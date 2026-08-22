@@ -112,3 +112,34 @@ ssh 라이브러리가 정하고 있었고, 아무도 그걸 읽지 않았다.
 - **판단이 필요한 지점**: 이 앱의 대상 기기가 유저 본인 위주라면 17.0은 비용이 아니다(현행 유지).
   배포 대상이 넓어지면 그때 nio-ssh 직접 구현을 재평가한다. **기본값은 17.0 유지**로 두되,
   이건 선택된 적 없는 결정이었으므로 유저 확인 대상으로 올린다.
+
+## 결정 6 — Swift 6 동시성 모드 (2026-08-22, 실측으로 확정)
+
+`HerdrSshSession.swift`는 **Swift 5 모드에서만 컴파일된다** `[v]`. `NSLock.lock()/unlock()` 호출
+16곳이 `async` 컨텍스트 안에 있고, `noasync` 가용성은 Swift 5에서 경고 · **Swift 6에서 에러**다.
+
+- podspec은 지금 Swift 6 검사를 끄고 있으므로 **현행 설정에선 빌드된다.**
+- 다만 이건 유예지 해결이 아니다. Swift 6 모드로 올리는 순간 16곳이 전부 막힌다.
+- 실제 위험도는 별개로 낮다 — 확인 결과 lock/unlock 사이에 `await`가 없어 락을 await 너머로
+  들고 가지 않는다. 즉 **정확성 문제가 아니라 마이그레이션 부채**다.
+- 재현: `npm run typecheck:ios` (Swift 5, green) / `Package.swift`의 `swiftLanguageMode(.v5)`를
+  빼면 red.
+
+## 결정 7 — ssh 프로토콜 구현의 실제 출처 (2026-08-22, 공급망 실측 — **유저 확인 필요**)
+
+문서(이 `.prd` 포함)는 하부가 `apple/swift-nio-ssh`라고 적어왔다. **거짓이다** `[v]`.
+
+- Citadel 0.12.1 `Package.swift:20` = `https://github.com/Wellz26/swift-nio-ssh.git`,
+  범위 `"0.3.4" ..< "0.4.0"`, 해석 결과 **0.3.6**.
+- 그 저장소: `Joannis/swift-nio-ssh`(Citadel 저자 본인 포크)의 **포크**, 2026-04-02 생성,
+  **같은 날 1회 push 후 커밋 없음**, 스타 0. Citadel PR #127(*"Fix: Add swift-nio dependency for
+  Mac Catalyst builds"*, 2026-04-04 머지)로 들어왔다.
+- 대조: `apple/swift-nio-ssh`는 2026-07-28까지 활발, 스타 515.
+- **왜 중요한가**: 이 앱은 유저의 ssh 개인키를 쥔다. 그 키로 말하는 프로토콜 구현이 (a) 개인 포크에서
+  오고 (b) `0.3.4 ..< 0.4.0` 부동 범위라 새 0.3.x가 자동 채택되며 (c) 우리 쪽 Citadel 핀도
+  `upToNextMinorVersion`이라 **암호 경로에 부동 홉이 둘**이다.
+- 선택지: ①현행 유지(가장 싸다, 위 사실을 알고 받아들임) ②Citadel과 nio-ssh를 **정확 핀**으로
+  고정(부동 홉 제거, 업데이트를 명시적 결정으로) ③`apple/swift-nio-ssh` 직접 사용(결정 5의 대안과
+  같은 비용 — `withExec` 등을 직접 구현) ④Citadel 상류에 apple 저장소 복귀를 제기.
+- **권고: ②를 지금, ③/④는 실기기 검증 이후.** 판단은 유저 몫이라 결정으로 올린다.
+

@@ -11,7 +11,12 @@
 // crypto stack from before 2019 — in the app that holds the user's ssh key.
 //
 // The maintained implementations are SPM-only: `apple/swift-nio-ssh` (Apache-2.0, 0.15.0 on
-// 2026-07-28) and `orlandos-nl/Citadel` (MIT, 0.12.1, built on top of it). A CocoaPods podspec
+// 2026-07-28) and `orlandos-nl/Citadel` (MIT, 0.12.1). NOTE, verified 2026-08-22 by resolving the
+// package: Citadel 0.12.1 does NOT depend on apple/swift-nio-ssh. Its Package.swift:20 points at
+// `https://github.com/Wellz26/swift-nio-ssh.git` with a floating `0.3.4 ..< 0.4.0`, resolving to
+// 0.3.6 — a fork of the Citadel author's own fork, created 2026-04-02, pushed once that day and
+// not since, 0 stars, pulled in by Citadel PR #127 (a Mac Catalyst build fix). See
+// .prd/06-open-decisions.md decision 7. A CocoaPods podspec
 // cannot declare an SPM dependency, and `expo-modules-autolinking`'s Apple config accepts only
 // `podspecPath` (node_modules/expo-modules-autolinking/build/types.d.ts:136-171), so the package has
 // to be attached to the Xcode project directly.

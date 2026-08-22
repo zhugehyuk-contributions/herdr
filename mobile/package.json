@@ -16,7 +16,8 @@
     "lint": "oxlint",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "typecheck:android": "modules/herdr-ssh/typecheck/run.sh"
+    "typecheck:android": "modules/herdr-ssh/typecheck/run.sh",
+    "typecheck:ios": "modules/herdr-ssh/typecheck/ios/run.sh"
   },
   "dependencies": {
     "@herdr/client-ts": "link:../packages/herdr-client-ts",
