@@ -21,8 +21,45 @@ const config = getDefaultConfig(projectRoot)
 
 config.watchFolders = Array.from(new Set([...(config.watchFolders ?? []), clientTsRoot]))
 
+// Why this exists at all — measured, not anticipated. `npx expo export` (mobile `bundle`/`bundle:*`)
+// failed on the *first* module of the package:
+//
+//     Unable to resolve module ./constants.js from packages/herdr-client-ts/src/index.ts
+//     None of these files exist: .../src/constants.js(.ios.ts|.native.ts|.ts|…)
+//
+// `@herdr/client-ts` is `"type": "module"` and ships **TypeScript source** as its entry
+// (`package.json` `exports: {".": "./src/index.ts"}`), so every relative import inside it is written
+// in TypeScript's NodeNext form: the specifier names the *emitted* file (`./constants.js`) while the
+// file on disk is `./constants.ts`. tsc and Vite/Vitest both perform that rewrite, which is why the
+// 160-test package suite and mobile's own unit suite never saw this. Metro does not: it appends its
+// `sourceExts` to the specifier as written, so it looks for `constants.js.ts`, `constants.js.tsx`, …
+// and never for `constants.ts`.
+//
+// The rewrite is scoped to origins inside `clientTsRoot` on purpose. Doing it globally would change
+// how every `node_modules` package resolves, and a real `foo.js` sitting next to a `foo.ts` would
+// start resolving to the wrong one; inside this package the two never coexist. The fallback is
+// ordered `.ts` first, then the untouched specifier, so a genuine `.js` file in the package (there
+// are none today) still resolves rather than erroring.
+const upstreamResolveRequest = config.resolver.resolveRequest
+const clientTsPrefix = clientTsRoot + path.sep
+
 config.resolver = {
   ...config.resolver,
+  resolveRequest: (context, moduleName, platform) => {
+    const fallback =
+      typeof upstreamResolveRequest === 'function' ? upstreamResolveRequest : context.resolveRequest
+    const fromClientTs =
+      typeof context.originModulePath === 'string' &&
+      context.originModulePath.startsWith(clientTsPrefix)
+    if (fromClientTs && moduleName.startsWith('.') && moduleName.endsWith('.js')) {
+      try {
+        return fallback(context, `${moduleName.slice(0, -3)}.ts`, platform)
+      } catch {
+        // Not a TypeScript-emitted specifier after all — fall through to the name as written.
+      }
+    }
+    return fallback(context, moduleName, platform)
+  },
   extraNodeModules: {
     ...config.resolver.extraNodeModules,
     '@herdr/client-ts': clientTsRoot

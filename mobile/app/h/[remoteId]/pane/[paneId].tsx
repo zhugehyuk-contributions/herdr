@@ -34,8 +34,19 @@
 //     herdr's JSON API (§2.2).
 //   · `mobile-terminal-viewport-resubscribe` — the fit loop that resizes the *desktop* PTY to the
 //     phone. Dropped whole (§6 위험 3); its replacement is `src/session/observer-geometry.ts`.
-//   · connection verdict / tap-to-retry (L7) — M4. The status line has the slot; the verdict that
-//     fills it is `src/transport/connection-health.ts`, not yet ported.
+//
+//   · **M4, the survivability line** — orca's `:4191-4203` in full. The header now carries the
+//     *connection verdict* beside the stream summary: it escalates with the reconnect loop (L6) and
+//     becomes a Retry that revives the transport rather than resending a request (L7).
+//     `src/components/ConnectionStatusLine.tsx` is the component and
+//     `src/transport/use-connection-status.ts` the reader; both render nothing when the remote has
+//     no supervisor, which is the mock build and every build before this milestone.
+//
+//     Two readings side by side, on purpose, because they answer different questions and a terminal
+//     needs both: `streamSummary` describes **this pane's observe stream** (idle / observing /
+//     stream ended) and the verdict describes **the connection underneath it**. A screen with only
+//     the first says "observing" over a link that died forty seconds ago; one with only the second
+//     says "Connected" over a pane whose stream never got its `Welcome`.
 //
 // One structural divergence from orca, deliberate: orca mounts **every** terminal and hides the
 // inactive ones (`:4667` `terminals.map(...)`) so a tab switch is instant. Here exactly one pane is
@@ -47,9 +58,14 @@ import { useCallback, useMemo, useRef } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { AgentStateDot } from '../../../../src/components/AgentStateDot'
+import { ConnectionStatusLine } from '../../../../src/components/ConnectionStatusLine'
 import { useRemote, useRemoteSnapshot } from '../../../../src/api/snapshot-context'
 import { agentIdentityLabel, agentStateLabel } from '../../../../src/agents/agent-display'
-import { useHerdrConnection } from '../../../../src/transport/herdr-clients-context'
+import {
+  useHerdrConnection,
+  useHerdrSupervisor
+} from '../../../../src/transport/herdr-clients-context'
+import { useConnectionStatus } from '../../../../src/transport/use-connection-status'
 import { TerminalPaneView } from '../../../../src/session/TerminalPaneView'
 import { buildPaneChips, resolveActivePaneChip } from '../../../../src/session/pane-chips'
 import { paneHref } from '../../../../src/agents/fleet-agents'
@@ -106,6 +122,11 @@ export function PaneViewerScreen({
   const remote = useRemote(remoteId)
   const entry = useRemoteSnapshot(remoteId)
   const connection = useHerdrConnection(remoteId)
+  // M4/X4: the *supervisor*, not a link. `useConnectionStatus` re-reads it on every state change
+  // through `useSyncExternalStore`, so this screen can never hold a link `forceReconnect` replaced.
+  // Both are null in a build with no transport supervision, and the status line renders nothing.
+  const supervised = useHerdrSupervisor(remoteId)
+  const connectionStatus = useConnectionStatus(supervised)
   const handleRef = useRef<TerminalWebViewHandle | null>(null)
 
   const routed = entry?.panes.find((pane) => pane.pane_id === paneId) ?? null
@@ -172,6 +193,7 @@ export function PaneViewerScreen({
         <Text style={styles.meta}>
           {streamSummary(observer.status, observer.error, connection !== null)}
         </Text>
+        <ConnectionStatusLine status={connectionStatus} />
       </View>
 
       {chips.length > 1 ? (

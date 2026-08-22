@@ -17,8 +17,9 @@
 //   · `OrcaLogo` (`:9`, `:182`) — brand, not code (§0).
 //   · `RpcClientProvider` (`:10`, `:161`) — ported at stage 6 as the pair below: `HerdrClientsProvider`
 //     (the connection set, `src/transport/herdr-clients-context.tsx`) wrapping `HerdrDataProvider`
-//     (which turns that set into the snapshot loader). orca's ref-counting/reconnect half of the
-//     original is M4 — see that file's header for what was left out and why.
+//     (which turns that set into the snapshot loader). orca's **reconnect** half of the original
+//     landed at M4 and is the `supervisors` prop below; its ref-counting half is still deferred —
+//     see that file's header for why.
 // Screens: only the three routes that exist. orca lists fourteen; the rest are ported in later
 // stages or dropped, and expo-router warns about a `Stack.Screen` with no file. `nodes` is the one
 // route with no orca counterpart at this position — orca's host catalog *is* its `index`, and
@@ -31,6 +32,7 @@ import * as SplashScreen from 'expo-splash-screen'
 import { mono } from '../src/theme/monotone'
 import { HerdrDataProvider } from '../src/api/herdr-data-provider'
 import { HerdrClientsProvider } from '../src/transport/herdr-clients-context'
+import { useSupervisedRemotes } from '../src/transport/use-supervised-remotes'
 import { useHerdrSshConnections } from '../modules/herdr-ssh'
 
 // Why: keeps the native splash screen visible until the React tree is mounted
@@ -50,6 +52,12 @@ export default function RootLayout() {
   // build-time value on purpose (see `modules/herdr-ssh/src/remote-config.ts`).
   const connections = useHerdrSshConnections()
 
+  // M4. One supervisor per connection: the L1 watchdog, the L3 forever-backoff, the L6 ladder and
+  // the L7 revive, mounted where every screen can reach them by remote id. Empty in — and only in —
+  // the same builds `connections` is empty in, so a build with no configured remote opens no extra
+  // channel and this line costs nothing (`src/transport/use-supervised-remotes.ts`).
+  const supervisors = useSupervisedRemotes(connections)
+
   // Why: hide the native splash only once the navigation Stack has been laid
   // out — this is the earliest moment the user will see actual app content.
   const onNavigatorLayout = useCallback(async () => {
@@ -60,7 +68,7 @@ export default function RootLayout() {
     // Which loader runs is `HerdrDataProvider`'s single decision (live when a remote is reachable,
     // the stage-4 fixture otherwise); nothing below here knows the difference, which is the point of
     // the seam (port map §5, "이 시점 전까지 mock으로 UI가 이미 완성돼 있어야 한다").
-    <HerdrClientsProvider connections={connections}>
+    <HerdrClientsProvider connections={connections} supervisors={supervisors}>
       <HerdrDataProvider>
         <View style={styles.root} onLayout={onNavigatorLayout}>
           <StatusBar style="light" />
