@@ -86,7 +86,6 @@ struct ClientLoopConfig {
     redraw_on_focus_gained: bool,
     kitty_graphics_enabled: bool,
     mouse_capture_active: bool,
-    #[cfg(unix)]
     remote_image_paste_key: Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
 }
 
@@ -2265,12 +2264,15 @@ fn setup_terminal_with_capabilities(
 
     Ok(TerminalGuard {
         reset_modify_other_keys: modify_other_keys_mode.is_some(),
+        restored: false,
     })
 }
 
 /// Guard that restores the terminal when dropped.
 struct TerminalGuard {
     reset_modify_other_keys: bool,
+    /// Set by [`TerminalGuard::restore`] so `Drop` does not restore a second time.
+    restored: bool,
 }
 
 fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io::Result<()> {
@@ -2306,7 +2308,13 @@ fn desired_mouse_capture(server_enabled: bool, client_compositor_enabled: bool) 
     server_enabled || client_compositor_enabled
 }
 
-fn restore_terminal_state(reset_modify_other_keys: bool) {
+/// Restores the host terminal.
+///
+/// Fallible on purpose (upstream v0.8.2): `ratatui::restore()` **panics** when the host terminal is
+/// already gone, and this runs from `TerminalGuard::drop`, so a hung-up PTY turned a clean exit
+/// into a panic-inside-drop, i.e. `SIGABRT`. `tests/client_mode.rs`'s
+/// `client_exits_cleanly_when_terminal_hangs_up` pins that. `try_restore` reports instead.
+fn restore_terminal_state(reset_modify_other_keys: bool) -> io::Result<()> {
     let _ = clear_received_kitty_graphics(&mut io::stdout());
 
     // Reset modifyOtherKeys if we enabled it.
@@ -2322,8 +2330,9 @@ fn restore_terminal_state(reset_modify_other_keys: bool) {
         DisableBracketedPaste,
         DisableMouseCapture
     );
-    ratatui::restore();
-    let _ = write_terminal_restore_postlude(&mut io::stdout());
+    let restore_result = ratatui::try_restore();
+    let postlude_result = write_terminal_restore_postlude(&mut io::stdout());
+    restore_result.and(postlude_result)
 }
 
 #[cfg(not(windows))]
@@ -2349,9 +2358,19 @@ fn pop_keyboard_enhancement_flags() -> io::Result<()> {
     Ok(())
 }
 
+impl TerminalGuard {
+    /// Restores the terminal now and reports failure, instead of swallowing it in `Drop`.
+    fn restore(mut self) -> io::Result<()> {
+        self.restored = true;
+        restore_terminal_state(self.reset_modify_other_keys)
+    }
+}
+
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        restore_terminal_state(self.reset_modify_other_keys);
+        if !self.restored {
+            let _ = restore_terminal_state(self.reset_modify_other_keys);
+        }
     }
 }
 
@@ -2409,8 +2428,9 @@ fn set_handshake_recv_timeout(
 
 /// Performs the client→server handshake.
 ///
-/// Sends Hello with the terminal size and protocol version, reads the Welcome
-/// response. Returns Ok(()) on success, or an error if the server rejects us.
+/// Sends the wire-ABI prelude and `Hello` with the terminal size and protocol version, then reads
+/// the server's prelude and `Welcome`. Returns Ok(()) on success, or an error if the server
+/// rejects us — or if its wire ABI is not one this build can decode.
 fn do_handshake(
     stream: &mut LocalStream,
     cols: u16,
@@ -2426,7 +2446,11 @@ fn do_handshake(
         .set_nonblocking(false)
         .map_err(ClientError::ConnectionFailed)?;
 
-    // Send Hello.
+    // Send the wire-ABI prelude, then Hello. The prelude goes first in both directions so neither
+    // side ever bincode-decodes bytes from a peer whose layout it has not identified — see
+    // `crate::protocol::abi`.
+    protocol::abi::write_prelude(stream).map_err(ClientError::ConnectionFailed)?;
+
     let launch_mode = if direct_attach_requested {
         ClientLaunchMode::TerminalAttach
     } else {
@@ -2445,18 +2469,19 @@ fn do_handshake(
     protocol::write_message(stream, &hello)
         .map_err(|e| ClientError::ConnectionFailed(io::Error::other(e.to_string())))?;
 
-    // Read Welcome.
+    // Read the server's prelude, then Welcome.
     set_handshake_recv_timeout(
         stream,
         Some(Duration::from_secs(5)),
         "client handshake read timeout unavailable",
     )?;
-    let welcome: ServerMessage = protocol::read_message(stream, MAX_FRAME_SIZE)?;
+    let welcome = read_welcome_behind_abi_gate(stream);
     set_handshake_recv_timeout(
         stream,
         None,
         "failed to clear client handshake read timeout",
     )?;
+    let welcome = welcome?;
 
     match welcome {
         ServerMessage::Welcome {
@@ -2473,6 +2498,51 @@ fn do_handshake(
         _ => Err(ClientError::Protocol(protocol::FramingError::Io(
             io::Error::new(io::ErrorKind::InvalidData, "expected Welcome message"),
         ))),
+    }
+}
+
+/// Reads the server's wire-ABI prelude and then its `Welcome`, refusing to decode anything from a
+/// server whose layout this build cannot identify.
+///
+/// The legacy branch exists purely so the *diagnosis* survives. A pre-prelude server answers a
+/// prelude with either nothing (it reads the magic as a 1.38 GB length prefix, over both frame
+/// caps, and closes) or — in the one case it can still speak — a bare `Welcome`. Chaining the four
+/// sniffed bytes back reconstructs that frame so its `error` string reaches the user instead of an
+/// unexplained EOF. It is **not** a fallback: a legacy `Welcome` without an error is still refused,
+/// because "the version matched" is exactly the evidence that turned out to be worthless
+/// (herdr-mx and upstream both shipped protocol 20 with different tags).
+fn read_welcome_behind_abi_gate(stream: &mut LocalStream) -> Result<ServerMessage, ClientError> {
+    match protocol::abi::read_peer_handshake_start(stream)? {
+        protocol::abi::PeerHandshakeStart::Prelude(peer) => {
+            if let protocol::abi::AbiCheck::Rejected(reason) = protocol::abi::check_peer_abi(&peer)
+            {
+                return Err(ClientError::HandshakeRejected {
+                    version: peer.protocol_version,
+                    error: reason,
+                });
+            }
+            Ok(protocol::read_message(stream, MAX_FRAME_SIZE)?)
+        }
+        protocol::abi::PeerHandshakeStart::Legacy(head) => {
+            let legacy: Result<ServerMessage, _> = {
+                let mut restored = std::io::Read::chain(&head[..], &mut *stream);
+                protocol::read_message(&mut restored, MAX_FRAME_SIZE)
+            };
+            let detail = match legacy {
+                Ok(ServerMessage::Welcome {
+                    error: Some(error), ..
+                }) => error,
+                _ => "the server closed the connection without answering".to_owned(),
+            };
+            Err(ClientError::HandshakeRejected {
+                version: 0,
+                error: format!(
+                    "server did not send the herdr-mx wire-ABI prelude, so its wire layout cannot \
+                     be identified; it is an older or foreign herdr build ({detail}). Restart the \
+                     herdr server from this build."
+                ),
+            })
+        }
     }
 }
 
@@ -2704,7 +2774,9 @@ fn run_client_with_mode(
     info!(path = %socket_path.display(), "{log_message}");
 
     // Get the terminal geometry before handshake (before raw mode).
-    let (cols, rows, cell_width_px, cell_height_px) =
+    // upstream v0.8.2 added a 5th element (`exact_cell_size`); it only feeds the direct-graphics
+    // launch mode, which this fork defers (DIVERGENCE.md).
+    let (cols, rows, cell_width_px, cell_height_px, _exact_cell_size) =
         initial_terminal_geometry(kitty_graphics_enabled);
 
     let mut supervisor_model = {
@@ -2808,7 +2880,8 @@ fn run_client_with_mode(
     let panic_resets_modify_other_keys = terminal_guard.reset_modify_other_keys;
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal_state(panic_resets_modify_other_keys);
+        // In the panic hook there is nothing to report an error to.
+        let _ = restore_terminal_state(panic_resets_modify_other_keys);
         original_hook(info);
     }));
 
@@ -2860,19 +2933,22 @@ fn run_client_with_mode(
     });
 
     // Restore the terminal before printing any final status message.
-    drop(terminal_guard);
+    let terminal_restore_failed = terminal_guard.restore().is_err();
 
     if let Err(err) = result {
-        eprintln!("herdr: {err}");
+        let _ = writeln!(io::stderr(), "herdr: {err}");
         rt.shutdown_timeout(Duration::from_millis(100));
         crate::logging::shutdown("client");
 
-        if matches!(
-            err,
+        let detached = matches!(
+            &err,
             ClientError::ServerShutdown {
                 reason: Some(reason)
             } if reason == "detached"
-        ) {
+        );
+        let connection_lost_during_terminal_hangup =
+            terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
+        if detached || connection_lost_during_terminal_hangup {
             return Ok(());
         }
 
@@ -5776,6 +5852,23 @@ async fn run_client_loop(
                 if state.attach_escape.is_some() {
                     continue;
                 }
+                if should_bridge_clipboard_image_events(
+                    &events,
+                    is_remote_client,
+                    state.remote_image_paste_key,
+                ) {
+                    if let Some(image) = crate::platform::read_clipboard_image() {
+                        write_remote_image_to_server(&mut write_stream, image, "clipboard paste")?;
+                        continue;
+                    }
+                    info!(
+                        "clipboard image paste trigger received, but local clipboard has no image"
+                    );
+                }
+                if let Some(image) = read_image_file_from_client_events(&events, is_remote_client) {
+                    write_remote_image_to_server(&mut write_stream, image, "file drop")?;
+                    continue;
+                }
                 let raw_events = events
                     .iter()
                     .map(crate::protocol::ClientInputEvent::to_raw_input_event)
@@ -5983,7 +6076,12 @@ async fn run_client_loop(
                         // for the next supervisor poll, so settings changes apply (near-)instantly.
                         spawn_main_supervisor_refresh(&mut state.pending_main_refresh, &event_tx);
                     }
-                    ServerMessage::MouseCapture { enabled } => {
+                    // `sgr_pixels` is ignored: it only matters for upstream v0.8.2's direct
+                    // pixel-mouse reports, whose client path this fork defers (DIVERGENCE.md).
+                    ServerMessage::MouseCapture {
+                        enabled,
+                        sgr_pixels: _,
+                    } => {
                         if server_id != active_server_id(&state) {
                             continue;
                         }
@@ -5992,6 +6090,18 @@ async fn run_client_loop(
                             set_mouse_capture(desired).map_err(ClientError::ConnectionFailed)?;
                             state.mouse_capture_active = desired;
                         }
+                    }
+                    ServerMessage::TerminalBell { .. } => {
+                        // upstream v0.8.2 rings the foreground client's outer terminal for
+                        // pane-originated BELs. Not ported to the multi-remote client loop yet
+                        // (deferred - see DIVERGENCE.md); accepted and ignored, which is safe
+                        // because ABI-epoch parity gates mixed-layout peers.
+                    }
+                    ServerMessage::GraphicsFile { .. }
+                    | ServerMessage::GraphicsTransmissionRetired { .. } => {
+                        // upstream v0.8.2 direct (audited local) Kitty graphics. This fork never
+                        // negotiates `ClientLaunchMode::AppDirectGraphics`, so a conforming server
+                        // never sends these; ignored rather than fatal.
                     }
                     ServerMessage::KittyKeyboardReportAll { .. } => {
                         // Upstream v0.8.0 kitty report-all keyboard routing; not yet ported to the
@@ -7178,8 +7288,10 @@ fn ioctl_cell_size() -> Option<(u32, u32)> {
 }
 
 /// Cell size used when the ioctl reports no pixels.
-fn cell_size_fallback(reported: u64) -> (u32, u32) {
-    unpack_cell_size(reported).unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
+fn cell_size_fallback(reported: u64, last: Option<(u32, u32)>) -> (u32, u32) {
+    unpack_cell_size(reported)
+        .or(last.filter(|(width, height)| *width > 0 && *height > 0))
+        .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
 }
 
 #[cfg(any(unix, test))]
@@ -7196,20 +7308,35 @@ fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
 fn current_terminal_geometry(
     kitty_graphics_enabled: bool,
     reported_cell_size: &AtomicU64,
+    last_cell_size: Option<(u32, u32)>,
 ) -> (u16, u16, u32, u32) {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     if !kitty_graphics_enabled {
         return (cols, rows, 0, 0);
     }
-    let (cell_width_px, cell_height_px) = ioctl_cell_size()
-        .unwrap_or_else(|| cell_size_fallback(reported_cell_size.load(Ordering::Acquire)));
+    let (cell_width_px, cell_height_px) = ioctl_cell_size().unwrap_or_else(|| {
+        cell_size_fallback(reported_cell_size.load(Ordering::Acquire), last_cell_size)
+    });
     (cols, rows, cell_width_px, cell_height_px)
 }
 
-/// Reads the terminal geometry before the handshake, before any host cell
-/// size report can exist.
-fn initial_terminal_geometry(kitty_graphics_enabled: bool) -> (u16, u16, u32, u32) {
-    current_terminal_geometry(kitty_graphics_enabled, &AtomicU64::new(0))
+/// Reads terminal geometry before the handshake. Direct graphics is eligible
+/// only when the host supplied exact pixel dimensions through the ioctl.
+fn initial_terminal_geometry(kitty_graphics_enabled: bool) -> (u16, u16, u32, u32, bool) {
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    if !kitty_graphics_enabled {
+        return (cols, rows, 0, 0, false);
+    }
+    match ioctl_cell_size() {
+        Some((width, height)) => (cols, rows, width, height, true),
+        None => (
+            cols,
+            rows,
+            DEFAULT_CELL_WIDTH_PX,
+            DEFAULT_CELL_HEIGHT_PX,
+            false,
+        ),
+    }
 }
 
 /// Reports polled changes and signalled resizes that return to the same size.
@@ -7246,7 +7373,11 @@ fn resize_poll_loop(
     while !should_quit.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(100));
         let signalled = crate::platform::take_terminal_resize_signal();
-        let new_size = current_terminal_geometry(kitty_graphics_enabled, reported_cell_size);
+        let new_size = current_terminal_geometry(
+            kitty_graphics_enabled,
+            reported_cell_size,
+            Some((last_size.2, last_size.3)),
+        );
         if resize_report_required(signalled, new_size, last_size) {
             last_size = new_size;
             if resize_tx
@@ -7265,6 +7396,23 @@ fn resize_poll_loop(
 // Logging
 // ---------------------------------------------------------------------------
 
+#[cfg(any(not(windows), test))]
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
+fn query_host_terminal_appearance() {
+    let _ = write_host_terminal_appearance_query(io::stdout());
+}
+
+#[cfg(any(not(windows), test))]
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
+fn write_host_terminal_appearance_query(mut writer: impl io::Write) -> io::Result<()> {
+    writer.write_all(crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())?;
+    writer.flush()
+}
+
 /// Initialize logging for the client process.
 fn query_host_terminal_theme() {
     let _ = write_host_terminal_theme_query(io::stdout());
@@ -7275,7 +7423,9 @@ fn should_query_host_terminal_theme() -> bool {
 }
 
 fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io::Result<()> {
-    let query = crate::terminal_theme::host_terminal_theme_query_sequence();
+    let query = crate::terminal_theme::host_terminal_theme_query_sequence(
+        crate::platform::should_query_host_terminal_palette(),
+    );
     writer.write_all(query.as_bytes())?;
     writer.flush()
 }
@@ -7336,6 +7486,148 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
+
+    // ---- Wire-ABI gate, client side (M0-a) ----------------------------------------------
+    //
+    // The server-side half lives in `src/server/client_transport.rs`. This is the other
+    // direction: a client must not decode a `Welcome` from a server whose layout it has not
+    // identified, because `ServerMessage::Terminal` is tag 13 here and tag 2 upstream — a
+    // mis-identified server produces a *screen*, not an error.
+
+    fn abi_gate_stream_pair() -> (LocalStream, LocalStream, std::path::PathBuf) {
+        use interprocess::local_socket::traits::Listener as _;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::path::PathBuf::from("/tmp")
+            .join(format!("h-abi-{}-{nanos}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = crate::ipc::bind_local_listener(&path).unwrap();
+        let client = crate::ipc::connect_local_stream(&path).unwrap();
+        let server = listener.accept().unwrap();
+        (client, server, path)
+    }
+
+    /// A server that sends no prelude cannot be identified, so its `Welcome` is never decoded as
+    /// acceptance — even though the version field in it would have matched.
+    ///
+    /// This is B1 from the client's side: an upstream server at the same `PROTOCOL_VERSION`
+    /// answers a legacy `Welcome` that passes a version check and then streams tag-2 `Terminal`
+    /// frames this fork reads as `Graphics`. Refusing here is what keeps that from rendering as a
+    /// black screen with no error.
+    #[test]
+    fn a_server_without_a_prelude_is_refused_even_when_its_welcome_would_have_parsed() {
+        let (mut client, mut server, path) = abi_gate_stream_pair();
+
+        // A legacy accepting Welcome: no prelude, no error, matching version.
+        protocol::write_message(
+            &mut server,
+            &ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: RenderEncoding::TerminalAnsi,
+                error: None,
+            },
+        )
+        .expect("write legacy welcome");
+
+        let result = read_welcome_behind_abi_gate(&mut client);
+        match result {
+            Err(ClientError::HandshakeRejected { error, .. }) => assert!(
+                error.contains("wire-ABI prelude"),
+                "the refusal must name the missing identity; got: {error}"
+            ),
+            other => panic!("an unidentified server must be refused, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A legacy server's *rejection* still has to reach the user. The four sniffed bytes are
+    /// chained back so the `Welcome.error` an old server sends is read and quoted, instead of
+    /// surfacing as an unexplained EOF.
+    #[test]
+    fn a_legacy_servers_rejection_reason_survives_the_gate() {
+        let (mut client, mut server, path) = abi_gate_stream_pair();
+
+        protocol::write_message(
+            &mut server,
+            &ServerMessage::Welcome {
+                version: 19,
+                encoding: RenderEncoding::SemanticFrame,
+                error: Some("client version 21 is newer than server version 19".to_owned()),
+            },
+        )
+        .expect("write legacy rejection");
+
+        match read_welcome_behind_abi_gate(&mut client) {
+            Err(ClientError::HandshakeRejected { error, .. }) => assert!(
+                error.contains("newer than server version 19"),
+                "the old server's own reason must survive; got: {error}"
+            ),
+            other => panic!("expected a rejection carrying the server's reason, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A server whose prelude announces a different layout is refused before its `Welcome` is
+    /// decoded, and the refusal names the axis.
+    #[test]
+    fn a_server_announcing_a_different_layout_is_refused_before_the_welcome() {
+        let (mut client, mut server, path) = abi_gate_stream_pair();
+
+        let mut prelude = protocol::abi::WirePrelude::local().encode();
+        prelude[20] ^= 0xff; // schema fingerprint
+        std::io::Write::write_all(&mut server, &prelude).expect("write skewed prelude");
+        protocol::write_message(
+            &mut server,
+            &ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: RenderEncoding::TerminalAnsi,
+                error: None,
+            },
+        )
+        .expect("write welcome");
+
+        match read_welcome_behind_abi_gate(&mut client) {
+            Err(ClientError::HandshakeRejected { error, .. }) => assert!(
+                error.contains("schema fingerprint"),
+                "the refusal must name the layout axis; got: {error}"
+            ),
+            other => panic!("expected a layout refusal, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The control: a matching peer still handshakes.
+    #[test]
+    fn a_matching_server_is_accepted_through_the_gate() {
+        let (mut client, mut server, path) = abi_gate_stream_pair();
+
+        protocol::abi::write_prelude(&mut server).expect("write prelude");
+        protocol::write_message(
+            &mut server,
+            &ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: RenderEncoding::TerminalAnsi,
+                error: None,
+            },
+        )
+        .expect("write welcome");
+
+        match read_welcome_behind_abi_gate(&mut client).expect("matching peer is accepted") {
+            ServerMessage::Welcome {
+                version,
+                encoding,
+                error,
+            } => {
+                assert_eq!(version, PROTOCOL_VERSION);
+                assert_eq!(encoding, RenderEncoding::TerminalAnsi);
+                assert_eq!(error, None);
+            }
+            other => panic!("expected Welcome, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn run_remote_op_with_progress_returns_fast_success() {
@@ -7743,13 +8035,27 @@ mod tests {
     }
 
     #[test]
+    fn write_host_terminal_appearance_query_emits_mode_2031_query() {
+        let mut output = Vec::new();
+        write_host_terminal_appearance_query(&mut output).unwrap();
+        assert_eq!(output, b"\x1b[?996n");
+    }
+
+    #[test]
     fn write_host_terminal_theme_query_emits_osc_queries() {
         let mut output = Vec::new();
         write_host_terminal_theme_query(&mut output).unwrap();
         assert_eq!(
             output,
-            crate::terminal_theme::host_terminal_theme_query_sequence().as_bytes()
+            crate::terminal_theme::host_terminal_theme_query_sequence(
+                crate::platform::should_query_host_terminal_palette(),
+            )
+            .as_bytes()
         );
+        assert!(!output
+            .windows(crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.len())
+            .any(|window| window
+                == crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes()));
     }
 
     #[test]
@@ -11563,6 +11869,10 @@ mod tests {
         let server_thread = std::thread::spawn(move || {
             let (mut stream, _addr) = listener.accept().unwrap();
             std::thread::sleep(Duration::from_millis(750));
+            // A stand-in server has to speak the wire-ABI prelude too: the client refuses to
+            // decode a `Welcome` from a peer whose layout it has not identified
+            // (`read_welcome_behind_abi_gate`).
+            protocol::abi::write_prelude(&mut stream).unwrap();
             protocol::write_message(
                 &mut stream,
                 &ServerMessage::Welcome {

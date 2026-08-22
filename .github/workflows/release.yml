@@ -61,6 +61,10 @@ jobs:
             name: herdr-macos-aarch64
             libghostty_vt_optimize: ReleaseFast
             libghostty_vt_simd: 'true'
+          # herdr-mx: no windows target. The multi-remote client does not compile on
+          # windows yet (2lab-ai/herdr-mx#63) and the release job publishes `fat/` bundles,
+          # not per-target archives, so upstream v0.8.2's windows matrix row is rejected.
+          # The windows packaging step below is kept dead so the next merge stays quiet.
 
     runs-on: ${{ matrix.os }}
     env:
@@ -73,6 +77,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify tag matches Cargo.toml version
+        shell: bash
         run: |
           CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           TAG_VERSION="${GITHUB_REF_NAME#v}"
@@ -141,6 +146,7 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Remove Zig caches
+        shell: bash
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
       # herdr-mx: tags look like v0.6.10-mx.1; stamp the build channel so
@@ -154,8 +160,28 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Rename binary
+      - name: Package artifact
+        if: runner.os != 'Windows'
+        shell: bash
         run: cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
+
+      - name: Package artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
+          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-x86_64"
+          .\scripts\package_windows_conpty.ps1 `
+            -HerdrExe target\${{ matrix.target }}\release\herdr.exe `
+            -PackagePath $package `
+            -StageDir $stage `
+            -OutputPath ${{ matrix.name }}
+          $version = (& (Join-Path $stage "herdr.exe") --version | Out-String).Trim()
+          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($version -notmatch [regex]::Escape($tagVersion) -or $version -match "preview") {
+            throw "Packaged Windows binary has unexpected version identity: $version"
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -484,7 +510,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A README.md README.zh-CN.md docs/versions website/latest.json website/src/content/docs website/src/data/config-reference.json docs/next/product-announcement.json
+          git add -A README.md README.zh-CN.md docs/versions website/latest.json docs/next/product-announcement.json
           git diff --cached --quiet || git commit -m "docs: update website manifest for v$VERSION"
           for attempt in 1 2 3; do
             git pull --rebase origin master

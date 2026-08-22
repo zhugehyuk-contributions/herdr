@@ -48,7 +48,7 @@ assertIncludes(preview, 'name="robots" content="noindex, nofollow"');
 assertIncludes(archived, `data-pagefind-filter="version[content]" content="${versions.current}"`);
 assertIncludes(archived, 'name="robots" content="noindex, nofollow"');
 if (archived.includes(`This page documents Herdr ${versions.current}`)) {
-  throw new Error('the current immutable snapshot must not be labeled as outdated');
+  throw new Error('the current documentation version must not be labeled as outdated');
 }
 const versionSelect = stable.match(/<select[^>]*aria-label="Documentation version"[^>]*>([\s\S]*?)<\/select>/)?.[1];
 if (!versionSelect) throw new Error('stable docs are missing the version selector');
@@ -68,7 +68,81 @@ if (previous) {
 const sitemap = await readFile(resolve(distDir, 'sitemap-0.xml'), 'utf8');
 assertIncludes(sitemap, 'https://herdr.dev/docs/');
 if (nonCanonicalDocsUrl.test(sitemap)) {
-  throw new Error('preview or immutable documentation URLs must not appear in the sitemap');
+  throw new Error('preview or versioned documentation URLs must not appear in the sitemap');
+}
+
+const llmsIndex = await readFile(resolve(distDir, 'llms.txt'), 'utf8');
+const llmsPreview = await readFile(resolve(distDir, 'llms-preview.txt'), 'utf8');
+const llmsSmall = await readFile(resolve(distDir, 'llms-small.txt'), 'utf8');
+const llmsFull = await readFile(resolve(distDir, 'llms-full.txt'), 'utf8');
+const headers = await readFile(resolve(distDir, '_headers'), 'utf8');
+const currentDocs = versions.versions.find((entry) => entry.version === versions.current);
+if (!currentDocs?.tag || !currentDocs.source) {
+  throw new Error(`current docs version ${versions.current} is missing its tag or source`);
+}
+const stableRawRoot = `https://raw.githubusercontent.com/herdrdev/herdr/${currentDocs.tag}`;
+const stableRawBase = `${stableRawRoot}/${currentDocs.source}`;
+const stableConfigReferenceUrl = `${stableRawRoot}/${currentDocs.source.replace(/\/content\/docs$/, '/data/config-reference.json')}`;
+const previewRawRoot = `https://raw.githubusercontent.com/herdrdev/herdr/${versions.preview.commit}`;
+const previewRawBase = `${previewRawRoot}/docs/next/website/src/content/docs`;
+const previewConfigReferenceUrl = `${previewRawRoot}/docs/next/website/src/data/config-reference.json`;
+assertIncludes(llmsIndex, `Current stable release: ${versions.current}.`);
+assertIncludes(llmsIndex, `${stableRawBase}/quick-start.mdx`);
+assertIncludes(llmsIndex, `- [Config reference](${stableConfigReferenceUrl})`);
+assertIncludes(llmsIndex, '## Using the config reference');
+assertIncludes(llmsIndex, "jq --arg key 'ui.sidebar_width'");
+if (llmsIndex.includes(`${stableRawBase}/config-reference.mdx`)) {
+  throw new Error('llms.txt must link to config reference data instead of the unrendered MDX component');
+}
+assertIncludes(llmsIndex, 'https://herdr.dev/llms-small.txt');
+assertIncludes(llmsIndex, 'https://herdr.dev/llms-full.txt');
+assertIncludes(llmsIndex, 'https://herdr.dev/agent-guide.md');
+assertIncludes(llmsIndex, 'https://herdr.dev/llms-preview.txt');
+assertIncludes(llmsPreview, `Active preview build: ${versions.preview.build_id}`);
+assertIncludes(llmsPreview, `${previewRawBase}/quick-start.mdx`);
+assertIncludes(llmsPreview, `- [Config reference](${previewConfigReferenceUrl})`);
+if (llmsPreview.includes(`${previewRawBase}/config-reference.mdx`)) {
+  throw new Error('llms-preview.txt must link to config reference data instead of the unrendered MDX component');
+}
+assertIncludes(llmsPreview, 'https://herdr.dev/llms.txt');
+const stablePageLinks = llmsIndex
+  .split('\n')
+  .filter(
+    (line) =>
+      line.includes(`](${stableRawBase}/`) || line.includes(`](${stableConfigReferenceUrl})`),
+  );
+if (stablePageLinks.length !== versions.scopes.stable.locales.root.length) {
+  throw new Error(
+    `llms.txt lists ${stablePageLinks.length} stable pages, expected ${versions.scopes.stable.locales.root.length}`,
+  );
+}
+const previewPageLinks = llmsPreview
+  .split('\n')
+  .filter(
+    (line) =>
+      line.includes(`](${previewRawBase}/`) || line.includes(`](${previewConfigReferenceUrl})`),
+  );
+if (previewPageLinks.length !== versions.scopes.preview.locales.root.length) {
+  throw new Error(
+    `llms-preview.txt lists ${previewPageLinks.length} preview pages, expected ${versions.scopes.preview.locales.root.length}`,
+  );
+}
+for (const path of ['/llms.txt', '/llms-preview.txt', '/llms-small.txt', '/llms-full.txt']) {
+  assertIncludes(headers, `${path}\n  Content-Type: text/markdown; charset=utf-8`);
+}
+for (const [name, content] of [
+  ['llms-small.txt', llmsSmall],
+  ['llms-full.txt', llmsFull],
+]) {
+  assertIncludes(content, '# Herdr documentation');
+  assertIncludes(content, '# Troubleshooting');
+  assertIncludes(content, '# Socket API');
+  if (content.match(/^# Herdr documentation$/gm)?.length !== 1) {
+    throw new Error(`${name} must contain exactly one stable documentation set`);
+  }
+  if (/\]\(\/docs\/(?:preview|\d+\.\d+\.\d+)(?:\/|\))/.test(content)) {
+    throw new Error(`${name} must not link to preview or versioned documentation`);
+  }
 }
 
 const build = await inspectFiles(distDir);

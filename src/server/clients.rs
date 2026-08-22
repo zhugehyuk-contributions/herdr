@@ -25,7 +25,6 @@ pub(crate) type RenderTarget = (
 pub(crate) enum DeferredRender {
     #[default]
     None,
-    Graphics,
     Full,
 }
 
@@ -59,18 +58,34 @@ pub(crate) struct ClientConnection {
     pub(crate) render_state: ClientRenderState,
     /// Client-local host Kitty graphics cache.
     pub(crate) graphics_cache: crate::kitty_graphics::HostGraphicsCache,
+    /// Passive eligibility for audited local Kitty regular-file graphics.
+    pub(crate) direct_graphics: bool,
+    /// Whether this frontend preserves exact SGR pixel reports.
+    pub(crate) pixel_mouse: bool,
     /// Whether the next graphics frame must clear and rebuild host-side Kitty state.
     pub(crate) graphics_surface_reset_pending: bool,
     /// Whether an ordinary render was skipped because the render channel was full.
     pub(crate) render_pending: bool,
-    /// Whether a pane-graphics-only render was skipped because the channel was full.
-    pane_graphics_render_pending: bool,
     /// Last host mouse capture mode sent to this client.
     pub(crate) host_mouse_capture_active: Option<bool>,
+    /// Last SGR pixel provenance mode sent to this client.
+    pub(crate) host_sgr_pixels_active: Option<bool>,
     /// Last Kitty report-all mode sent to this client's host terminal.
     pub(crate) host_keyboard_report_all_active: Option<bool>,
     /// Temporary files staged from this client's local clipboard image pastes.
     pub(crate) staged_clipboard_files: Vec<PathBuf>,
+    /// The target's own PTY grid, `(rows, cols)` per `TerminalRuntime::current_size`, as it stood
+    /// the instant **this** client took writable control of it — and `None` whenever this client
+    /// holds no control.
+    ///
+    /// Taking control resizes the shared PTY to the controller's grid and locks it
+    /// (`attach_terminal_client`). Releasing control without disconnecting (M6's contract: promote
+    /// for one input, drop straight back to observe) therefore has to put the grid back, and the
+    /// layout pass cannot be relied on to do it: `resize_shared_runtime_to_effective_size` returns
+    /// immediately when there is no foreground app client, and the no-client virtual render only
+    /// resizes panes while `view.pane_infos` is still empty (`render_and_stream`). A headless box
+    /// whose only client is a phone would otherwise keep the phone's grid forever.
+    pub(crate) control_restore_grid: Option<(u16, u16)>,
     /// Channels for sending framed ServerMessage data to the client writer thread.
     pub(crate) writer: Option<ClientWriter>,
 }
@@ -129,19 +144,21 @@ impl ClientConnection {
             last_activity,
             render_state: ClientRenderState::new(render_encoding),
             graphics_cache: crate::kitty_graphics::HostGraphicsCache::default(),
+            direct_graphics: false,
+            pixel_mouse: false,
             graphics_surface_reset_pending: false,
             render_pending: false,
-            pane_graphics_render_pending: false,
             host_mouse_capture_active: None,
+            host_sgr_pixels_active: None,
             host_keyboard_report_all_active: None,
             staged_clipboard_files: Vec::new(),
+            control_restore_grid: None,
             writer,
         }
     }
 
     pub(crate) fn request_repaint(&mut self) {
         self.render_state.request_repaint();
-        self.pane_graphics_render_pending = false;
     }
 
     /// mx (#13/v14): full recovery redraw — reset the render baseline AND schedule a kitty
@@ -149,14 +166,11 @@ impl ClientConnection {
     pub(crate) fn request_full_redraw(&mut self) {
         self.render_state.reset_baseline();
         self.graphics_surface_reset_pending = true;
-        self.pane_graphics_render_pending = false;
     }
 
     pub(crate) fn deferred_render(&self) -> DeferredRender {
         if self.render_pending {
             DeferredRender::Full
-        } else if self.pane_graphics_render_pending {
-            DeferredRender::Graphics
         } else {
             DeferredRender::None
         }
@@ -164,18 +178,10 @@ impl ClientConnection {
 
     pub(crate) fn clear_deferred_render(&mut self) {
         self.render_pending = false;
-        self.pane_graphics_render_pending = false;
     }
 
     pub(crate) fn defer_full_render(&mut self) {
         self.render_pending = true;
-        self.pane_graphics_render_pending = false;
-    }
-
-    pub(crate) fn defer_pane_graphics_render(&mut self) {
-        if !self.render_pending {
-            self.pane_graphics_render_pending = true;
-        }
     }
 
     pub(crate) fn take_deferred_render(&mut self) -> DeferredRender {

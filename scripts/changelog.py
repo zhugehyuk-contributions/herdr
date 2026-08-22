@@ -19,13 +19,17 @@ DEFAULT_RELEASE_REPO = "herdrdev/herdr"
 DEFAULT_LATEST_JSON_PATH = Path("website/latest.json")
 DEFAULT_PRODUCT_ANNOUNCEMENT_PATH = Path("docs/next/product-announcement.json")
 PROTOCOL_SOURCE_PATH = Path("src/protocol/wire.rs")
-ASSET_TARGETS = (
+CORE_ASSET_TARGETS = (
     "linux-x86_64",
     "linux-aarch64",
     "macos-x86_64",
     "macos-aarch64",
 )
-EXPECTED_ASSET_NAMES = {target: f"herdr-{target}" for target in ASSET_TARGETS}
+ASSET_TARGETS = (*CORE_ASSET_TARGETS, "windows-x86_64")
+EXPECTED_ASSET_NAMES = {
+    **{target: f"herdr-{target}" for target in CORE_ASSET_TARGETS},
+    "windows-x86_64": "herdr-windows-x86_64.zip",
+}
 
 
 @dataclass(frozen=True)
@@ -169,16 +173,22 @@ def infer_protocol_from_notes(notes: str) -> int | None:
     return int(match.group(1))
 
 
-def normalize_assets(value: Any, label: str) -> dict[str, str]:
+def normalize_assets(
+    value: Any,
+    label: str,
+    required_targets: tuple[str, ...] = ASSET_TARGETS,
+) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ChangelogError(f"{label} must be an object")
 
-    missing_targets = [target for target in ASSET_TARGETS if target not in value]
+    missing_targets = [target for target in required_targets if target not in value]
     if missing_targets:
         raise ChangelogError(f"{label} is missing asset URL for {', '.join(missing_targets)}")
 
     normalized_assets: dict[str, str] = {}
     for target in ASSET_TARGETS:
+        if target not in value:
+            continue
         url = value.get(target)
         if not isinstance(url, str) or not url.strip():
             raise ChangelogError(f"{label} is missing asset URL for {target}")
@@ -186,11 +196,36 @@ def normalize_assets(value: Any, label: str) -> dict[str, str]:
     return normalized_assets
 
 
+def normalize_sha256(
+    value: Any,
+    label: str,
+    required_targets: tuple[str, ...] = ASSET_TARGETS,
+) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ChangelogError(f"{label} must be an object")
+
+    missing_targets = [target for target in required_targets if target not in value]
+    if missing_targets:
+        raise ChangelogError(f"{label} has invalid SHA-256 for {missing_targets[0]}")
+
+    checksums: dict[str, str] = {}
+    for target in ASSET_TARGETS:
+        if target not in value:
+            continue
+        checksum = value.get(target)
+        if not isinstance(checksum, str) or re.fullmatch(
+            r"[0-9a-fA-F]{64}", checksum.strip()
+        ) is None:
+            raise ChangelogError(f"{label} has invalid SHA-256 for {target}")
+        checksums[target] = checksum.strip().lower()
+    return checksums
+
+
 def normalize_release_metadata(value: Any, label: str, version: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ChangelogError(f"{label} must be an object")
 
-    allowed_keys = {"notes", "announcement", "assets", "protocol"}
+    allowed_keys = {"notes", "announcement", "assets", "sha256", "protocol"}
     extra_keys = sorted(set(value) - allowed_keys)
     if extra_keys:
         raise ChangelogError(f"{label} has unsupported field(s): {', '.join(extra_keys)}")
@@ -210,9 +245,19 @@ def normalize_release_metadata(value: Any, label: str, version: str) -> dict[str
         if inferred_protocol is not None:
             metadata["protocol"] = inferred_protocol
     if "assets" in value:
-        metadata["assets"] = normalize_assets(value.get("assets"), f"{label}.assets")
+        metadata["assets"] = normalize_assets(
+            value.get("assets"),
+            f"{label}.assets",
+            required_targets=CORE_ASSET_TARGETS,
+        )
     else:
         metadata["assets"] = default_release_assets(version)
+    if "sha256" in value:
+        metadata["sha256"] = normalize_sha256(
+            value.get("sha256"),
+            f"{label}.sha256",
+            required_targets=CORE_ASSET_TARGETS,
+        )
     announcement = normalize_announcement(value.get("announcement"), label)
     if announcement is not None:
         metadata["announcement"] = announcement
@@ -243,6 +288,7 @@ def build_latest_json(
     version: str,
     notes: str,
     assets: dict[str, str],
+    sha256: dict[str, str],
     protocol: int | None = None,
     announcement: dict[str, str] | None = None,
     releases: dict[str, Any] | None = None,
@@ -256,6 +302,7 @@ def build_latest_json(
         protocol = read_protocol_version()
 
     ordered_assets = normalize_assets(assets, "assets")
+    ordered_sha256 = normalize_sha256(sha256, "sha256")
     normalized_announcement = normalize_announcement(announcement, "root")
     archived_releases = normalize_releases(releases)
     current_metadata: dict[str, Any] = {
@@ -263,6 +310,7 @@ def build_latest_json(
         "protocol": protocol,
         "assets": ordered_assets,
     }
+    current_metadata["sha256"] = ordered_sha256
     if normalized_announcement is not None:
         current_metadata["announcement"] = normalized_announcement
     archived_releases[normalized_version] = current_metadata
@@ -277,6 +325,7 @@ def build_latest_json(
         "notes": normalized_notes,
         "assets": ordered_assets,
     }
+    manifest["sha256"] = ordered_sha256
     if normalized_announcement is not None:
         manifest["announcement"] = normalized_announcement
     manifest["releases"] = archived_releases
@@ -285,11 +334,12 @@ def build_latest_json(
 
 
 def default_release_assets(version: str, repo: str = DEFAULT_RELEASE_REPO) -> dict[str, str]:
+    """Return legacy release URLs for versions published before Windows stable assets."""
     normalized_version = normalize_version(version)
     tag = f"v{normalized_version}"
     return {
         target: f"https://github.com/{repo}/releases/download/{tag}/{EXPECTED_ASSET_NAMES[target]}"
-        for target in ASSET_TARGETS
+        for target in CORE_ASSET_TARGETS
     }
 
 
@@ -322,7 +372,14 @@ def manifest_from_release_payload(
             if isinstance(name, str) and name not in release_assets:
                 release_assets[name] = asset
 
+    missing_assets = [name for name in EXPECTED_ASSET_NAMES.values() if name not in release_assets]
+    if missing_assets:
+        raise ChangelogError(
+            f"GitHub release v{normalized_version} is missing asset {missing_assets[0]}"
+        )
+
     manifest_assets: dict[str, str] = {}
+    manifest_sha256: dict[str, str] = {}
     for target, asset_name in EXPECTED_ASSET_NAMES.items():
         asset = release_assets.get(asset_name)
         if not isinstance(asset, dict):
@@ -330,13 +387,19 @@ def manifest_from_release_payload(
         url = str(asset.get("url") or "").strip()
         if not url:
             raise ChangelogError(f"GitHub release asset {asset_name} is missing a download URL")
+        digest = str(asset.get("digest") or "").strip()
+        digest_match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", digest)
+        if digest_match is None:
+            raise ChangelogError(f"GitHub release asset {asset_name} is missing a SHA-256 digest")
         manifest_assets[target] = url
+        manifest_sha256[target] = digest_match.group(1).lower()
 
     return {
         "version": normalized_version,
         "protocol": protocol if protocol is not None else read_protocol_version(),
         "notes": notes,
         "assets": manifest_assets,
+        "sha256": manifest_sha256,
     }
 
 
@@ -358,12 +421,14 @@ def canonicalize_manifest(manifest: dict[str, Any], label: str) -> dict[str, Any
         raise ChangelogError(f"{label} is missing an assets object")
 
     normalized_assets = normalize_assets(assets, f"{label} assets")
+    normalized_sha256 = normalize_sha256(manifest.get("sha256"), f"{label} sha256")
 
     return {
         "version": normalize_version(version),
         "protocol": protocol,
         "notes": notes.strip(),
         "assets": normalized_assets,
+        "sha256": normalized_sha256,
     }
 
 
@@ -390,6 +455,10 @@ def ensure_current_release_assets_are_mirrored(manifest: dict[str, Any], label: 
     if metadata.get("assets") != canonical["assets"]:
         raise ChangelogError(
             f"{label} releases.{canonical['version']}.assets must match top-level assets"
+        )
+    if metadata.get("sha256") != canonical["sha256"]:
+        raise ChangelogError(
+            f"{label} releases.{canonical['version']}.sha256 must match top-level sha256"
         )
 
 
@@ -428,9 +497,20 @@ def archived_releases_from_current_manifest(manifest: dict[str, Any]) -> dict[st
             metadata["protocol"] = protocol
         assets = manifest.get("assets")
         if isinstance(assets, dict):
-            metadata["assets"] = normalize_assets(assets, "current root assets")
+            metadata["assets"] = normalize_assets(
+                assets,
+                "current root assets",
+                required_targets=CORE_ASSET_TARGETS,
+            )
         else:
             metadata["assets"] = default_release_assets(normalized_version)
+        sha256 = manifest.get("sha256")
+        if isinstance(sha256, dict):
+            metadata["sha256"] = normalize_sha256(
+                sha256,
+                "current root sha256",
+                required_targets=CORE_ASSET_TARGETS,
+            )
         announcement = normalize_announcement(manifest.get("announcement"), "current root")
         if announcement is not None:
             metadata["announcement"] = announcement
@@ -592,6 +672,7 @@ def cmd_sync_latest_json(args: argparse.Namespace) -> int:
         version,
         str(new_manifest["notes"]),
         dict(new_manifest["assets"]),
+        sha256=dict(new_manifest["sha256"]),
         protocol=int(new_manifest["protocol"]),
         announcement=announcement,
         releases=archived_releases_from_current_manifest(current_manifest),

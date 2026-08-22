@@ -95,12 +95,19 @@ impl WorkspaceGitStatusSnapshot {
         status_cache_key: PathBuf,
         demand: GitStatusRefreshDemand,
     ) -> WorkspaceGitStatus {
+        let auto_label = self
+            .space
+            .as_ref()
+            .map(|space| {
+                self::git::automatic_workspace_label(&resolved_identity_cwd, &space.repo_root)
+            })
+            .unwrap_or_else(|| fallback_label_from_cwd(&resolved_identity_cwd));
         WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd,
             status_cache_key,
             demand,
-            auto_label: self.auto_label,
+            auto_label,
             branch: self.branch,
             ahead_behind: self.ahead_behind,
             space: self.space,
@@ -280,7 +287,14 @@ impl Workspace {
             next_public_pane_number += 1;
 
             for (terminal_id, seen) in pane_terminals.into_iter().skip(1) {
-                let pane_id = layout.split_focused(Direction::Vertical);
+                // upstream v0.8.2 made `split_focused` test-only (production splits flow through
+                // `Tab` so a failed spawn can roll back). This path builds a layout from a
+                // snapshot, where no spawn can fail, so it uses the public primitive directly and
+                // keeps the same semantics: split the focused pane, then focus the new one.
+                let pane_id = layout
+                    .split_pane(layout.focused(), Direction::Vertical, 0.5)
+                    .expect("focused pane is in the layout");
+                layout.focus_pane(pane_id);
                 let mut pane = PaneState::new(terminal_id);
                 pane.seen = seen;
                 panes.insert(pane_id, pane);
@@ -1011,70 +1025,40 @@ impl Workspace {
         let tab_number = self.tabs[tab_idx].number;
         let launch_env = self.launch_env_for_new_pane(tab_number, pane_number, extra_env);
         let tab = &mut self.tabs[tab_idx];
-        let previous_focus = tab.layout.focused();
-        tab.layout.focus_pane(pane_id);
         let new_pane = match if let Some(argv) = argv {
-            match ratio {
-                Some(ratio) => tab.split_focused_argv_command_with_ratio(
-                    direction,
-                    ratio,
-                    rows,
-                    cols,
-                    cwd,
-                    argv,
-                    &launch_env,
-                    scrollback_limit_bytes,
-                    host_terminal_theme,
-                    host_terminal_appearance,
-                ),
-                None => tab.split_focused_argv_command(
-                    direction,
-                    rows,
-                    cols,
-                    cwd,
-                    argv,
-                    &launch_env,
-                    scrollback_limit_bytes,
-                    host_terminal_theme,
-                    host_terminal_appearance,
-                ),
-            }
+            tab.split_pane_argv(
+                pane_id,
+                focus_new_pane,
+                direction,
+                ratio,
+                rows,
+                cols,
+                cwd,
+                argv,
+                &launch_env,
+                scrollback_limit_bytes,
+                host_terminal_theme,
+                host_terminal_appearance,
+            )
         } else {
-            match ratio {
-                Some(ratio) => tab.split_focused_with_ratio(
-                    direction,
-                    ratio,
-                    rows,
-                    cols,
-                    cwd,
-                    scrollback_limit_bytes,
-                    host_terminal_theme,
-                    host_terminal_appearance,
-                    shell_config,
-                    &launch_env,
-                ),
-                None => tab.split_focused(
-                    direction,
-                    rows,
-                    cols,
-                    cwd,
-                    scrollback_limit_bytes,
-                    host_terminal_theme,
-                    host_terminal_appearance,
-                    shell_config,
-                    &launch_env,
-                ),
-            }
+            tab.split_pane_shell(
+                pane_id,
+                focus_new_pane,
+                direction,
+                ratio,
+                rows,
+                cols,
+                cwd,
+                scrollback_limit_bytes,
+                host_terminal_theme,
+                host_terminal_appearance,
+                shell_config,
+                &launch_env,
+            )
         } {
             Ok(new_pane) => new_pane,
-            Err(err) => {
-                tab.layout.focus_pane(previous_focus);
-                return Some(Err(err));
-            }
+            Err(err) => return Some(Err(err)),
         };
-        if !focus_new_pane {
-            tab.layout.focus_pane(previous_focus);
-        }
         self.register_new_pane_with_number(new_pane.pane_id, pane_number);
         Some(Ok((tab_idx, new_pane)))
     }
@@ -1154,12 +1138,13 @@ impl Workspace {
         moved: MovedPane,
         direction: Direction,
         ratio: f32,
+        focus: bool,
     ) -> Result<PaneId, MovedPane> {
         let pane_id = moved.pane_id;
         let Some(tab) = self.tabs.get_mut(tab_idx) else {
             return Err(moved);
         };
-        tab.insert_existing_pane(target_pane_id, moved, direction, ratio)?;
+        tab.insert_existing_pane(target_pane_id, moved, direction, ratio, focus)?;
         if !self.public_pane_numbers.contains_key(&pane_id) {
             self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
         }
@@ -1332,6 +1317,12 @@ impl Workspace {
 
     pub fn pane_state(&self, pane_id: PaneId) -> Option<&PaneState> {
         self.tabs.iter().find_map(|tab| tab.panes.get(&pane_id))
+    }
+
+    pub fn pane_state_mut(&mut self, pane_id: PaneId) -> Option<&mut PaneState> {
+        self.tabs
+            .iter_mut()
+            .find_map(|tab| tab.panes.get_mut(&pane_id))
     }
 
     pub fn terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
@@ -1785,7 +1776,14 @@ mod tests {
         let missing_target = PaneId::alloc();
 
         let recovered = target
-            .insert_moved_pane_into_tab(0, missing_target, taken.moved, Direction::Horizontal, 0.5)
+            .insert_moved_pane_into_tab(
+                0,
+                missing_target,
+                taken.moved,
+                Direction::Horizontal,
+                0.5,
+                true,
+            )
             .expect_err("invalid target should return the moved pane");
 
         assert_eq!(recovered.pane_id, source_pane);

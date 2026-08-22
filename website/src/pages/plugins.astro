@@ -1,7 +1,6 @@
 ---
 import SiteLayout from '../components/SiteLayout.astro';
 import fixture from '../data/plugins-fixture.json';
-
 const snapshotUrl = 'https://assets.herdr.dev/plugins/index.json';
 
 // Seed the page server-side from the public R2 snapshot so `bun run dev` and
@@ -51,41 +50,70 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       </p>
       </div>
       <aside class="ph-side">
-        <b>{pluginCount.toLocaleString('en-US')}</b>
-        <span>plugins across {repositoryCount.toLocaleString('en-US')} repositories</span>
+        <b id="plugins-hero-count">{pluginCount.toLocaleString('en-US')}</b>
+        <span id="plugins-hero-summary">
+          plugins across {repositoryCount.toLocaleString('en-US')} repositories
+        </span>
         <a href="/docs/plugins/">Publish yours →</a>
       </aside>
     </header>
 
-    <section class="section plugins-controls">
-      <div class="plugins-search-wrap">
-        <span class="plugins-search-icon" aria-hidden="true">/</span>
-        <input
-          id="plugins-search"
-          type="search"
-          class="plugins-search"
-          placeholder="search plugins, repositories, owners, languages…"
-          autocomplete="off"
-          spellcheck="false"
-          aria-label="Search plugins"
-        />
-      </div>
-      <label class="plugins-sort-wrap">
-        <span class="plugins-sort-label">sort</span>
-        <select id="plugins-sort" class="plugins-sort" aria-label="Sort plugins">
-          <option value="popular">Popular</option>
-          <option value="recent">Recently updated</option>
-          <option value="newest">Newest</option>
-          <option value="name">Name</option>
-        </select>
-      </label>
-    </section>
+    <div id="plugins-shelves" hidden>
+      <section class="section plugins-shelf" id="shelf-trending" hidden>
+        <div class="shelf-head">
+          <div>
+            <h2 class="shelf-title">Trending this week</h2>
+            <p class="shelf-sub">fastest-growing repositories, relative to their own size</p>
+          </div>
+          <button class="shelf-all" type="button" data-sort="trending">see all →</button>
+        </div>
+        <div id="trend-grid" class="trend-grid" role="list"></div>
+      </section>
 
-    <section class="section plugins-metabar">
-      <p id="plugins-meta" class="plugins-meta" aria-live="polite"></p>
-    </section>
+      <section class="section plugins-shelf" id="shelf-new" hidden>
+        <div class="shelf-head">
+          <div>
+            <h2 class="shelf-title">New to the herd</h2>
+            <p class="shelf-sub">fresh projects that joined recently</p>
+          </div>
+          <button class="shelf-all" type="button" data-sort="newest">see all →</button>
+        </div>
+        <div class="new-rows" role="list"></div>
+      </section>
+    </div>
 
     <section class="section plugins-results">
+      <div class="shelf-head plugins-browse-head" id="plugins-browse-head">
+        <div>
+          <h2 class="shelf-title">Browse everything</h2>
+          <p class="shelf-sub">the full index — search or pick a sort</p>
+        </div>
+      </div>
+      <div class="plugins-controls">
+        <div class="plugins-search-wrap">
+          <span class="plugins-search-icon" aria-hidden="true">/</span>
+          <input
+            id="plugins-search"
+            type="search"
+            class="plugins-search"
+            placeholder="search plugins, repositories, owners, languages…"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Search plugins"
+          />
+        </div>
+        <label class="plugins-sort-wrap">
+          <span class="plugins-sort-label">sort</span>
+          <select id="plugins-sort" class="plugins-sort" aria-label="Sort plugins">
+            <option value="popular">Popular</option>
+            <option value="trending">Trending</option>
+            <option value="recent">Recently updated</option>
+            <option value="newest">Newest</option>
+            <option value="name">Name</option>
+          </select>
+        </label>
+      </div>
+      <p id="plugins-meta" class="plugins-meta" aria-live="polite"></p>
       <div id="plugins-grid" class="plugins-grid" role="list"></div>
       <div id="plugins-status" class="plugins-status">Loading plugins…</div>
       <button id="plugins-more" class="button button-secondary plugins-more" hidden></button>
@@ -115,10 +143,32 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
     const sortSelect = document.getElementById("plugins-sort");
     const metaEl = document.getElementById("plugins-meta");
     const moreButton = document.getElementById("plugins-more");
+    const heroCountEl = document.getElementById("plugins-hero-count");
+    const heroSummaryEl = document.getElementById("plugins-hero-summary");
+    const shelvesWrap = document.getElementById("plugins-shelves");
+    const trendingShelf = document.getElementById("shelf-trending");
+    const trendGrid = document.getElementById("trend-grid");
+    const newShelf = document.getElementById("shelf-new");
 
     // 24 fills complete rows in both the 3-column and 2-column grid layouts.
     const PAGE_SIZE = 24;
     let visibleLimit = PAGE_SIZE;
+
+    // A shelf earns its place: percent growth only counts once a repository
+    // gained real stars this week, so the long tail (median: 1 star) can't
+    // flood trending with 1-to-3-star noise, while big repositories must grow
+    // at their own scale to appear.
+    const TRENDING_MIN_GAIN = 10;
+    // "New" means new to everyone: recently indexed AND a recently created
+    // repository. Established projects that just adopted the topic surface
+    // through trending instead of burying actual newcomers.
+    const NEW_SEEN_MAX_DAYS = 14;
+    const NEW_CREATED_MAX_DAYS = 60;
+    // Six cards fill complete shelf rows in the 3, 2, and 1 column layouts.
+    const SHELF_SIZE = 6;
+    // A shelf with one or two cards reads as a struggling marketplace, which
+    // is worse than no shelf at all.
+    const SHELF_MIN_CARDS = 3;
 
     const LANG_COLORS = {
       TypeScript: "#3178c6",
@@ -160,6 +210,109 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       return typeof url === "string" && /^https:\/\/github\.com\/[^/]+\/[^/]+/.test(url);
     }
 
+    function daysSince(iso) {
+      if (!iso) return null;
+      const then = new Date(iso).getTime();
+      if (Number.isNaN(then)) return null;
+      return (Date.now() - then) / 86400000;
+    }
+
+    function trendingScore(p) {
+      const delta = p.starsDelta7d;
+      if (typeof delta !== "number" || delta < TRENDING_MIN_GAIN) return null;
+      return delta / Math.max((p.stars ?? 0) - delta, 1);
+    }
+
+    function isNewToHerd(p) {
+      const seen = daysSince(p.firstSeenAt);
+      const created = daysSince(p.createdAt);
+      return (
+        seen !== null && seen <= NEW_SEEN_MAX_DAYS &&
+        created !== null && created <= NEW_CREATED_MAX_DAYS
+      );
+    }
+
+    function trendingBadge(p) {
+      const delta = p.starsDelta7d ?? 0;
+      const base = Math.max((p.stars ?? 0) - delta, 0);
+      return "▲ " + base + " → " + (p.stars ?? 0) + " ★ this week";
+    }
+
+    function joinedBadge(p) {
+      const ago = timeAgo(p.firstSeenAt);
+      return ago === "just now" ? "✦ just joined" : ago ? "✦ joined " + ago : null;
+    }
+
+    function avatar(p, size) {
+      const img = el("img", "plugin-avatar");
+      img.src = "https://github.com/" + encodeURIComponent(p.owner || "") + ".png?size=" + size;
+      img.alt = "";
+      img.loading = "lazy";
+      img.width = size / 2;
+      img.height = size / 2;
+      return img;
+    }
+
+    function cardShell(p, className) {
+      const url = isGithubUrl(p.url) ? p.url : null;
+      const card = el(url ? "a" : "div", className);
+      card.setAttribute("role", "listitem");
+      if (url) {
+        card.href = url;
+        card.target = "_blank";
+        card.rel = "noopener noreferrer";
+      }
+      return card;
+    }
+
+    function titleOf(p) {
+      const title = el("div", "plugin-title");
+      title.appendChild(el("span", "plugin-owner", (p.owner || "?") + "/"));
+      title.appendChild(el("span", "plugin-name", p.name || "unknown"));
+      return title;
+    }
+
+    function buildTrendCard(p) {
+      const card = cardShell(p, "plugin-card plugin-trend-card");
+      const head = el("div", "plugin-card-head");
+      const lead = el("div", "trend-lead");
+      lead.appendChild(avatar(p, 64));
+      lead.appendChild(titleOf(p));
+      head.appendChild(lead);
+      head.appendChild(el("span", "plugin-go", "↗"));
+      card.appendChild(head);
+      card.appendChild(el("div", "plugin-badge", trendingBadge(p)));
+      const desc = el(
+        "p",
+        "plugin-desc" + (p.description ? "" : " is-empty"),
+        p.description || "No description provided.",
+      );
+      card.appendChild(desc);
+      return card;
+    }
+
+    function buildRow(p, note) {
+      const row = cardShell(p, "plugin-row");
+      row.appendChild(avatar(p, 64));
+      const body = el("div", "plugin-row-body");
+      body.appendChild(titleOf(p));
+      const desc = el(
+        "span",
+        "plugin-row-desc" + (p.description ? "" : " is-empty"),
+        p.description || "No description provided.",
+      );
+      body.appendChild(desc);
+      row.appendChild(body);
+      const side = el("div", "plugin-row-side");
+      if (note) side.appendChild(el("span", "plugin-row-note", note));
+      const stars = el("span", "plugin-stat");
+      stars.appendChild(el("span", "plugin-star", "★"));
+      stars.appendChild(el("span", null, String(p.stars ?? 0)));
+      side.appendChild(stars);
+      row.appendChild(side);
+      return row;
+    }
+
     function el(tag, className, text) {
       const node = document.createElement(tag);
       if (className) node.className = className;
@@ -167,7 +320,7 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       return node;
     }
 
-    function buildCard(p) {
+    function buildCard(p, badge) {
       const url = isGithubUrl(p.url) ? p.url : null;
       const card = el(url ? "a" : "div", "plugin-card");
       card.setAttribute("role", "listitem");
@@ -178,12 +331,13 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       }
 
       const head = el("div", "plugin-card-head");
-      const title = el("div", "plugin-title");
-      title.appendChild(el("span", "plugin-owner", (p.owner || "?") + "/"));
-      title.appendChild(el("span", "plugin-name", p.name || "unknown"));
-      head.appendChild(title);
+      const lead = el("div", "trend-lead");
+      lead.appendChild(avatar(p, 64));
+      lead.appendChild(titleOf(p));
+      head.appendChild(lead);
       head.appendChild(el("span", "plugin-go", "↗"));
       card.appendChild(head);
+      if (badge) card.appendChild(el("div", "plugin-badge", badge));
 
       const desc = el(
         "p",
@@ -263,13 +417,58 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       const by = [...list];
       const t = (v) => new Date(v || 0).getTime() || 0;
       if (mode === "recent") by.sort((a, b) => t(b.pushedAt) - t(a.pushedAt));
-      else if (mode === "newest") by.sort((a, b) => t(b.createdAt) - t(a.createdAt));
+      // "Newest" means newest to the marketplace, matching the shelf's order;
+      // GitHub's createdAt is the fallback for snapshots without firstSeenAt.
+      else if (mode === "newest")
+        by.sort(
+          (a, b) => t(b.firstSeenAt ?? b.createdAt) - t(a.firstSeenAt ?? a.createdAt),
+        );
       else if (mode === "name") by.sort((a, b) => (a.fullName || "").localeCompare(b.fullName || ""));
+      else if (mode === "trending")
+        // Qualified movers first by growth rate, then everything else by raw
+        // weekly gain so the list stays fully ordered past the shelf criteria.
+        by.sort(
+          (a, b) =>
+            (trendingScore(b) ?? -1) - (trendingScore(a) ?? -1) ||
+            (b.starsDelta7d ?? 0) - (a.starsDelta7d ?? 0) ||
+            (b.stars ?? 0) - (a.stars ?? 0),
+        );
       else
         by.sort(
           (a, b) => (b.stars ?? 0) - (a.stars ?? 0) || t(b.pushedAt) - t(a.pushedAt),
         );
       return by;
+    }
+
+    function renderShelves() {
+      const trending = repos
+        .map((p) => [p, trendingScore(p)])
+        .filter(([, score]) => score !== null)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, SHELF_SIZE)
+        .map(([p]) => p);
+      trendGrid.replaceChildren();
+      if (trending.length >= SHELF_MIN_CARDS) {
+        for (const p of trending) trendGrid.appendChild(buildTrendCard(p));
+      }
+      trendingShelf.hidden = trending.length < SHELF_MIN_CARDS;
+
+      const fresh = repos
+        .filter(isNewToHerd)
+        .sort((a, b) => new Date(b.firstSeenAt).getTime() - new Date(a.firstSeenAt).getTime())
+        .slice(0, SHELF_SIZE);
+      const newRows = newShelf.querySelector(".new-rows");
+      newRows.replaceChildren();
+      for (const p of fresh) newRows.appendChild(buildRow(p, joinedBadge(p)));
+      newShelf.hidden = fresh.length < SHELF_MIN_CARDS;
+
+      const anyShelf = !trendingShelf.hidden || !newShelf.hidden;
+      shelvesWrap.dataset.available = anyShelf ? "1" : "";
+      updateShelfVisibility();
+    }
+
+    function updateShelfVisibility() {
+      shelvesWrap.hidden = shelvesWrap.dataset.available !== "1";
     }
 
     function render() {
@@ -306,6 +505,22 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
         repos.reduce((n, repo) => n + (manifestsOf(repo).length || 1), 0);
       parts.push(total + (total === 1 ? " plugin" : " plugins"));
       parts.push(repoCount + (repoCount === 1 ? " repository" : " repositories"));
+      heroCountEl.textContent = total.toLocaleString("en-US");
+      heroSummaryEl.textContent =
+        (total === 1 ? "plugin" : "plugins") +
+        " across " +
+        repoCount.toLocaleString("en-US") +
+        (repoCount === 1 ? " repository" : " repositories");
+      const starsGained = repos.reduce(
+        (n, repo) => n + Math.max(repo.starsDelta7d ?? 0, 0),
+        0,
+      );
+      if (starsGained > 0) parts.push("+" + starsGained.toLocaleString("en-US") + " ★ this week");
+      const joined = repos.filter((repo) => {
+        const seen = daysSince(repo.firstSeenAt);
+        return seen !== null && seen <= 7;
+      }).length;
+      if (joined > 0) parts.push(joined + " joined this week");
       const ago = timeAgo(data && data.generatedAt);
       if (ago) parts.push("updated " + ago);
       if (usingFallback) parts.push("preview data");
@@ -315,6 +530,7 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
     function apply(data) {
       repos = Array.isArray(data && data.plugins) ? data.plugins : [];
       setMeta(data);
+      renderShelves();
       render();
     }
 
@@ -362,6 +578,13 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       visibleLimit += PAGE_SIZE;
       render();
     });
+    for (const button of document.querySelectorAll(".shelf-all")) {
+      button.addEventListener("click", () => {
+        sortSelect.value = button.dataset.sort;
+        resetAndRender();
+        grid.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
     load();
   </script>
 
@@ -375,6 +598,15 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
     .plugins-page .section {
       padding-block: 0;
       border-top: none;
+    }
+
+    /* Everything below the hero sits inside the same horizontal gutter the
+       hero uses, so text never touches the page's column lines. Selectors
+       outrank site.css's `body.site .plugins-page .section` padding reset. */
+    .plugins-page #plugins-shelves,
+    body.site .plugins-page .section.plugins-results,
+    body.site .plugins-page .section.plugins-publish {
+      padding-inline: var(--gut);
     }
 
     .plugins-page .plugins-hero {
@@ -432,25 +664,12 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
     }
 
     /* Controls */
-    .plugins-page .plugins-controls {
-      position: relative;
+    .plugins-controls {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       gap: 0.75rem;
-      margin-top: 2.5rem;
-      padding-bottom: 1.75rem;
-    }
-
-    /* Divider bound to the content box (padding box), so it aligns with the
-       search row and the cards instead of bleeding past them. */
-    .plugins-controls::after {
-      content: "";
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      border-top: 1px solid var(--line);
+      margin-top: 1.5rem;
     }
 
     .plugins-search-wrap {
@@ -533,17 +752,205 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
     }
 
     .plugins-meta {
-      margin: 0;
-      margin-left: auto;
+      margin: 1rem 0 0;
       color: var(--muted);
       font-family: var(--mono);
       font-size: 0.78rem;
       letter-spacing: 0.04em;
     }
 
+    /* Shelves */
+    #plugins-shelves {
+      margin-top: 3.5rem;
+    }
+
+    body.site .plugins-page .section.plugins-shelf {
+      margin-top: 4.5rem;
+    }
+
+    body.site .plugins-page #plugins-shelves > .section.plugins-shelf:first-child {
+      margin-top: 0;
+    }
+
+    .shelf-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 1.25rem;
+    }
+
+    /* Outranks style.css's `.section h2` mono heading rule. */
+    body.site .plugins-page h2.shelf-title {
+      margin: 0;
+      color: var(--ink);
+      font-family: var(--disp);
+      font-weight: 800;
+      font-size: 21px;
+      letter-spacing: -0.03em;
+      line-height: 1.2;
+    }
+
+    .shelf-sub {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .shelf-all {
+      flex: 0 0 auto;
+      padding: 0;
+      background: none;
+      border: none;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .shelf-all:hover {
+      color: var(--ink);
+    }
+
+    .plugin-badge {
+      align-self: flex-start;
+      padding: 0.15rem 0.5rem;
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+      border-radius: var(--radius-sm);
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.74rem;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+
+    .plugin-avatar {
+      width: 1.5rem;
+      height: 1.5rem;
+      flex: 0 0 auto;
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      border: 1px solid var(--line);
+    }
+
+    .trend-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.85rem;
+    }
+
+    .plugin-trend-card {
+      min-height: 0;
+      gap: 0.65rem;
+      padding: 1.1rem 1.2rem;
+    }
+
+    .trend-lead {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      min-width: 0;
+    }
+
+    .new-rows {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .plugin-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.65rem 0.5rem;
+      border-top: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      transition: background 0.12s ease;
+      min-width: 0;
+    }
+
+    .plugin-row:last-child {
+      border-bottom: 1px solid var(--line);
+    }
+
+    a.plugin-row:hover {
+      background: var(--bg-elevated);
+    }
+
+    .plugin-row-body {
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+      min-width: 0;
+    }
+
+    .plugin-row-body .plugin-title {
+      font-size: 0.85rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .plugin-row-desc {
+      color: var(--muted);
+      font-size: 0.78rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .plugin-row-desc.is-empty {
+      color: var(--muted-2);
+      font-style: italic;
+    }
+
+    .plugin-row-side {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-left: auto;
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.75rem;
+    }
+
+    .plugin-row-note {
+      color: var(--accent);
+      white-space: nowrap;
+    }
+
+    .plugins-browse-head {
+      margin-bottom: 1rem;
+      padding-top: 2.25rem;
+      border-top: 1px solid var(--line);
+    }
+
+    .plugins-browse-head[hidden] {
+      display: none;
+    }
+
+    @media (max-width: 56rem) {
+      .trend-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 38rem) {
+      .trend-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+
     /* Grid */
-    .plugins-results {
-      margin-top: 2rem;
+    body.site .plugins-page .section.plugins-results {
+      margin-top: 4.5rem;
+    }
+
+    .plugins-results .plugins-grid {
+      margin-top: 1.5rem;
     }
 
     .plugins-grid {

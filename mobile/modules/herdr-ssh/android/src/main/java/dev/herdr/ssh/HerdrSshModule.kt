@@ -1,0 +1,100 @@
+// Not from orca.
+//
+// Verified, and here is exactly how far that goes (`mobile/.prd/06-open-decisions.md:146-172`):
+// `:herdr-ssh:assembleDebug` and `:app:assembleDebug` are green, the 246MB APK ran on an emulator,
+// and the chain app -> sshj -> `ssh exec` -> `remote-client-bridge` -> herdr server carried live
+// data end to end. Three JVM harnesses under `modules/herdr-ssh/typecheck/` compile this source
+// (`typecheck:android`) and two of them run it (`typecheck:keyformats`, `typecheck:closepayload`).
+// What none of that covers: a real sshd's packet ordering, iOS, and any physical Android device.
+// One defect class here is invisible to every compiler — Expo's builder throws at *registration*
+// time (a `Class()` without a `Constructor`), which is why the emulator run is not optional.
+//
+// The Android half of `NativeHerdrSsh` (`../../../../../../src/native-types.ts`). Obligations 4, 6,
+// 7, 8 and 9 of `HerdrTransport` (`packages/herdr-client-ts/src/transport.ts`) are enforced in
+// TypeScript above this file, where they are testable; what is owned here is 1 (no pty), 2 (the
+// command string is passed through, never rebuilt), 3 (stderr rides the close) and 5 (one
+// connection, N channels).
+package dev.herdr.ssh
+
+import expo.modules.kotlin.jni.JavaScriptFunction
+import expo.modules.kotlin.modules.Module
+import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.records.Field
+import expo.modules.kotlin.records.Record
+
+/** `NativeSshConnectConfig` (`../src/native-types.ts`). */
+class HerdrSshConnectConfig : Record {
+  @Field var host: String = ""
+  @Field var port: Int = 22
+  @Field var username: String = ""
+  @Field var privateKey: String = ""
+  @Field var passphrase: String? = null
+
+  /** Base64 body of the server's OpenSSH `SHA256:` fingerprint. */
+  @Field var hostKeySha256: String? = null
+
+  @Field var allowUnknownHostKey: Boolean = false
+  @Field var connectTimeoutMs: Int = 20000
+  @Field var keepaliveIntervalMs: Int = 15000
+}
+
+class HerdrSshModule : Module() {
+  override fun definition() = ModuleDefinition {
+    Name("HerdrSsh")
+
+    AsyncFunction("connect") { config: HerdrSshConnectConfig ->
+      HerdrSshConnection(HerdrSshDialer.dial(config), appContext)
+    }
+
+    Class(HerdrSshConnection::class) {
+      // Required by Expo: ClassComponentBuilder throws "constructor cannot be null" at module
+      // REGISTRATION time for any Class() with an owner type that is not a SharedRef
+      // (expo-modules-core .../classcomponent/ClassComponentBuilder.kt:76-79). It compiles without
+      // one — this only surfaced by running the app, which is why it survived a green build.
+      // A connection cannot be built from JS: it owns a live sshj SSHClient handed over by
+      // `connect`. So the constructor exists to satisfy registration and refuses if JS calls it.
+      Constructor {
+        throw IllegalStateException(
+          "HerdrSshConnection is returned by HerdrSsh.connect(); it cannot be constructed from JS"
+        )
+      }
+
+      // The handlers are arguments, not listeners attached afterwards — obligation 4. sshj hands
+      // back a `Session.Command` whose streams are already live, so a listener registered after
+      // `openChannel` resolved would lose whatever the remote wrote first, which for a bridge that
+      // failed to start is the entire diagnosis.
+      AsyncFunction("openChannel") { connection: HerdrSshConnection,
+        command: String,
+        onData: JavaScriptFunction<Unit>,
+        onClose: JavaScriptFunction<Unit> ->
+        connection.openChannel(command, onData, onClose)
+      }
+
+      Function("disconnect") { connection: HerdrSshConnection ->
+        connection.disconnect()
+      }
+    }
+
+    Class(HerdrSshChannel::class) {
+      // Same registration requirement as above. A channel is handed back by
+      // `connection.openChannel(...)` and wraps a live sshj Session.Command.
+      Constructor {
+        throw IllegalStateException(
+          "HerdrSshChannel is returned by connection.openChannel(); it cannot be constructed from JS"
+        )
+      }
+
+      // `ByteArray` in, `Uint8Array` on the JS side, with one `getRegion` copy and no base64:
+      // `ByteArrayTypeConverter` declares `CppType.UINT8_TYPED_ARRAY` inbound, and outbound the
+      // emit path routes through `FollyDynamicExtensionConverter` into `createUint8Array`
+      // (expo-modules-core android/src/main/cpp/types/JNIToJSIConverter.cpp:16-41).
+      AsyncFunction("write") { channel: HerdrSshChannel, bytes: ByteArray ->
+        channel.write(bytes)
+      }
+
+      Function("close") { channel: HerdrSshChannel ->
+        channel.close()
+      }
+    }
+  }
+}

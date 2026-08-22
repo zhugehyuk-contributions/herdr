@@ -1,0 +1,7 @@
+{
+  "name": "herdr-ssh",
+  "version": "0.0.0",
+  "private": true,
+  "main": "index.ts",
+  "//": "Not from orca. A local Expo module: `expo-modules-autolinking` resolves `./modules` as `nativeModulesDir` by default (node_modules/expo-modules-autolinking/build/commands/autolinkingOptions.js:170-174), so no app.json entry links this — see README.md §Autolinking. `main` points at the TypeScript entry because Metro compiles it; there is no build step."
+}

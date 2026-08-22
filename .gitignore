@@ -1,4 +1,5 @@
 /target
+node_modules/
 /vendor/libghostty-vt/zig-pkg/
 __pycache__/
 *.pyc
@@ -26,3 +27,12 @@ __pycache__/
 /.wrangler/
 **/.wrangler/
 .worktrees/
+
+# mobile app (Expo / React Native) + shared TS packages
+/mobile/node_modules/
+/mobile/.expo/
+/mobile/dist/
+/mobile/ios/Pods/
+/mobile/android/.gradle/
+/packages/*/node_modules/
+/packages/*/dist/

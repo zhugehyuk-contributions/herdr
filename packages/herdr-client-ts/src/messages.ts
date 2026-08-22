@@ -1,0 +1,423 @@
+import {
+  ClientKeybindings,
+  ClientLaunchMode,
+  ClientMessageTag,
+  ClientSurfaceMode,
+  PROTOCOL_VERSION,
+  RenderEncoding,
+  SERVER_MESSAGE_VARIANT_NAMES,
+  ServerMessageTag,
+  TerminalSessionModeTag,
+} from "./constants.js";
+import { ByteCursor } from "./cursor.js";
+import {
+  CorruptError,
+  EncodingMismatchError,
+  FieldRangeError,
+  HandshakeRejectedError,
+  IncompleteError,
+  ProtocolVersionMismatchError,
+  UnsupportedVariantError,
+} from "./errors.js";
+import { frameMessage } from "./framing.js";
+import { ByteWriter } from "./writer.js";
+
+const U16_MAX = 0xffff;
+const U32_MAX = 0xffffffff;
+
+function requireUint(value: number, max: number, field: string): number {
+  if (!Number.isInteger(value) || value < 0 || value > max) {
+    throw new FieldRangeError(`${field} must be an integer in 0..=${max}, got ${value}`);
+  }
+  return value;
+}
+
+/**
+ * A frame arrived whole (its length prefix said so) but the message inside ran off the end.
+ * That is corruption, not backpressure — converting here is what keeps the two states distinct.
+ */
+function insideFrame<T>(what: string, decode: () => T): T {
+  try {
+    return decode();
+  } catch (error) {
+    if (error instanceof IncompleteError) {
+      throw new CorruptError(
+        `${what}: frame ended mid-value (${error.needed} more byte(s) needed); ` +
+          "the frame length prefix and its payload disagree",
+      );
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client -> Server: Hello
+// ---------------------------------------------------------------------------
+
+export interface HelloParams {
+  /** Defaults to {@link PROTOCOL_VERSION}. The server requires exact equality. */
+  version?: number;
+  cols: number;
+  rows: number;
+  /** 0 when client-side Kitty graphics are disabled (the mobile default). */
+  cellWidthPx?: number;
+  cellHeightPx?: number;
+  /** A *request*: the server answers with what it actually selected in `Welcome.encoding`. */
+  requestedEncoding: RenderEncoding;
+  launchMode: ClientLaunchMode;
+  /** Defaults to `FullApp`. */
+  surfaceMode?: ClientSurfaceMode;
+  /** Defaults to `Server`; `ClientKeybindings::Local` is not encodable here. */
+  keybindings?: ClientKeybindings;
+}
+
+/**
+ * Encodes `ClientMessage::Hello` (variant 0) exactly as bincode would.
+ *
+ * Field order is `src/protocol/wire.rs:368-387`:
+ * `version, cols, rows, cell_width_px, cell_height_px, requested_encoding, surface_mode,
+ * keybindings, launch_mode` — every one of them a varint.
+ */
+export function encodeHello(params: HelloParams): Uint8Array {
+  const version = requireUint(params.version ?? PROTOCOL_VERSION, U32_MAX, "version");
+  const cols = requireUint(params.cols, U16_MAX, "cols");
+  const rows = requireUint(params.rows, U16_MAX, "rows");
+  const cellWidthPx = requireUint(params.cellWidthPx ?? 0, U32_MAX, "cellWidthPx");
+  const cellHeightPx = requireUint(params.cellHeightPx ?? 0, U32_MAX, "cellHeightPx");
+  const surfaceMode = params.surfaceMode ?? ClientSurfaceMode.FullApp;
+  const keybindings = params.keybindings ?? ClientKeybindings.Server;
+
+  return new ByteWriter(24)
+    .writeVarint(ClientMessageTag.Hello)
+    .writeVarint(version)
+    .writeVarint(cols)
+    .writeVarint(rows)
+    .writeVarint(cellWidthPx)
+    .writeVarint(cellHeightPx)
+    .writeVarint(params.requestedEncoding)
+    .writeVarint(surfaceMode)
+    .writeVarint(keybindings)
+    .writeVarint(params.launchMode)
+    .toBytes();
+}
+
+/** {@link encodeHello} wrapped in the `[u32 LE length][payload]` envelope, ready for the socket. */
+export function encodeHelloFrame(params: HelloParams): Uint8Array {
+  return frameMessage(encodeHello(params));
+}
+
+// ---------------------------------------------------------------------------
+// Client -> Server: ObserveTerminal
+// ---------------------------------------------------------------------------
+
+/**
+ * Encodes `ClientMessage::ObserveTerminal` (variant 12) exactly as bincode would.
+ *
+ * The declaration carries exactly one field (`src/protocol/wire.rs:471-474`):
+ * `ObserveTerminal { target: String }` — unlike its neighbour `ControlTerminal`
+ * (`:477-482`), which adds a `takeover: bool`. Sending the two-field shape here would leave a
+ * trailing byte the server decodes as garbage.
+ *
+ * `target` is a bincode `String`: a varint of its **UTF-8 byte length** followed by the raw bytes.
+ * Byte length, not character count — `tests/support/mod.rs::send_observe_terminal` uses Rust's
+ * `str::len()` for the same reason.
+ *
+ * Without this message the handshake completes and then nothing happens: `Hello` only attaches the
+ * connection, `ObserveTerminal` is what makes the server start streaming `ServerMessage::Terminal`.
+ */
+export function encodeObserveTerminal(target: string): Uint8Array {
+  return new ByteWriter(16)
+    .writeVarint(ClientMessageTag.ObserveTerminal)
+    .writeString(target)
+    .toBytes();
+}
+
+/** {@link encodeObserveTerminal} wrapped in the `[u32 LE length][payload]` envelope. */
+export function encodeObserveTerminalFrame(target: string): Uint8Array {
+  return frameMessage(encodeObserveTerminal(target));
+}
+
+// ---------------------------------------------------------------------------
+// Client -> Server: Resize
+// ---------------------------------------------------------------------------
+
+/**
+ * Encodes `ClientMessage::Resize` (variant 3): `cols, rows, cell_width_px, cell_height_px`, all
+ * varints, same order as `Hello`'s middle four fields.
+ *
+ * ⚠️ **Mode-dependent, and the difference is a desktop pane.** Sent by a `TerminalObserve` client
+ * this only changes the grid the server *renders frames at* and asks for a repaint. Sent by a
+ * `TerminalAttach` (control) client the very next line resizes the observed pane's PTY
+ * (`src/server/headless.rs`, `ClientResize`). So this is safe to send while observing and must not
+ * be sent while promoted, unless reshaping the desktop's pane is the intent.
+ *
+ * Why an observer would send it at all: {@link encodeRetargetTerminal} moves the target but not the
+ * geometry, and geometry was chosen from the *first* pane's layout (`mobile/.prd/03-blockers.md`
+ * B4 — observe crops at the top-left rather than reflowing). A retarget to a wider pane without
+ * this would show its left-hand columns only.
+ */
+export function encodeResize(params: {
+  cols: number;
+  rows: number;
+  cellWidthPx?: number;
+  cellHeightPx?: number;
+}): Uint8Array {
+  return new ByteWriter(8)
+    .writeVarint(ClientMessageTag.Resize)
+    .writeVarint(requireUint(params.cols, U16_MAX, "cols"))
+    .writeVarint(requireUint(params.rows, U16_MAX, "rows"))
+    .writeVarint(requireUint(params.cellWidthPx ?? 0, U32_MAX, "cellWidthPx"))
+    .writeVarint(requireUint(params.cellHeightPx ?? 0, U32_MAX, "cellHeightPx"))
+    .toBytes();
+}
+
+/** {@link encodeResize} wrapped in the `[u32 LE length][payload]` envelope. */
+export function encodeResizeFrame(params: {
+  cols: number;
+  rows: number;
+  cellWidthPx?: number;
+  cellHeightPx?: number;
+}): Uint8Array {
+  return frameMessage(encodeResize(params));
+}
+
+// ---------------------------------------------------------------------------
+// Client -> Server: RetargetTerminal
+// ---------------------------------------------------------------------------
+
+/** What {@link encodeRetargetTerminal} asks the connection to become. */
+export type TerminalSessionMode =
+  | { kind: "observe" }
+  | { kind: "control"; takeover: boolean };
+
+/** Read-only. Neither resizes the target's PTY nor takes its lock. */
+export const OBSERVE_MODE: TerminalSessionMode = Object.freeze({ kind: "observe" });
+
+/**
+ * Encodes `ClientMessage::RetargetTerminal` (variant 14).
+ *
+ * ## What it replaces
+ *
+ * `ObserveTerminal` can only be sent by a connection that is still `pending_terminal_attach`
+ * (`src/server/headless.rs`, `client_is_pending_terminal_mode`), so before this message the only
+ * way to look at a second pane was a second connection. On the mobile bridge that is an ssh exec
+ * channel, a fresh `Hello`/`Welcome`, and a fresh full ANSI baseline — measured at ~56 KB
+ * uncompressed for a 100x30 client, per pane tap (`mobile/.prd/03-blockers.md` B13). This message
+ * reuses all three; measured retarget-to-first-frame on a local socket: **21 ms**
+ * (`tests/observe_terminal_ansi.rs`, `retarget_terminal_moves_the_session_and_restores_the_pane_grid`).
+ *
+ * ## Shape
+ *
+ * `target` is a bincode `String` (varint UTF-8 **byte** length + bytes), then the nested
+ * `TerminalSessionMode`: `Observe` is the bare tag `0x00`, `Control` is `0x01` followed by the
+ * `takeover` bool. Encoding a trailing `false` after `Observe` appends a byte the server reads as
+ * the start of the next message.
+ *
+ * ## ⚠️ Control resizes a desktop pane
+ *
+ * `{kind: "control"}` puts this connection in `TerminalAttach` mode, which resizes the shared PTY
+ * to the grid this client declared in `Hello` and locks it against the desktop's layout
+ * (`attach_terminal_client`). The contract is to hold it across one input and retarget straight
+ * back to {@link OBSERVE_MODE}, which restores the grid recorded at promotion
+ * (`release_terminal_control`). A client that promotes and forgets leaves a desktop pane reshaped
+ * to a phone.
+ *
+ * ## Failure
+ *
+ * A refused retarget (target gone, someone else holds the lock without `takeover`, no session yet)
+ * does **not** close the connection: the server keeps the current session and answers with a
+ * `Notify`, which this codec counts as undecodable traffic. So a caller cannot read success off
+ * the socket state — it reads it off the frames, which start describing the new target.
+ */
+export function encodeRetargetTerminal(target: string, mode: TerminalSessionMode): Uint8Array {
+  const writer = new ByteWriter(16)
+    .writeVarint(ClientMessageTag.RetargetTerminal)
+    .writeString(target);
+  if (mode.kind === "observe") {
+    return writer.writeVarint(TerminalSessionModeTag.Observe).toBytes();
+  }
+  return writer
+    .writeVarint(TerminalSessionModeTag.Control)
+    .writeBool(mode.takeover)
+    .toBytes();
+}
+
+/** {@link encodeRetargetTerminal} wrapped in the `[u32 LE length][payload]` envelope. */
+export function encodeRetargetTerminalFrame(
+  target: string,
+  mode: TerminalSessionMode = OBSERVE_MODE,
+): Uint8Array {
+  return frameMessage(encodeRetargetTerminal(target, mode));
+}
+
+// ---------------------------------------------------------------------------
+// Client -> Server: RequestFullFrame
+// ---------------------------------------------------------------------------
+
+/**
+ * Encodes `ClientMessage::RequestFullFrame` (variant 11) exactly as bincode would: **one byte**.
+ *
+ * ## What it is for
+ *
+ * `ServerMessage::Terminal` is a diff stream, not a sequence of independent events —
+ * `TerminalFrame.full` (`src/protocol/wire.rs:771-780`) is false for an incremental frame, which is
+ * only correct against the baseline the frame before it left behind. So a `Terminal` frame that is
+ * dropped (corrupt payload, failed inflate) desynchronizes the *screen* even though the length
+ * prefix kept the *wire* in sync. Its declaration says so (`src/protocol/wire.rs:462-467`): the
+ * server "resets the per-client render baseline so its next render is a full `Frame`, recovering
+ * from a desync without showing wrong cells."
+ *
+ * The server path, end to end, for the `TerminalAnsi` encoding this codec speaks:
+ * `src/server/client_transport.rs:873` -> `ServerEvent::ClientRequestFullFrame` ->
+ * `src/server/headless.rs:3052` -> `Client::request_full_redraw` (`src/server/clients.rs:149`) ->
+ * `ClientRenderState::reset_baseline` (`src/server/render_stream.rs:36`), whose `TerminalAnsi` arm
+ * installs a fresh `BlitEncoder`. `BlitEncoder::encode_inner` then derives
+ * `full = repaint || prev.is_none() || …` (`src/protocol/render_ansi.rs:88-92`), and `prev` is
+ * `None` on a fresh encoder — so the next `Terminal` for that client carries `full: true`.
+ * Cheaper than reconnecting, which would cost a new ssh exec channel and a fresh handshake.
+ *
+ * ## Shape
+ *
+ * A **unit** variant: tag, no fields, no length prefix, no trailing anything. Every neighbour in
+ * the enum carries a payload — `ObserveTerminal` (`:471-474`) is `0c 00` even for an empty target
+ * — so an encoder written by copying one of them and deleting the argument still emits a stray
+ * byte, which the server would read as the beginning of the next message.
+ *
+ * ⚠️ **mx-only**: upstream's `ClientMessage` has no `RequestFullFrame`, so this must never be sent
+ * speculatively to a peer that might not be an mx server. See `src/constants.ts:4-9` for why a
+ * matching `PROTOCOL_VERSION` does not rule that out.
+ */
+export function encodeRequestFullFrame(): Uint8Array {
+  return new ByteWriter(1).writeVarint(ClientMessageTag.RequestFullFrame).toBytes();
+}
+
+/** {@link encodeRequestFullFrame} wrapped in the `[u32 LE length][payload]` envelope: `01000000 0b`. */
+export function encodeRequestFullFrameFrame(): Uint8Array {
+  return frameMessage(encodeRequestFullFrame());
+}
+
+// ---------------------------------------------------------------------------
+// Server -> Client: Welcome, Terminal
+// ---------------------------------------------------------------------------
+
+export interface WelcomeMessage {
+  type: "welcome";
+  version: number;
+  /** What the server *selected*, which may differ from what `Hello.requested_encoding` asked for. */
+  encoding: number;
+  /** `Some(_)` means the handshake failed and the client must exit. */
+  error: string | null;
+}
+
+export interface TerminalMessage {
+  type: "terminal";
+  /** `u64`, so a `bigint`: a long-lived stream outruns `Number.MAX_SAFE_INTEGER`'s guarantees. */
+  seq: bigint;
+  width: number;
+  height: number;
+  /** True when `bytes` is a full redraw rather than a diff. */
+  full: boolean;
+  /** Terminal escape bytes, ready to hand to xterm. Kitty graphics are inlined here. */
+  bytes: Uint8Array;
+}
+
+export type ServerMessage = WelcomeMessage | TerminalMessage;
+
+function readWelcomeBody(cursor: ByteCursor): WelcomeMessage {
+  const version = cursor.readVarintAsNumber("Welcome.version", U32_MAX);
+  const encoding = cursor.readVarintAsNumber("Welcome.encoding", U32_MAX);
+  const error = cursor.readOption((c) => c.readString());
+  return { type: "welcome", version, encoding, error };
+}
+
+function readTerminalBody(cursor: ByteCursor): TerminalMessage {
+  const seq = cursor.readVarint();
+  const width = cursor.readVarintAsNumber("TerminalFrame.width", U16_MAX);
+  const height = cursor.readVarintAsNumber("TerminalFrame.height", U16_MAX);
+  const full = cursor.readBool();
+  const bytes = cursor.readByteVec();
+  return { type: "terminal", seq, width, height, full, bytes };
+}
+
+/**
+ * Decodes one complete frame payload into a {@link ServerMessage}.
+ *
+ * Only `Welcome` (0) and `Terminal` (13) are decoded; every other variant raises
+ * {@link UnsupportedVariantError} naming the variant, because silently ignoring e.g.
+ * `Compressed` or `Frame` would leave the UI showing a stale screen with no explanation.
+ */
+export function decodeServerMessage(payload: Uint8Array): ServerMessage {
+  const cursor = new ByteCursor(payload);
+  const variant = insideFrame("ServerMessage variant", () =>
+    cursor.readVarintAsNumber("ServerMessage variant", U32_MAX),
+  );
+
+  switch (variant) {
+    case ServerMessageTag.Welcome: {
+      const message = insideFrame("ServerMessage::Welcome", () => readWelcomeBody(cursor));
+      cursor.assertConsumed("ServerMessage::Welcome");
+      return message;
+    }
+    case ServerMessageTag.Terminal: {
+      const message = insideFrame("ServerMessage::Terminal", () => readTerminalBody(cursor));
+      cursor.assertConsumed("ServerMessage::Terminal");
+      return message;
+    }
+    default:
+      throw new UnsupportedVariantError(variant, SERVER_MESSAGE_VARIANT_NAMES[variant]);
+  }
+}
+
+/** {@link decodeServerMessage} constrained to `Welcome`. */
+export function decodeWelcome(payload: Uint8Array): WelcomeMessage {
+  const message = decodeServerMessage(payload);
+  if (message.type !== "welcome") {
+    throw new CorruptError(`expected ServerMessage::Welcome, got ${message.type}`);
+  }
+  return message;
+}
+
+/** {@link decodeServerMessage} constrained to `Terminal`. */
+export function decodeTerminal(payload: Uint8Array): TerminalMessage {
+  const message = decodeServerMessage(payload);
+  if (message.type !== "terminal") {
+    throw new CorruptError(`expected ServerMessage::Terminal, got ${message.type}`);
+  }
+  return message;
+}
+
+// ---------------------------------------------------------------------------
+// Handshake validation
+// ---------------------------------------------------------------------------
+
+export interface HandshakeExpectation {
+  /** The encoding the client put in `Hello.requested_encoding`. */
+  encoding: RenderEncoding;
+  /** The version the client put in `Hello.version`. Defaults to {@link PROTOCOL_VERSION}. */
+  version?: number;
+}
+
+/**
+ * Fails loudly unless the server accepted the handshake on our terms.
+ *
+ * The encoding check is the load-bearing one: `Hello.requested_encoding` is a *request*, and a
+ * client that assumes `TerminalAnsi` while the server chose `SemanticFrame` will read `Frame`
+ * payloads as `Terminal` frames and render garbage. Version equality is checked too because
+ * `PROTOCOL_VERSION` equality is the server's own negotiation rule (`src/protocol/wire.rs:1225`)
+ * — note it does NOT prove layout compatibility across forks (see constants.ts).
+ */
+export function assertWelcomeAccepted(
+  welcome: WelcomeMessage,
+  expected: HandshakeExpectation,
+): void {
+  if (welcome.error !== null) {
+    throw new HandshakeRejectedError(welcome.error);
+  }
+  const expectedVersion = expected.version ?? PROTOCOL_VERSION;
+  if (welcome.version !== expectedVersion) {
+    throw new ProtocolVersionMismatchError(expectedVersion, welcome.version);
+  }
+  if (welcome.encoding !== expected.encoding) {
+    throw new EncodingMismatchError(expected.encoding, welcome.encoding);
+  }
+}

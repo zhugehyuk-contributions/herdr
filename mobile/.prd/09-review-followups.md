@@ -1,0 +1,475 @@
+# 09 — 외부 리뷰 후속 (2026-08-22)
+
+`packages/herdr-client-ts` 첫 슬라이스에 대한 외부 리뷰 산출. 3엔진 합의 패널(trinity) + 병렬 검증 세션 다수가
+같은 소스를 훑었다. **판정이 갈린 것까지 포함해** 여기 남긴다 — 기각된 후보도 다시 제기되지 않도록 근거와 함께.
+
+증거 표기 — `[확정]` 소스 대조로 확인 · `[기각]` 조사 결과 도달 불가 · `[미검증]` 제기됐으나 아직 안 봄.
+
+## A. 수리 완료 (11건) — 커밋 `bbedbeb6`, 2026-08-22
+
+> 전부 RED를 먼저 잡고 고쳤다. 게이트: vitest **122**(101→+21) · tsc 0 · live 3 · live-ssh 4, dispatcher 직접 재실행.
+> ⑨는 측정으로 닫았다 — 배가 시 비율 **3.86×(이차) → 2.00×(선형)**, 32MiB/64KiB에서 `67,108,868B = 2S` 실측.
+> ⑩은 서버 소스로 응답 형태를 **확정**하고(추측 금지 지시) 구현했다 — `SubscriptionStarted`
+> (`src/api/server.rs:679-686`, 와이어 이름은 서버 자기 테스트 `:1292`로 확인).
+>
+> *(아래 표는 무엇을 고쳤는지의 기록이다. 닫힌 항목이므로 다시 열지 마라.)*
+
+| # | 결함 | 위치 | 왜 아픈가 |
+|---|---|---|---|
+| 1 | **env 키 미인용 → 원격 명령 주입** | `src/transport.ts:575-590` | 값만 `shellQuote`하고 키 이름은 그대로 보간. `X=$(touch …)` 키가 원격 셸에서 실행된다 — **PoC로 마커 파일 생성 확인됨.** 공개 API(`@herdr/client-ts/node`)라 호스트별 env를 설정하는 앱이면 RCE |
+| 2 | **`onError` 계약 위반** | `:388-393`(문서) vs `:476-495`(코드) | 문서는 "Terminal either way, 정확히 한 번"인데 corrupt 경로는 루프가 계속 돌아 같은 청크에서 `onMessage`가 뒤따른다. 앱이 문서대로 정리하면 정리된 터미널에 ANSI가 적용되고, 재연결하면 **스킵 가능한 프레임 하나에 연결이 플랩**한다 |
+| 3 | **`onUndecodable` 미격리 → 프레임 유실** | `src/stream.ts:104-115` | 진단 콜백이 던지면 루프 중단 → `FrameReader`가 이미 배치를 소비한 뒤라 뒤 `Terminal`이 영구 유실. `cf05b11b`에서 고친 버그의 **콜백 경로 재발** |
+| 4 | **`maxFrameSize` 미검증** | `src/framing.ts:34-36`, 소비 `:78-84` | `NaN`이면 `claimed > NaN`이 항상 false → 광고된 상한 무력화 → `0xffffffff` 프리픽스에 pending 무한 성장 |
+| 5 | **이벤트 스트림 사망 무통지 + 구독 실패 시 채널 누수** | `:355-368`, `:209-266` | `onLine`/`close()`만 노출. 채널이 죽어도 구독자는 영원히 살아있다고 착각 — **LTE 끊김·원격 재시작은 모바일 일상**. 게다가 채널을 먼저 연 뒤 `stringify`/`write`가 실패하면 닫을 핸들이 사라진 채 exec 채널이 상주한다(같은 파일 `jsonApi.ts:171-181`은 `finally`로 닫는데 여기만 빠짐) |
+| 6 | **JSON API `id` 에코 미검증** | `src/jsonApi.ts:113-151`, `:171-180` | 누락/비문자열 `id`가 `""`로 통과하고 `call()`이 에코를 확인하지 않는다. 요청1개=연결1개이므로 상관 실패는 곧 와이어 손상인데 성공으로 받는다 |
+| 7 | **`ServerMessageChannel`에 진단 카운터 부재** | `:481-495` vs `src/stream.ts:59-67` | `constants.ts:4-9`가 **포크 태그 스큐를 스스로 적어놨다**(mx·upstream 둘 다 `PROTOCOL_VERSION=20`인데 `Terminal` 13 vs 2). `assertWelcomeAccepted`(`messages.ts:249-262`)는 **버전만** 본다 → upstream 서버에 붙으면 **핸드셰이크 green → 전 프레임 오분류 → 콜백 optional → 화면 검음·에러 0건·진단 0** |
+| 8 | **`pty: false` 요구가 잘못된 파일에 있다** | `src/node/sshTransport.ts:174-176` | `src/transport.ts:78-81`이 스스로 "RN 모듈이 맞춰야 할 지식은 여기"라고 선언해놓고, **실패가 전면적·무음인**(pty line discipline이 모든 프레임 페이로드를 망친다) 요구를 RN 저자가 안 읽을 파일에 뒀다 |
+| 9 | **`FrameReader` 누산기 Θ(S²/c)** | `src/framing.ts:53-61`, `:88-90` | push마다 `pending+chunk` 전체 재할당·복사, 완성 시 또 `slice`. **32 MiB 페이로드 = 64 KiB 청크에서 누적 ~8.05 GiB, 16 KiB에서 ~32 GiB.** 서버가 kitty 그래픽 프레임에 32 MiB를 실제로 허용하므로 **합법 트래픽에서 도달 가능** → Hermes GC 스톨/OOM |
+
+## B. 기각된 후보 (다시 제기하지 마라)
+
+| 후보 | 판정 | 근거 |
+|---|---|---|
+| `Compressed`(태그 11) 래핑된 `Terminal`을 스킵해 유실 | **`[기각]`** | 압축은 semantic 분기에만 걸린다(`src/server/render_stream.rs:65-90`). `TerminalAnsi` 분기(`:92-124`)는 raw로 보낸다. TS는 `TerminalAnsi`를 요구·검증하므로(`messages.ts:243-262`) 이 코덱이 `Compressed`를 만날 경로가 없다 |
+| stderr 무한 증가 | **`[기각]`** | 브리지는 순수 소켓↔stdio 펌프(`src/remote/unix.rs:568-590`)이고 디스패치가 로깅보다 먼저 돈다(`src/main.rs:549-555`). stderr는 기동/런타임 오류뿐이고 그 뒤 채널이 닫힌다 — 장수 생산자가 없다 |
+
+## A2. 패널 최종 MUST-FIX — 수리 완료 (커밋 `753d8960`)
+
+**corrupt 뒤 화면 재동기화.** `bbedbeb6`에서 corrupt를 `unsupported-variant`와 같이 건너뛰게 만든 근거
+("길이 프리픽스가 경계를 고정하니 뒤 프레임들은 멀쩡하다")가 **와이어 층에서만 참**이었다 —
+`Terminal`은 diff 기반 ANSI 상태 머신이라 corrupt한 diff를 버리고 후속 diff를 적용하면
+**화면이 영구적으로 틀린다**. `seq`/`full` 필드가 그 상태 의존성의 증거다.
+
+패널은 재연결을 권했으나 프로토콜에 전용 수단이 있었다 — **`RequestFullFrame`**(태그 11, 필드 없음).
+`src/protocol/wire.rs:464-467`이 이 시나리오를 그대로 서술한다 `[v]`. 채널을 유지한 채 화면만 복구하므로
+모바일에서 재연결(새 exec 채널+핸드셰이크+가시적 스톨)보다 싸다.
+
+**라이브 검증** — 이 설계의 유일한 미검증 홉이었다: control window(무요청 1초) **0 프레임** →
+5바이트 요청 → `seq=4 full=true bytes_len=55923`(초기 풀 리드로와 일치, diff는 115B).
+컨트롤 윈도우가 있어야 "어차피 올 리페인트"가 배제된다.
+
+> **부수 정정**: dispatcher 브리핑이 "`reset_baseline()`이 `repaint_pending=true`를 세운다"고 했으나 **틀렸다.**
+> 그건 `false`로 세우고 `BlitEncoder::new()`를 넣는다(`render_stream.rs:36-47`); `true`는 `request_repaint()`다.
+> `full=true`의 실제 출처는 `render_ansi.rs:90-92`의 `full = repaint || **prev.is_none()** || dim-change`에서
+> 새 인코더의 `last_frame`이 `None`이기 때문. 결론은 맞고 경로가 달랐다 `[v]`.
+
+## B2. 수리 중 새로 드러난 것 (2026-08-22)
+
+| # | 항목 | 위치 | 등급 |
+|---|---|---|---|
+| ~~N1~~ | **✅ 닫힘 `571ead04`** — `WireLayoutProbe` 신설(`src/layoutProbe.ts`). 판정 = `한 태그 반복 ≥5 AND 디코드된 Terminal 0 AND armed`. 분포로 세는 근거는 서버 소스 논증(정상 트래픽은 이질적, 스큐는 단조 반복). 무장은 `send()`에서 호출자 프레임을 되읽어 감지 → 기존 호출자가 그대로 오탐 리시트가 된다(`[ssh] layout probe: undecodable=0 verdict=none`). **한계를 코드에 기재**: 추론이지 증명 아님 · 구조상 위음성 · 필드 이동 스큐엔 무력 · 진짜 해법은 M0-a. | `[해소]` A-⑦(`undecodableCount`)은 **증상을 한 줄로 진단 가능하게** 만들 뿐 **스큐를 탐지하지 못한다.** 진짜 수정은 **레이아웃 프로브** — 예: `ObserveTerminal` 후 첫 `Terminal`이 기대한 태그로 도착하는지 확인한 뒤에야 스트림을 healthy로 선언. mx·upstream이 둘 다 `20`인 한 버전 비교는 무의미하다 |
+| ~~N2~~ | **✅ 닫힘 `571ead04`** — `createHostTimer(host)`가 타이머 부재 시 throw(메시지가 빠진 능력과 고치는 법을 명명). 주입 경로는 그대로 우선. `setTimeout`/`clearTimeout` **둘 다** 요구 — 전자만 있으면 데드라인이 무장되고 취소 불가라 **멀쩡한 채널을 나중에 죽인다**. | `[해소]` — C5와 같은 항목이나 A-⑩ 이후 **`subscribe()`가 영원히 대기**할 수 있게 됐다(ack를 기다리는데 타임아웃이 없다) |
+| **N5** | `desynchronizesScreen`가 **default-yes 술어**다 | `src/errors.ts:41` | `[확정]` — `code !== "unsupported-variant"`라서 **향후 어떤 에러 코드든 조용히 "화면을 desync한다"를 상속**한다. 새 `layout-mismatch`는 판정이 먼저 단락시켜 도달하지 않지만 형태 자체가 함정이다 → allow-list로 뒤집어라 |
+| **N6** | `src/node/sshTransport.ts:169`가 전역 `setTimeout`을 직접 쓴다 | 같은 곳 | `[확정]` · 낮음 — Node에선 무해하나 **`src/node` 엔트리는 N2의 fail-fast 보장을 못 받는다** |
+| **N4** | `Compressed` 인플레이터 부재 | `src/messages.ts` | `[확정]` · 낮음 — `wire.rs:462-467`이 말하는 desync 원인 **둘 중 나머지 절반**("compressed frame that failed to inflate")은 이 코덱에서 **시도조차 불가**하다. `TerminalAnsi` 전용인 한 도달하지 않으나, `SemanticFrame`을 받아들이는 순간 되살아난다 |
+| **N3** | `id: ""` 예외는 **서버 봉투 자체의 구멍**이다 | `src/api/server.rs:159-172`, 인코드 폴백 `:819` | `[확정]` — `invalid_request`는 클라이언트가 **상관시킬 수 없는 유일한 응답**이다. 요청1개=연결1개인 지금은 무해하나, id 기반 상관 계층은 이 API에 대해 **완전히 엄격해질 수 없다** |
+
+## B3. 앱 이식 중 드러난 서버 쪽 갭 (2026-08-22, M2 5단계)
+
+| # | 항목 | 근거 | 등급 |
+|---|---|---|---|
+| **S1** | **herdr 와이어에 시계가 없다** | `AgentInfo`/`PaneInfo` 어디에도 타임스탬프가 없다(스키마 실측). `revision`/`state_change_seq`는 카운터지 시각이 아니다 | `[확정]` · **서버 이슈 후보.** 결과: **최종 보고 없이 죽은 에이전트가 영원히 `working`으로 읽힌다.** orca는 `updatedAt` 30분 decay로 처리하는데 herdr엔 그 재료가 없다. 목업의 `· 4m` / `· 2m41s` 열도 구현 불가. **필드 추가 없이는 못 고친다** |
+| **S2** | `manual_label`을 pane 핸들로 쓰고 있다 | 스키마상 이 필드는 pane의 **수동 개명**이다. 4단계 mock이 거기에 herdr 표기(`1-1`)를 넣었고 5단계가 그대로 소비했다 | `[확정]` · 낮음 — 실서버에선 개명 안 된 pane이 `pane_id`로 폴백한다(테스트 고정). **6단계 실배선 때 확인 필요** |
+| **S3** | `oxfmt --check`가 무신호다 | 설정 파일 부재로 기본값 동작(`No config found, using defaults`) → `src`+`app`만 돌려도 **116/116 전부** format issue. `.prd/assets/mockup.html`에선 파싱 에러 exit 2 | `[확정]` — **`cargo fmt --check` 무신호(01-spec)의 2호기.** 손대면 안 된다: 재포맷은 **byte-identical 75개를 전부 깨뜨려 이식 불변식을 파괴**한다 |
+
+## B4. M5 구현 중 드러난 계획 오류 (2026-08-22)
+
+| # | 항목 | 실측 | 등급 |
+|---|---|---|---|
+| **P1** | **`04-milestones.md` M5의 인용 3개가 전부 틀렸다** | `events.rs:75`는 **`Subscription`** variant(enum은 `:18`에서 시작), `:222`/`:253`은 `EventKind`/`dot_name`이다. **어느 것도 페이로드가 아니다.** 실제 페이로드는 **`EventData::PaneAgentStatusChanged`, `src/api/schema/events.rs:543-556`** — `pane_id`/`workspace_id`가 **필수**다(`Option`인 건 `:76-83`의 **구독 필터**쪽) | `[확정]` — 문서 정정 필요 |
+| **P2** | **계획이 놓친 재발화**: `pane.agent_status_changed`는 **presentation만 바뀌어도** 발화한다 (`src/app/api.rs:609-611`이 `previous_agent_status != agent_status \|\| previous_presentation != presentation`) | 한 번의 blocked 에피소드가 **여러 레코드**를 큐에 넣는다. 훅이 아니라 센더 쪽 coalesce 창으로 처리 | `[확정]` |
+| **P3** | **계획이 놓친 유실 경로**: 훅 런타임에 타임아웃·재시도·DLQ가 없다는 건 맞으나, `runtime.rs:12`가 **in-flight 32개 상한**을 두고 초과분을 **버린다**(`:239`의 `let _ = self.start_plugin_command(...)`) | 훅 경로가 B9의 링 축출은 우회하지만 **자기 고유의 drop cliff**가 있다. 버스트에서 유실 가능 — 완화는 훅을 수 ms로 유지하는 것뿐 | `[확정]` |
+| **P4** | 계획의 나머지 `[i]`는 **전부 사실**로 확인됨 | 훅이 `event_hub.push`보다 먼저(`api.rs:782-784`) · `HERDR_PLUGIN_EVENT_JSON` 이름 정확(단 봉투가 **snake_case**이지 dot name이 아니다) · `Done`이 `seen` 비트라 디바이스 의존(`api_helpers.rs:104-107`, **라이브 재현**: 같은 pane·같은 명령인데 포커스 있으면 `idle`, 없으면 `done`) · `plugin link`가 **서버 재시작 불필요**(`runtime.rs:221`이 매 hookable 이벤트마다 `refresh_installed_plugins()`) | `[확정]` |
+
+## C. 확정됐으나 이번 범위 밖 (다음 유닛)
+
+| # | 항목 | 위치 | 등급 |
+|---|---|---|---|
+| C1 | **stderr를 청크마다 독립 UTF-8 디코드** → 멀티바이트 경계에서 `경고` → `���고` | `src/node/sshTransport.ts:67-68`, 노출 `:90` | `[확정]` — 계약상 **stderr가 브리지의 유일한 오류 보고 수단**이라 한글 오류가 깨지면 진단이 죽는다. `StringDecoder` 또는 close까지 버퍼링 |
+| C2 | `ServerMessageReader` ↔ `ServerMessageChannel` 상태기계 중복 + **정책 드리프트 실재** | `src/stream.ts:38-116` vs `src/transport.ts:408-495` | `[확정]` — 같은 바이트가 두 레이어에서 다른 재연결/드롭 동작을 낸다. A-2 수리가 정책을 일치시키지만 **구조 중복은 남는다** |
+| C3 | `SshChannel.close()` 멱등성 미구현 | `src/node/sshTransport.ts:82-105`, 계약 `transport.ts:129-130` | `[확정]` — 두 소유자가 정리를 경합하면 `end()`/`close()`가 두 번 |
+| C4 | `NdjsonChannel` 이중 waiter 덮어쓰기 | `src/transport.ts:209-299` | `[확정]` — 동시 `nextLine` 2개면 첫 waiter가 덮여 첫 Promise가 영원히 매달린다 |
+| C5 | `hostTimer` 무음 no-op | `src/transport.ts:167-192` | `[확정]` — 타이머 API가 없으면 **문서화된 15초 타임아웃이 무한 대기**가 된다. **N2 참조 — A-⑩ 이후 위험도가 올랐다** |
+| C6 | `seq`가 u128 마커·u64::MAX 초과를 수용 | `src/messages.ts:152-179`, `src/varint.ts:105-147` | `[확정]` — 불가능한 seq를 받으면 갭/순서 로직이 그 값으로 전진해 이후 합법 프레임을 전부 stale로 버린다 |
+| C7 | `encodeHello`가 enum 멤버십 미검증 | `src/messages.ts:80-100` | `[확정]` — 특히 `ClientKeybindings` 태그 1은 `Local{keys_toml}`인데 페이로드 없이 태그만 나간다 → **구조적으로 잘린 variant** |
+| C8 | `JsonApiError`/`JsonApiProtocolError`에 Hermes 프로토타입 복구 누락 | `src/jsonApi.ts:50-68` vs `src/errors.ts:34-39` | `[확정]` — 다운레벨 Hermes 빌드에서 **JSON API 에러만** `instanceof` 실패 → 서버 거절이 알 수 없는 전송 실패로 오분류 |
+| C9 | `connectionCount` 동어반복 게터 | `src/node/sshTransport.ts:115-155` | **삭제 후보.** 단 `test/live-ssh/`가 다중화 계약 검증에 쓴다(변이에서 `expected 7 to be 1`로 실제 검출) → 프로덕션에서 지우고 테스트는 `Client` 생성 스파이로 |
+| C10 | `subscribe`가 `encodeJsonApiRequest`를 재사용하지 않고 손직렬화 | `src/transport.ts:357-366` vs `src/jsonApi.ts:104-111` | `[확정]` — 지금은 바이트 동일하나 봉투 규칙이 바뀌면 **구독만** 조용히 갈라진다 |
+| C11 | `decodedBefore: unknown[]`의 레이어 다형성 | `src/errors.ts:22-40` 외 3곳 | `[확정]` — `FrameReader`는 페이로드를, `ServerMessageReader`는 메시지를 넣는다. 캐스트 의존 |
+| C12 | **잘린 종료가 깨끗한 종료와 구분되지 않는다** | `src/framing.ts:38-45,53-97`(finalize 부재) · `src/transport.ts:441-446`(close가 reader를 안 본다) · `src/jsonApi.ts:78-101`(`LineAccumulator` 동일) | `[확정]` — 부분 프레임을 든 채 닫히면 재현상 `errors:[]` · `closes:[{exitCode:0}]`로 **정상 경계와 동일**하게 보고된다. 최종 LF 없는 완전한 JSON 응답도 "truncated"가 아니라 `API bridge channel closed (exit=0)`이 되고, 이벤트 스트림 재현에서는 **버퍼된 이벤트가 조용히 소실**됐다. **LTE가 끊기는 모바일에서 "잘림"과 "정상 종료"가 같아 보이면 안 된다.** 기존 테스트는 부분 버퍼링과 close 전달을 **따로** 증명할 뿐 둘을 결합한 케이스가 없다 → `end()`/finalize 도입 + 결합 테스트 |
+
+## D. 레포 규약 위반 (별도 축)
+
+- **runtime/client 가이드레일** — 처음 "위반"으로 제기했으나 **`[기각]`**. 가이드레일은 *"Before **adding** state, API fields, events, commands, or socket messages"*를 게이트하는데 이 작업은 그중 아무것도 추가하지 않았고, `ObserveTerminal`은 `bffc4a82`(2026-06-30)로 **2개월 선행**한다 `[v]`. 기존 채널의 **두 번째 소비자**일 뿐이다. → 남은 것은 규칙이 아니라 **의존성 전략**이며 [`02-architecture.md`](./02-architecture.md) §Tensions의 **D8**로 재정의됨.
+- **"No god objects"** (`AGENTS.md` §Universal Project Rules) — `src/transport.ts` 591줄이 채널 분류·브리지 커맨드·호스트 타이머·NDJSON 버퍼링·구독·프레임 디코딩·진단·셸 인용을 전부 소유한다. **C2와 같이 처리하는 게 옳다** — 정책 통일과 모듈 분할은 같은 작업이다.
+
+## E. `format:check` — 닫힘 (2026-08-22)
+
+3갈래 결정으로 올려뒀던 것을 **②(범위 축소 + 채택)**로 실행했다. 근거는 유저가 Rust 쪽에서 같은
+딜레마에 낸 답이다 — `808b5ca7 style: rustfmt the tree ... kept separate from the feature commit so
+that diff stays scoped`: 우회가 아니라 트리를 고치되 커밋을 분리한다.
+
+`.oxfmtrc.json` 신설(`semi:false`, `singleQuote`, `printWidth:100`, `trailingComma:"none"`,
+`ignorePatterns:[".prd/", "**/*.md"]`) 후 `npm run format` 1회. **printWidth 100은 취향이 아니라
+실측이다** — 110이면 불일치 파일이 85개, 120이면 111개로 **늘어난다**(넓은 한계가 저자가 일부러 끊은
+줄을 합치기 때문). 56파일 재포맷, 동작 변경 없음, 별도 커밋.
+
+`format:check`가 처음으로 **exit 0**이며 이제 실제 신호다.
+
+## F. Rust 테스트 게이트 — 실패 7건 중 6건은 테스트 결함이었다 (2026-08-22)
+
+`cargo nextest run --all-features --retries 2 --no-fail-fast`를 이 브랜치에서 돌리면
+**3890건 중 7건 실패**한다. 머지 전 베이스라인(3604건)에서도 **이름까지 동일한 7건**이 실패했으므로
+M-1 업스트림 머지가 만든 신규 실패는 **0건**이다 `[v]`.
+
+**6건의 근본 원인은 앰비언트 환경 유출이다.** 개발 셸이 herdr 세션 안에 있으면 `HERDR_SESSION`이
+테스트 프로세스로 상속되고, `main_server_remote_targets()`가 그 값을 메인 서버의 자기 타깃으로
+읽는다(`src/app/api/remotes.rs:106-117` → `session::active_name()` → `src/session.rs:96-101`).
+그래서 `remote.add`에 `local:dev`를 넣는 테스트가 `duplicate_remote_target`으로 거절되고,
+`add["result"]["remote"]["id"].as_str().unwrap()`이 `None`에서 패닉한다(`remotes.rs:273`).
+**이 세션의 셸이 정확히 `HERDR_SESSION=dev`였다** — 즉 테스트가 자기를 돌리는 사람의 세션 이름에
+따라 결과가 갈린다. CI(세션 밖)에서는 green이므로 아무도 못 본다.
+
+판별 실측 `[v]`:
+
+| 실행 | 결과 |
+|---|---|
+| `HERDR_SESSION=dev` 상속, 전량 | 3883 passed / **7 failed** |
+| herdr env 6종 제거, 전량 | 3889 passed / **1 failed** |
+| 같은 단위 테스트 단독, env 있음 / 없음 | FAIL / **PASS** |
+
+**수리 방향**: 테스트가 앰비언트 env에 의존하지 않도록 `test_app()`이 `HERDR_SESSION`을 명시적으로
+비우거나, `main_server_remote_targets()`를 주입 가능하게 만든다. 지금은 **테스트 결함**이지
+제품 결함이 아니다 — 실사용에서는 자기 세션을 원격으로 다시 등록하는 것을 막는 의도된 동작이다.
+
+**잔존 1건 — 닫힘 (2026-08-22, `origin/mx` 머지로).**
+`live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session`은 머지 전 단독 실행에서 3/3 실패
+(`agent.get` → `agent_not_found`, `tests/live_handoff.rs:1306`)였고, `origin/mx` 16커밋을 머지한 뒤
+**3/3 통과**한다. 전량도 **3981 passed / 0 failed**.
+
+**내 예측이 틀렸다는 것을 함께 남긴다.** 나는 "16커밋이 `src/detect/`·`src/pane.rs`를 건드리지 않으니
+이 실패는 머지로 해결되지 않는다"고 적었다. 파일 집합만 보고 인과를 추론한 것이고, 실제 수정은
+세션 프로브/wedged-server 계열(`7babe1a3`, `2461f4d0`, `c290ae61`)에서 왔다. 어느 커밋인지는
+bisect하지 않았으므로 **미확정으로 남긴다** — "머지가 고쳤다"까지만이 실측이다.
+
+**따라서 herdr 코어 잔여 결함은 없다.** 게이트는 전부 green이다.
+
+---
+
+## G. 스냅샷이 마운트 시점에 얼어붙던 문제 — 닫힘, 잔여 1건 (2026-08-22)
+
+**증상(실기기 실측)**: 앱이 라이브 데이터를 정확히 그린 뒤, 서버에서 에이전트를 `working` → `blocked`로
+바꾸고 워크스페이스를 리네임했는데 **20초가 지나도 화면이 그대로**였다. 원인은 단순했다 —
+`HerdrSnapshotProvider`는 마운트당 1회만 로드하고, `reload`는 존재하지만 **호출하는 화면이 0개**였다
+(`app/`에 `reload` 참조 0건, `RefreshControl` 0건, 스냅샷 경로에 `setInterval` 0건 `[v]`).
+
+계획은 이미 이걸 지정하고 있었다 — B9: "해소 전까지 v1은 구독 대신 `agent.list` 폴링(포그라운드
+3–5초)으로 간다", M2 수용조건 (a): "blocked를 Agents 홈에서 60초 내 발견". 구현이 없었을 뿐이다.
+
+**함정**: `reload()`를 그대로 폴링에 쓸 수 없다. 그 경로는 매 호출마다 `status:'loading'`으로 되돌리고
+실패 시 스냅샷을 `EMPTY_SNAPSHOT`으로 비운다 — 4초 폴링이면 매 틱 깜빡이고, 폰에서 일상적인 ssh 끊김
+한 번에 멀쩡히 읽히던 화면이 통째로 사라진다. 그래서 **배경 갱신(`refresh`)을 초기 로드와 분리**했다:
+`status`를 건드리지 않고, 실패 시 마지막 정상 스냅샷을 유지한 채 `refreshError`만 채운다. 겹침은
+`inFlightRef`로 차단 — 바쁜 로더에 도착한 틱은 큐잉되지 않고 증발한다(B8: JSON 호출 1개 = ssh exec 1개).
+
+**리시트**: 유닛 `use-foreground-refresh.test.tsx` 6건(RED-on-revert 확인 — 폴링 무력화 시
+`expected 'working' to be 'blocked'`, 즉 기기 증상과 같은 문구로 실패). 기기 실측: 앱을 켜둔 채
+22:03:12에 서버를 `ZQ7-POLL-LIVE`+`working`으로 변경 → **22:03:27 화면 반영**(15초). 재시작 없음.
+
+**잔여였던 `refreshError` 미노출은 닫혔다 (2026-08-22).** 두 목록 화면(`app/index.tsx`,
+`app/nodes.tsx`) 헤더가 `snapshotStalenessLabel({updatedAt, refreshError})`을 렌더한다. 규칙 셋:
+①정상이면 **아무것도 안 그린다**(`ConnectionStatusLine`이 "Connected"를 거부하는 것과 같은 이유)
+②`refreshError` 없이 오래된 `updatedAt`도 침묵 — 백그라운드에선 폴러가 멈추므로 나이만으로는
+"아무도 안 물어봤다"일 뿐이다 ③15초 미만 침묵 + 초는 5초 그리드(라벨은 실패한 폴마다만 갱신되므로
+`stale 43s`는 없는 해상도를 주장하는 것). 새 타이머 없음 — 실패 폴이 이미 4초마다 상태를 쓴다.
+
+**기기 실측 `[v]`**: 랩 ssh 세션을 22:25:35에 끊고 22:26:28 캡처 → 헤더가 **`stale 60s`**, 행 데이터는
+마지막 정상값 유지. 그 전 시도에서 라벨이 안 뜬 것은 버그가 아니라 `sshd -D` 마스터만 죽여
+**이미 맺힌 연결의 자식 세션이 살아 있었기** 때문이다(계보 `30825 → 30879 → remote-client-bridge`
+확인 후 그 체인만 종료). 유닛 13건, RED-on-revert 8건 dispatcher 독립 재현.
+
+---
+
+## H. mx 머지 충돌 — 처리 완료 (2026-08-22)
+
+적발했던 충돌(이 브랜치의 #68 해법 = `just ci` → **`ci-mx`(fmt 우회)** vs 유저의 mx 해법 =
+`808b5ca7`로 **트리를 rustfmt**)을 유저 쪽에 맞춰 해소했다.
+
+실행한 것: `origin/mx` 16커밋 머지(충돌은 `docs/next/CHANGELOG.md` 1건 — mx의 Unreleased 항목을
+위에, 업스트림에서 온 `[0.8.2]` 릴리즈 절을 아래에 두어 **양쪽 다 보존**) → `lint-no-fmt`·`ci-mx`
+**삭제** → ci.yml을 모든 브랜치 `just ci` 단일 스텝으로(단, `branches:`의 `mx`는 유지 = #68이
+실제로 필요로 한 부분) → `cargo fmt` (10파일 65줄; 머지가 이미 대부분 정리했다).
+Windows 제외(#63)는 별개 결정이라 손대지 않았다.
+
+**머지 후 게이트**: clippy exit 0 · nextest **3981 passed / 0 failed / 1 skipped** ·
+`cargo fmt --check` exit 0 (herdr env 벗긴 러너 기준). 섹션 F의 잔존 실패도 이 머지로 사라졌다.
+
+## I. RSA 키 경로 판별 완료 + 재발 방지 게이트 (2026-08-22)
+
+`.prd/06`이 "RSA는 미판별"로 남겨둔 것을 **기기 없이 닫았다** — 실제 sshj 0.40.0에 실키를 먹여
+측정했다. 새 게이트 `npm run typecheck:keyformats`가 이 표를 매번 재생산한다 `[v]`:
+
+| 키 (ssh-keygen 생성) | 모듈이 보는 detect | `loadKeys` (현행) | `OpenSSHKeyFile` (구 코드) |
+|---|---|---|---|
+| ed25519, openssh-key-v1 | `OpenSSHv1` | OK `ssh-ed25519` | **FAIL** |
+| **RSA, openssh-key-v1** (7.8+ 기본) | `OpenSSHv1` | OK `ssh-rsa` | **FAIL** |
+| RSA, 고전 PEM (`-m PEM`) | `PKCS8` | OK `ssh-rsa` | OK `ssh-rsa` |
+| ed25519 + passphrase | `OpenSSHv1` | OK `ssh-ed25519` | **FAIL** |
+
+**결론: 구 버그는 ed25519 전용이 아니었다.** 현대 기본 포맷의 RSA도 똑같이 실패했으므로, 기기에서
+RSA 시도가 같은 오류를 낸 것은 오염이 아니라 **정상적인 같은 결함**이었다. 구 코드가 통한 것은
+4종 중 고전 PEM 하나뿐이다.
+
+**앞선 내 측정 1건 정정**: 고전 PEM RSA의 detect를 `OpenSSH`로 적었으나 **모듈이 타는 경로에서는
+`PKCS8`**이다 — `loadKeys(key, null, finder)`가 null 공개키를 `separatePubKey=false`로 넘기기 때문이고,
+`.pub`을 곁들인 프로브는 `OpenSSH`를 보고한다. 버그·수정에는 영향 없고 게이트는 모듈이 실제로 보는
+값을 단언한다.
+
+게이트는 **코드를 복사하지 않는다** — `HerdrSshSession.kt`의 키 로드 블록을 awk로 추출한다(기존
+하네스가 `HerdrSshConnectConfig`를 다루는 방식). 추출 끝 앵커를 `loadKeys`가 아니라 `authPublickey`로
+둔 것이 요점: 수정된 형태에 앵커를 걸면 **버그 형태에서 컴파일조차 안 되어** 게이트가 자기가 지키는
+버그를 표현하지 못한다. 구 형태를 되살려 3행 FAIL + exit 1을 dispatcher가 독립 재현했다.
+
+또 APK 실측: `com/hierynomus/asn1`(고전 PEM 파싱 필수)과 `OpenSSHKeyFile`·`OpenSSHKeyV1KeyFile`·
+`PKCS8KeyFile`이 모두 들어 있다 → 기기에서 네 포맷 모두의 의존이 갖춰져 있다.
+
+---
+
+## J. 이 머지의 실제 blast radius — "모바일 앱 추가"가 아니다 (2026-08-22, 리뷰가 프레임 정정)
+
+머지 게이트 리뷰에서 dispatcher의 프레임이 틀렸다는 지적이 나왔고, 실측으로 확인했다 `[v]`.
+
+**`origin/mx`에는 upstream v0.8.2가 없다** — `git merge-base --is-ancestor ae8009e1 origin/mx` = NO
+(v0.8.0은 in mx, v0.8.2는 NOT). 즉 이 브랜치를 mx에 머지하는 것은 **모바일 앱 + upstream v0.8.2
+동기화(133커밋)를 한 번에 착륙시키는 일**이다. 비-mobile diff = **558파일 / +50905 / −7437**
+(`src/` 167파일, `website+workers+docs` 273파일). 데스크톱 herdr 사용자에 대한 회귀 위험은
+`mobile/`이 아니라 **여기** 있다.
+
+**프로토콜 정체성이 함께 움직인다** `[v]`: mx는 `PROTOCOL_VERSION = 20`이고 `src/protocol/abi.rs`가
+**아예 없다**. 이 브랜치는 `21` + `WIRE_ABI_EPOCH = 3` + 28바이트 프렐류드다. 핸드셰이크는 완전일치
+검사이므로, 착륙 후 바이너리를 올리는 순간 **서버와 클라이언트가 한꺼번에 움직여야 한다** — 혼재
+함대는 붙지 않는다. 이건 결함이 아니라 B1이 의도한 식별 거부(조용한 오파싱보다 낫다)지만, 실사용
+함대를 가진 쪽에는 운영 사건이다. 마침 같은 머지가 들여오는 mx 커밋에 **`herdr live-handoff`**
+(한 명령으로 모든 러닝 세션을 현재 바이너리로 넘김)가 있으므로 업그레이드 수단은 함께 도착한다.
+
+**따라서 이 머지의 리시트는 "mobile 게이트"가 아니라 upstream 동기화 규약이다.** `update-upstream`
+스킬 기준 남은 산출물은 전부 push 이후다: ①`upstream-mirror`를 v0.8.2로 force-push(**머지가 mx에
+착륙한 뒤에** — 순서를 어기면 divergence PR diff가 역방향으로 오염된다) ②상시 divergence PR
+**#81** 갱신(현재 제목 `divergence: mx vs upstream v0.8.0`, base `upstream-mirror` = `346411fa`
+= v0.8.0) ③`mx` push는 `preview-mx.yml`을 격발해 프리릴리즈를 발행하므로 tap·brew까지 완주.
+
+**로컬 리시트가 덮지 못하는 유일한 구멍**: CI 매트릭스에서 `ubuntu-latest`는 nextest `all()`,
+`macos-latest`는 `not binary(live_handoff)`다. 나는 macOS에서 `all()`로 돌렸으므로 macOS CI보다는
+넓지만 **Linux 레그는 대변하지 못한다** — 그리고 mx tip이 하필 `8fec6568 test(live-handoff): drop an
+assertion that is false on Linux`로, 이 영역엔 Linux 특이 파손 전력이 있다. 첫 push의 ubuntu leg는
+눈으로 확인해야 한다.
+
+---
+
+## K. 전송 계층 중복 3건 — 1건은 증거유실 버그 (2026-08-22, 동료 세션 제보 + dispatcher 검증)
+
+세 건 모두 `file:line`으로 직접 확인했다 `[v]`. 이 브랜치가 만든 것이 아니라 M4 전송 작업에 이미 있던 것이다.
+
+**K1 (correctness, 최우선) — `mobile/src/transport/observe-stream-link.ts:184` `closeSummary`가
+인증 증거를 정확히 그때 버린다.**
+공유 `describeClose`(`packages/herdr-client-ts/src/transport.ts:1231`)는 exit·signal·error·stderr를
+모두 렌더하는데, 로컬 사본은 `if (close.error) return close.error.message`로 **조기 반환**해 나머지를
+버린다. 그리고 원본 close는 `:108`의 `activeToken === token`일 때만 `hooks.reportClosed(close)`로
+전달되는데 `activeToken`은 `:132`에서야 설정된다(초기값 `:70` = null) → **Welcome 이전 close에서는
+원본이 아예 전달되지 않고** 손실된 문자열만 남는다.
+결과: `{error: Error('channel closed'), stderr: 'Permission denied (publickey)'}`가
+`'channel closed'`로 납작해져 일반 transport 실패로 분류되고 **영원히 재시도한다** — latch해야 할
+인증 실패인데. 이 세션 내내 다룬 "실패가 성공/일시장애처럼 보이는" 부류의 전송판이다.
+→ 공유 `describeClose`를 쓰고, pre-Welcome close도 원본을 분류기까지 보낸다.
+
+**K2 (wire 불변식) — `mobile/src/transport/client-ping.ts:30,33` 이 Ping/Pong 태그를 하드코딩한다.**
+`CLIENT_MESSAGE_PING_TAG = 10` / `SERVER_MESSAGE_PONG_TAG = 10` + 로컬 `encodePing`이
+공유 홈(`constants.ts`의 `ClientMessageTag`/`SERVER_MESSAGE_VARIANT_NAMES`, `messages.ts`의 인코더)
+**밖**에 있다. `constants.ts`의 "wire 변경은 이 파일 한 곳" 불변식 위반이다. ABI epoch/레이아웃이
+움직여 Ping/Pong 태그가 이동하면 패키지와 서버는 갱신되는데 이 파일은 **여전히 컴파일되고 로컬
+테스트도 green**이다 → 워치독이 엉뚱한 variant를 보내거나 무관한 tag 10을 Pong으로 인식해
+멀쩡한 링크를 흔들거나 죽은 링크를 가린다. 우리는 방금 `WIRE_ABI_EPOCH`를 3으로 올린 참이다.
+→ 태그와 `encodePing`을 `@herdr/client-ts`로 옮긴다.
+
+**K3 (중복, 저위험) — `mobile/src/transport/channel-failure.ts:122` `describe`는 스스로 사본임을
+주석에 밝히고 있다.** 분류 분기 `:99/:108/:115/:118`이 전부 이걸 쓴다. 공유 쪽에 redaction이나
+필드가 추가되면 두 번 고쳐야 하고, 안 고치면 같은 close에 대해 분류기와 코덱의 진단이 갈린다.
+→ `describeClose('closed', close)` 호출로 대체. **주의**: 공유 함수는 `prefix (parts)` 형태이고
+로컬은 `parts`만 반환하므로 렌더 문자열이 바뀐다 — 이걸 단언하는 테스트를 함께 갱신해야 한다.
+
+---
+
+## L. 동료 세션 제보 — 독립 리뷰 7건, 전부 dispatcher가 file:line 재검증 (2026-08-22, 고정 커밋 54308ff)
+
+같은 커밋에 대한 외부 세션들의 CONFIRMED 투표. **inputs not oracles** 원칙대로 전부 직접 열어 확인했고,
+아래는 내 검증 결과다(peer 주장 그대로가 아니다).
+
+### L0 — 인증 증거 유실은 1건이 아니라 **5층 사슬**이다 `[v]`
+
+`.prd/09` §K가 이 중 2층만 봤다. 전체는 이렇다. 각 층이 독립적으로 증거를 지운다:
+
+| 층 | 위치 | 무엇이 사라지나 |
+|---|---|---|
+| 1 | `modules/herdr-ssh/android/.../HerdrSshSession.kt:253-257` | `pumpStdout`이 EOF에서 `finish()`를 부르고, `finish()`가 `pumps.shutdownNow()`로 **동시 실행 중인 stderr 펌프를 중단**시킨 뒤 스냅샷 → stderr **절단**. 그리고 `exitStatus`/`exitSignal`은 별도 채널 요청이라 close 대기 없이 읽으면 **null**일 수 있다 |
+| 2 | `src/transport/observe-stream-link.ts:190-192` | `if (close.error) return close.error.message` 조기 반환이 exit/signal/stderr 폐기 |
+| 3 | 같은 파일 `:108-111` | `activeToken`(`:70` null, `:132` 할당) 때문에 **pre-Welcome close는 원본이 전달되지 않음** |
+| 4 | `src/transport/connection-supervisor.ts:303-312` | dial rejection이 **`{ error }` 단일 필드**로 close를 합성 |
+| 5 | `src/transport/channel-failure.ts:104,110` | `auth`(fatal, `permission denied`/`publickey`)와 `missing-binary`(**`close.exitCode === 127` 필드 참조**)가 볼 것이 없어 `{kind:'transport', fatal:false}`로 낙하 → **영원히 재시도** |
+
+거부된 키를 다시 들이미는 것은 아무것도 바꾸지 않으므로 latch가 정답인데, 5층 중 어디 하나만 고쳐도
+나머지가 여전히 지운다. **1층을 안 고치면 위층 보존은 보존할 것이 없다.**
+
+### L1 — ssh 재다이얼 경로가 앱 수명 내내 없다 `[v]` (§I의 목업 폴백은 **증상**이었다)
+
+`useHerdrSshConnections`는 `useEffect(…, [])`에서 **한 번만** 다이얼한다(`app-connections.ts:135-154`).
+실패한 원격은 `connections`에 들어가지 않고(`:105-118`), `useSupervisedRemotes`는 **성공한 배열로만**
+supervisor를 만든다(`:45-63`) → 실패한 원격에는 타이머도, `forceReconnect` 대상도, foreground nudge
+대상도 없다. 그리고 supervisor의 재시도는 **이미 맺힌 ssh 위에 새 exec 채널을 여는 것뿐**이다 —
+`observe-stream-link.ts:53-63`의 주석이 스스로 그렇게 못박고 있다: *"it cannot recover a dead ssh
+connection, which needs a dialer one level down"*.
+**결론: 시작 시 실패했거나 도중에 죽은 ssh는 앱을 재시작해야만 살아난다.** 내가 §I에서 고치라고
+디스패치한 "목업 대신 에러"는 옳지만 증상 처치이고, 원인은 이쪽이다. 별도 단위로 남긴다.
+
+### L2 — pane 스트림 사망에 복구가 없고, 화면은 "Connected"라고 말한다 `[v]`
+
+`PaneObserver`의 채널 close는 로컬 status만 closed로 바꾸고(`src/session/pane-observer.ts:177-182`),
+`usePaneObserver`는 `[connection, handleRef, hasPane]` 변화에만 재생성하며 close/retry 경로가 없다
+(`use-pane-observer.ts:73-122`). 프로덕션 supervisor는 **별개의 health 스트림**을 감시하므로
+(`use-supervised-remotes.ts:51-61`), pane exec 채널만 죽으면 health 링크는 멀쩡하다 →
+**마지막 프레임을 든 채 "stream ended" + "Connected"가 동시에 표시**되고 리마운트 전까지 복구 없음.
+`SupervisedRemote.observe`는 레지스트리/replay API가 있는데도 테스트에서만 쓰인다.
+
+### L3 — `retarget` 경쟁으로 스트림과 입력이 서로 다른 pane을 가리킬 수 있다 `[v]`
+
+`usePaneObserver:69`가 `void observer.retarget(paneId)`를 직렬화 없이 쏜다. B·C 두 호출이 target=A인
+채로 통과한 뒤 각자 `pane.layout`을 await하고, `pane-observer.ts:249`의 사후 가드는 disposed/채널
+동일성만 본다 → C가 먼저 끝나고 **늦은 B가 마지막에 `target=B`(:252) + `RetargetTerminal(B)`**를 보낼
+수 있다. `PaneViewerScreen`은 입력을 라우트에서 따로 유도하므로(`pane/[paneId].tsx:154-163`)
+**입력은 C, 화면은 B**가 된다. 기존 테스트는 retarget을 직렬 await하거나 라우트를 한 번만 바꾼다.
+
+### L4 — WebView reload 후 터미널이 영구 백지 `[v]`
+
+`TerminalWebView.tsx:214-224`가 pending/coalesced를 비우고 reload하는데, web-ready 경로는
+`onWebReady`/theme/flush만 부르고(`:105-117`) 유일한 부모 콜백은 **NOOP**이다
+(`app/h/[remoteId]/pane/[paneId].tsx:241`). 그 사이 `PaneObserver`는 살아서 프레임을 계속 받고
+sink는 opened로 남아(`:317-320`, reset은 retarget 때만 `:254`) **`RequestFullFrame`이 나가지 않는다**
+(`terminal-frame-sink.ts:129-138`은 reset/unopened sink가 diff를 볼 때만 발화).
+결과: 새 document에 init/term이 없고 이후 diff는 큐잉됐다 flush되지만
+`terminal-webview-html.ts:657-660`이 ready+term 없이는 펌프를 거부한다.
+
+### L5 — 원격 바이너리 설치에 **체크섬 검증이 없다** `[v]` (herdr 코어, 보안)
+
+`src/remote/attach.rs`가 자산 URL만 역직렬화하고(`:704-718`) 받은 바이트를 **검증 없이**
+(`:2012-2031`) ssh로 스트리밍해 원자적으로 설치한다(`:2096-2149`). 설치 후 검사(`:880-887`,
+`:1010-1086`)는 설치된 바이너리를 실행해 **자기 보고** 버전/프로토콜을 묻는 것이라 무결성 검증이 아니다.
+대조: `src/update.rs`는 매니페스트 체크섬을 **요구**하고(`:407-429`) `verify_sha256`으로 검증한다
+(`:623-664`). `sha256` 문자열 출현 수 = update.rs **36** vs attach.rs **2**.
+그리고 이 포크는 upstream v0.8.2의 sha256 자산 맵을 **의도적으로 머지하지 않았다** —
+`attach.rs:3936-3938` 주석이 그렇게 적고 있다(소비자인 `resolve_release_asset`을 포크가 자체 시딩
+경로로 대체했기 때문). TLS는 전송/매니페스트 호스트만 지키므로, **신뢰된 매니페스트를 받은 뒤 자산
+스토어가 교체되는 시나리오**를 막지 못한다.
+**이건 모바일이 아니라 herdr 코어이고, 이 머지가 `attach.rs`를 +4484줄 들여온다.** 머지 차단 사유로
+올릴지는 유저 판단이지만, 원격에 바이너리를 심는 경로라 등급이 높다.
+
+**처리 상태**: L0의 1층·2~4층은 각각 별도 단위로 수정 위임됨. L1·L2·L3·L4·L5는 **미착수 큐**.
+
+---
+
+---
+
+**규율**: 이 목록은 *n번째 문서화*가 아니라 **추적 큐**다. 항목을 닫을 때는 여기서 지우고 커밋 메시지에 근거를 남긴다.
+
+## M. §K1·K3 + AbiMismatch — 닫힘 (2026-08-22, 커밋 `d8d36bb5`)
+
+증거 유실 사슬은 §K에 적었던 2층이 아니라 **5층**이었다. 그중 2~4층이 닫혔다.
+
+| 층 | 위치 | 상태 |
+|---|---|---|
+| 1 | `HerdrSshSession.kt:253-257` — `shutdownNow()`가 배수 중 stderr 펌프를 끊고, 채널 close 전에 `exitStatus`를 읽는다 | **열림** (위임 중) |
+| 2 | `observe-stream-link.ts` — pre-Welcome close에서 `close.error?.message`만 남기고 exit/signal/stderr 폐기 | 닫힘 — 구조체째 `hooks.reportClosed(close)` |
+| 3 | 같은 파일 — `activeToken`이 핸드셰이크 후에야 설정돼, pre-Welcome close에 **보고할 주체가 없었다** | 닫힘 — `dialToken`(다이얼 시작 시 청구) / `activeToken`(핸드셰이크 후) 분리 |
+| 4 | `connection-supervisor.ts:303-312` — 거부된 다이얼을 `{ error }` 단일 필드로 재합성 | 닫힘 — `closeOfDialRejection(error)` |
+| 5 | `channel-failure.ts` — `AbiMismatchError`가 fatal 분기에 없어 무한 재접속 | 닫힘 — `protocol/fatal` + `WIRE_ABI_HINT` + `describeAbiRefusal` |
+
+5층은 이 브랜치가 자초한 구멍이었다: M0가 `WIRE_ABI_EPOCH`와 프렐류드를 만들어 서버에 "낯선 레이아웃을 거부하라"를 가르쳤으나, 클라이언트에는 **그 거부가 복구 불가능하다**는 것을 가르치지 않았다. `grep -rn AbiMismatch mobile/` = 0건이었다.
+
+RED-on-revert 3종 독립 재현(2층·4층·경합 가드). 게이트 72파일/650테스트, typecheck·lint·format:check exit 0.
+
+### 잔여 — 같은 모양의 **네 번째 사본**
+
+`mobile/test/live/paneViewerOutage.live.test.tsx:282-286`의 `sshRedialLink` 팩토리가 `close.error?.message` + 핸드셰이크-후 `activeToken` 게이트를 동일하게 갖고 있다. 결과: **실제 sshd에 다이얼하는 유일한 리시트가 구조적으로 이 수정을 관측할 수 없다.** "나쁜 키가 latch된다"를 종단으로 증명하려면 여기부터다.
+
+그리고 이 사슬 전체는 Android transport가 실제로 `stderr`/`exitCode`를 채워야 폰에서 발화한다 (`ssh-transport.ts:42`의 "부재 = undefined" 규약, `packages/herdr-client-ts/src/transport.ts:184-186`).
+
+## N. 무체크섬 원격 설치 — 귀속 재측정 (2026-08-22)
+
+패널 1인이 `attach.rs`의 release-asset 무검증 설치를 **머지 차단**으로 들었다. 귀속을 직접 쟀다:
+
+| 측정 | 값 |
+|---|---|
+| `git show origin/mx:src/remote/unix.rs \| grep -ci sha256` | **0** |
+| `git show feat/mobile-client:src/remote/attach.rs \| grep -ci sha256` | 2 (검증에 쓰이지 않는 잔재) |
+| 대조군 `src/update.rs` (자가 업데이트 경로) | origin/mx **20** / branch **36** |
+| `origin/mx:src/remote/unix.rs:1946` | `fn download_release_asset` 존재 |
+
+upstream v0.8.2가 `unix.rs`를 `attach.rs`로 재편했을 뿐, **무체크섬 원격 설치 경로는 mx에 이미 있었다.**
+
+### 정정 — 위 측정은 baseline이 틀렸다 (2026-08-22, 합성 패널이 지적, dispatcher 재측정)
+
+`origin/mx` 직전 상태를 zero로 잡으면 "upstream이 줬는데 우리가 버린 것"이 **구조적으로 관측 불가능**하다. 올바른 zero는 이 머지 자신의 계약(mx ∪ upstream)이다. 그 계기로 재니 판정이 뒤집힌다:
+
+| 측정 | 값 |
+|---|---|
+| `git show ae8009e1^2:src/remote/attach.rs \| grep -ci sha256` (upstream 부모) | **22** |
+| 그중 `:1447` | `crate::checksum::verify_sha256(&path, expected)` — **실호출** |
+| `git show ae8009e1:src/remote/attach.rs \| grep -ci sha256` (머지 결과) | **2** — 테스트 픽스처 JSON + 주석뿐 |
+| `struct RemoteUpdateManifest` (`attach.rs:704-711`) | `sha256` 필드 **없음** → 매니페스트의 체크섬 맵이 역직렬화에서 증발 |
+| `attach.rs:3915-3938` | 그 증발을 **테스트가 고정한다** — `"sha256": {...}`를 포함한 매니페스트를 먹이고, 주석이 "upstream v0.8.2's `sha256` asset-checksum map is not merged … See DIVERGENCE.md" |
+
+⇒ **upstream v0.8.2는 이 결함의 수정본을 들고 왔고, 이 머지가 그것을 의도적으로 반려했다.** 귀속은 "기존 부채"도 "새 회귀"도 아닌 제3범주 — **머지-귀속 손실**이다.
+
+**합성 패널의 한 주장은 틀렸다**: `src/checksum.rs`는 머지를 넘어왔다 (`ae8009e1^2`·`ae8009e1`·`feat/mobile-client`·`origin/mx` 전부 존재). 사라진 것은 모듈이 아니라 **원격 설치 경로의 호출부**다. 자가 업데이트(`src/update.rs:657,740`)는 여전히 `verify_sha256`을 부른다. 즉 결함의 본체는 **자가 업데이트는 검증하는데 원격 설치는 안 하는 비대칭**이고, 복원 비용은 모듈 신설이 아니라 필드+호출부다.
+
+### 그런데 진짜 위험은 결함이 아니라 안치 장소다
+
+`DIVERGENCE.md:70-73`이 sha256 맵을 #355 keepalive 이연과 **같은 불릿**에 넣고 이렇게 끝난다 — 그 항목들을 `#[allow(dead_code)]` 뒤에 유지하는 이유는 "**so the next merge stays quiet here**". DIVERGENCE.md의 의미론은 "숙고 끝에 수용한 분기"이고, 저 문장은 그 파일이 **다음 머지에서 신호를 끄도록 설계**됐음을 명시한다. **보안 통제를 그 원장에 넣으면 다시 검토되지 않는다.**
+
+→ 조치 순서: ①`DIVERGENCE.md:70-73`에서 sha256 항목을 **빼내 오너 있는 이슈로 재기표** ②그다음 `RemoteUpdateManifest.sha256` 필드 + `resolve_release_asset` 호출부 복원(upstream이 이미 쓴 코드). 순서가 이렇다 — 원장에 남는 한 다음 머지에서도 안 보인다.
+
+### 그래도 차단이 아닌 이유
+
+차단은 노출을 **1도 줄이지 않는다**. mx는 이미 바이트 동일한 무체크섬 경로를 배포 중이고(`origin/mx:src/remote/unix.rs:1946` ↔ `attach.rs:1951`, 유일한 차이는 `private_download_dir` base가 `std::env::temp_dir()`→`remote_private_temp_base()`로 **강화**된 것), 머지를 거절하면 노출은 그대로인 채 모바일 작업과 upstream 133커밋(그 강화 포함)을 잃는다. 노출 조건도 좁다: `channel != "stable"`이면 다운로드 전 Err, 번들 페이로드나 `HERDR_REMOTE_BINARY`가 있으면 Download 티어 미도달, TLS가 전송을 덮으므로 남는 위협은 릴리즈 자산/오리진 치환.
+
+## O. 세대 격리 실패 — 라운드 3 리뷰가 낸 차단 결함 (2026-08-22)
+
+외부 패널 1인이 라운드 3에서 낸 것. dispatcher가 `file:line`으로 재구성해 확인했다. **mx 기존 부채가 아니라 이 브랜치가 들여오는 supervisor의 결함이다.**
+
+### 결함 1 — 폐기된 세대가 현재 세대의 liveness를 죽인다
+
+```
+1. Gen A 다이얼 → observe-stream-link.ts:88  dialToken = A
+2. supervisor가 stale dial 폐기 (connection-supervisor.ts:225-239)
+   → :218-224 주석이 자인: pending dial은 promise일 뿐이라 this.link === null,
+     닫을 객체가 없다. 세대만 교체된다.
+3. Gen B 핸드셰이크 성공 → :171 activeToken = B. 정상 연결.
+4. Gen A의 늦은 Welcome → onMessage(:99-115)에 세대 검사 없음 → A의 handshake 해소
+   → :171 activeToken = token   ← 가드 없이 A로 덮어쓴다
+5. A의 promise → connection-supervisor.ts:302-305가 stale로 보고 link.terminate()
+   → terminate가 activeToken을 null로
+6. Gen B의 probe()(:176-178) → activeToken !== token → 영구 false
+   → 워치독이 침묵으로 읽고 멀쩡한 연결을 죽인다
+```
+
+4단계만으로 이미 B가 깨진다. 5단계는 null로 만들 뿐이다.
+
+**커버리지 비대칭이 원인**: `onClose`(`:126-133`)에는 `dialToken !== token` 가드가 있는데(커밋 `d8d36bb5`가 넣은 것) `onMessage`·`onUndecodable`·핸드셰이크 후 상태 변경에는 없다. §M이 close 경로만 닫고 welcome 경로를 남겼다.
+
+### 결함 2 — 응답 없는 dial의 exec 채널이 고아가 된다
+
+`channel = opened`(`:154`)는 공유 변수이고 새 dial이 덮는다. 폐기된 dial의 `opened`는 그 클로저에서만 도달 가능한데, peer가 Welcome도 close도 안 보내면 `await handshake`가 영원히 안 풀려 **`SupervisedLink`를 반환하지 못한다** → 아무도 `terminate()`를 못 부른다 → `opened.close()`가 절대 안 불린다. supervisor도 `this.link === null`이라 못 닫는다.
+
+foreground 부활마다 exec 채널 + 원격 `herdr` bridge 프로세스가 누적된다. B8(1 JSON = 1 ssh exec = 1 원격 프로세스)이 이미 압박받는 자원이다.
+
+### 이것이 주는 교훈
+
+`proxy-green` — close-evidence 테스트가 green이어도 pending dial의 **자원 소유권과 세대 격리**를 검증하지 않으면 연결 수명주기는 green이 아니다. 기존 테스트 `cannot latch the generation that replaced it`은 **close 경로의 세대 격리만** 증명한다. welcome 경로는 무증명이었다.

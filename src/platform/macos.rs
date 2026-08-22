@@ -12,6 +12,12 @@ use super::{
     LimitedRead, Signal,
 };
 
+pub(crate) use super::unix_common::{
+    configure_status_command, create_remote_private_dir, hostname, local_datetime,
+    remote_private_temp_base, remote_reattach_argument, remote_reattach_program,
+    status_commands_supported, StatusCommandGuard,
+};
+
 const PROC_PGRP_ONLY: u32 = 2;
 const SERVER_NOFILE_LIMIT_TARGET: libc::rlim_t = 8192;
 
@@ -20,6 +26,10 @@ const SERVER_NOFILE_LIMIT_TARGET: libc::rlim_t = 8192;
 #[allow(dead_code)]
 pub(crate) fn should_draw_host_cursor_by_default() -> bool {
     false
+}
+
+pub(crate) fn should_query_host_terminal_palette() -> bool {
+    true
 }
 
 fn raw_command_argv(command: &str, flag: &str) -> Vec<std::ffi::OsString> {
@@ -514,14 +524,14 @@ pub fn read_clipboard_text() -> Option<String> {
     }
 }
 
-pub fn open_url(url: &str) -> std::io::Result<()> {
+pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
     Command::new("open")
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
-    Ok(())
+        .spawn()
+        .map(Some)
 }
 
 pub fn read_clipboard_image() -> Option<ClipboardImage> {

@@ -1,0 +1,10 @@
+{
+  "//": "Not from orca. What links this local Expo module: `expo-modules-autolinking` resolves `./modules` as nativeModulesDir by default (build/commands/autolinkingOptions.js:170-174) and scans it before anything else (build/autolinking/findModules.js:40-44), so no app.json entry is involved. The podspec is discovered by globbing ios/*.podspec (build/platforms/apple/apple.js:22-29).",
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["HerdrSshModule"]
+  },
+  "android": {
+    "modules": ["dev.herdr.ssh.HerdrSshModule"]
+  }
+}

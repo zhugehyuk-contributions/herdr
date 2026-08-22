@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"]
+  },
+  "exclude": [],
+  "include": [
+    "src",
+    "test",
+    "vitest.config.ts",
+    "vitest.live.config.ts",
+    "vitest.live-ssh.config.ts"
+  ]
+}

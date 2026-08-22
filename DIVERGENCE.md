@@ -2,7 +2,7 @@
 
 herdr-mx = upstream [herdr](https://github.com/ogulcancelik/herdr) + the changes on this page. nothing else.
 
-currently tracking: **upstream v0.8.0** (released 2026-08-03; PROTOCOL_VERSION 20 = union past mx 18 / upstream 19). note: `docs/next/CHANGELOG.md` version sections are upstream's release notes preserved verbatim (they may mention upstream features this fork rejects — e.g. sidebar token styling); THIS page is the SSOT for what herdr-mx actually ships. policy: every upstream release is merged within days, mx releases are tagged `v<upstream>-mx.<n>`, and anything on this page is offered upstream when it fits — when a feature lands upstream it leaves this page. when *everything* lands upstream, herdr-mx retires.
+currently tracking: **upstream v0.8.2** (released 2026-08-19; herdr-mx `PROTOCOL_VERSION` 21 + `WIRE_ABI_EPOCH` 3 — upstream is still on 20, and since both forks once shipped `20` with different tags, the layout identity is the `(fork, wire_abi_epoch, schema_fingerprint)` prelude in `src/protocol/abi.rs`, not the version integer; every ABI generation and its compatibility decision is `docs/next/protocol/abi-history.json`). note: `docs/next/CHANGELOG.md` version sections are upstream's release notes preserved verbatim (they may mention upstream features this fork rejects — e.g. sidebar token styling); THIS page is the SSOT for what herdr-mx actually ships. policy: every upstream release is merged within days, mx releases are tagged `v<upstream>-mx.<n>`, and anything on this page is offered upstream when it fits — when a feature lands upstream it leaves this page. when *everything* lands upstream, herdr-mx retires.
 
 ## the big one: multi-remote client
 
@@ -36,6 +36,79 @@ upstream herdr attaches to one server at a time (`herdr --remote <host>` per ter
 
 - cline phantom-working guard (#37): upstream's new manifest-based detection defaults cline to "working" again; the mx fix needs a `manifests/cline.toml` override.
 - deferred remote refinements from the #60→#62 merge: upstream keepalive (#355), fish-shell remote bootstrap (#396), mise+preview remote seeding.
+
+## deferred / rejected in the v0.8.2 merge
+
+merged 2026-08-22 (`v0.8.0..v0.8.2` = 133 upstream commits, 31 conflicted files). the tail rule
+held: `wire_fixtures.json`'s `enums` table is byte-identical across the merge, so every mx wire tag
+(`ServerMessage::Terminal` 13, `ClientMessage::ObserveTerminal` 12 / `RetargetTerminal` 14,
+`ClientLaunchMode::TerminalAttach` 1) survived. upstream's own additions sit at the tails
+(`ClientMessage` 15–17, `ServerMessage` 15–17) and `ClientLaunchMode::AppDirectGraphics`, which
+upstream inserted *between* `App` and `TerminalAttach`, was moved to that enum's tail.
+
+per-file resolution decisions (31 conflicted files + the ones that auto-merged wrong) are
+[`docs/next/merge-log/upstream-v0.8.2.md`](docs/next/merge-log/upstream-v0.8.2.md) — read it before
+the next sync, it names the two failure modes git will not flag for you.
+
+**rejected** (this fork will not carry them):
+
+- **direct (audited local) kitty graphics on the client** — `src/client/direct_graphics.rs`, the
+  SGR-1016 pixel-mouse reader in `src/client/input.rs`, and `ClientLaunchMode::AppDirectGraphics`
+  negotiation. upstream's own gate (`direct_graphics_profile_allowed`) returns false for remote /
+  ssh / tmux clients, i.e. herdr-mx's primary shape, and the arming + response plumbing lives in
+  the client loop this fork rewrote. the **server** side merged in and is inert: `GraphicsFile` /
+  `GraphicsTransmissionRetired` are accepted and ignored by the mx client, and the mx client never
+  asks for `AppDirectGraphics`, so a conforming server never sends them.
+- **windows** — upstream v0.8.2 made `src/remote/attach.rs` cross-platform (splitting the host half
+  into `host_unix.rs`) and added a windows release matrix row. both rejected: the multi-remote
+  bridge is unix-only ([#63](https://github.com/2lab-ai/herdr-mx/issues/63)) and the mx release job
+  publishes `fat/` bundles, not per-target archives.
+- **upstream's interprocess bridge listener** — `bind_private_local_listener` /
+  `prepare_remote_bridge_stream`. the mx bridge's whole worker chain is typed on `UnixStream` and
+  it keeps `UnixListener::bind`. upstream's *ownership-checked* socket removal
+  (`remove_socket_file_if_owned`) WAS adopted around it — a blind `remove_file` races a successor.
+- **managed ssh config keepalives** (#355, already deferred at v0.8.0) — lives inside a code path
+  the mx seeding/bridge rewrite replaced. `RemoteSshConfigPaths` and friends are kept behind
+  `#[allow(dead_code)]` so the next merge stays quiet here.
+- the **sha256 asset checksum map** in the update manifest was in that bullet until 2026-08-23, and
+  should not have been. This ledger records divergences we chose and intend to keep, and its stated
+  device for them is to keep the next merge quiet — which is exactly the wrong thing to do to a
+  security control we dropped. Upstream v0.8.2 wires `verify_sha256` into the remote install path;
+  the mx seeding rewrite replaced that consumer, so `RemoteUpdateManifest` has no `sha256` field and
+  the map evaporates at deserialization, while self-update (`src/update.rs:657`, `:740`) still
+  verifies. Tracked, with an owner, at
+  [#90](https://github.com/2lab-ai/herdr-mx/issues/90) — not kept, and not quiet.
+- **`agent_panel_scope` retirement** — upstream deleted the workspace filter and left only a legacy
+  deserializer. herdr-mx keeps the live knob: the multi-remote agents panel is a fleet view where
+  "current workspace only" is the useful reduction.
+- **`[ui.sidebar.agents]` / `[ui.sidebar.spaces]` sample config** in `herdr --default-config` and
+  the sidebar-token tests in `src/ui/sidebar.rs` / `src/app/input/sidebar.rs` — the same rejected
+  token subsystem as at v0.8.0; mx ships its own sections at those TOML paths.
+
+**adopted** (worth naming because they are not free):
+
+- **`ui.status_indicators` (`dots` | `symbols`)** — additive, and the settings-TUI / `ui/mobile.rs`
+  rows that drive it merged cleanly. upstream's `state_dot` → `state_icon` rename came with it; the
+  mx spinner (`agent_icon`) still owns the agent rows, so both live in `src/ui/status.rs`.
+- **the fallible terminal restore** (`ratatui::try_restore`, `TerminalGuard::restore`). not
+  cosmetic: mx's `ratatui::restore()` **panics** when the host terminal is already gone, and it ran
+  from `Drop`, so a hung-up PTY aborted the client (`SIGABRT`). upstream's two new
+  `client_exits_cleanly_when_terminal_*_hang_up` tests caught it during this merge.
+- **compact large terminal redraws** (#2675, `36074530`). upstream rewrote `write_all_cells`
+  (`src/protocol/render_ansi.rs:639`) to skip the per-cell cursor move when the next cell is inline
+  and to re-emit SGR only on an actual style change. that is the **live** observe encoder, not just
+  the fixture one: `src/server/render_stream.rs:101` → `BlitEncoder::encode` →
+  `src/protocol/render_ansi.rs:483` → `write_all_cells`, and those bytes become
+  `ServerMessage::Terminal` verbatim (`render_stream.rs:114-121`). measured at 100×30 **after** the
+  merge: **3,276 bytes live** (`tests/observe_terminal_ansi.rs`, 2 consecutive runs), 3,274 from the
+  TS client over both a direct socket and the ssh bridge, 3,292 for the synthesized fixture — against
+  **55,925 / 55,921** before. `mobile/.prd/03-blockers.md` **B13** ("18.6 B/cell, ~56 KB per full
+  frame") is therefore stale, and so is the "marshal 56 KB across the RN bridge" risk.
+- **headless default terminal size 80×24 → 120×40** (#2828). observable: a live pane's PTY is now
+  39×93 where it was 23×53. it re-wraps every pane's echoed output, which is what surfaced a
+  wrap-brittle assertion in `mobile/test/live/paneInput.live.test.tsx`.
+- upstream's non-foreground scroll preservation in `render_and_stream`, folded around mx's
+  `ClientSurfaceMode` branch rather than replacing it.
 
 ## deferred from the v0.8.0 merge
 

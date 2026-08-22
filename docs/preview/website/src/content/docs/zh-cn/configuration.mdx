@@ -50,6 +50,18 @@ herdr server reload-config
 
 重载会在不重启窗格的情况下应用大多数 UI 设置。仅启动时生效的设置仍需重启。
 
+## 无客户端终端尺寸
+
+没有客户端连接时，服务器会使用 120×40 的虚拟终端进行布局并创建新窗格。可通过以下配置更改用于无客户端编排的回退尺寸：
+
+```toml
+[server]
+headless_cols = 160
+headless_rows = 50
+```
+
+客户端连接后，其尺寸仍决定共享运行时的大小。客户端断开后，现有窗格 PTY 会保留上次连接时的尺寸，而新的无客户端布局会使用配置的回退值。
+
 ## 终端默认值
 
 设置 Herdr 创建新交互式窗格时使用的可执行文件：
@@ -98,14 +110,14 @@ Git 工作区行提供 worktree 操作。`New worktree` 会创建检出：如果
 
 ## 远程连接
 
-远程连接默认使用临时保活设置和连接复用兜底来管理 SSH 连接。
+远程连接默认使用临时保活设置，并在支持时复用连接，以管理 SSH 连接。
 
 ```toml
 [remote]
 manage_ssh_config = true
 ```
 
-启用后，`herdr --remote` 会写入一份私有的临时 SSH 配置：先包含你的 `~/.ssh/config` 和 `/etc/ssh/ssh_config`，再添加兜底的 `ServerAliveInterval` 和 `ServerAliveCountMax` 值。你自己的保活设置优先。Herdr 还会为每次远程连接使用私有的 OpenSSH control socket，以复用首次通过身份验证的连接。设置 `manage_ssh_config = false` 可通过普通 `ssh` 进行远程连接，不使用 Herdr 生成的配置或 control socket。
+启用后，`herdr --remote` 会写入一份私有的临时 SSH 配置：先包含用户和系统 SSH 配置，再添加兜底的 `ServerAliveInterval` 和 `ServerAliveCountMax` 值。你自己的保活设置优先。Linux 和 macOS 客户端还会为每次远程连接使用私有的 OpenSSH control socket，以复用首次通过身份验证的连接；Windows OpenSSH 不使用此复用方式。设置 `manage_ssh_config = false` 可通过普通 `ssh` 进行远程连接，不使用 Herdr 生成的配置或 control socket。
 
 ## 按键绑定
 
@@ -137,7 +149,15 @@ split_horizontal = "prefix+minus"
 next_tab = ["prefix+n", "ctrl+alt+]"]
 ```
 
-可选动作默认不设置。使用 `prefix+` 可获得前缀模式行为；当你确实需要直接快捷键时，请使用显式的修饰组合键。
+可选动作默认不设置。使用 `prefix+` 可获得前缀模式行为；当你确实需要直接快捷键时，请使用显式的修饰组合键。例如，可以像 tmux 一样通过一次按键调整窗格大小，而无需进入调整大小模式：
+
+```toml
+[keys]
+resize_pane_left = "ctrl+shift+alt+left"
+resize_pane_down = "ctrl+shift+alt+down"
+resize_pane_up = "ctrl+shift+alt+up"
+resize_pane_right = "ctrl+shift+alt+right"
+```
 
 按键字符串支持普通按键、`ctrl+a`、`shift+n`、`alt+1`、`cmd+k` 等修饰组合键，以及 `enter`、`tab`、`esc`、`left`、`right`、`up`、`down` 等特殊键。也支持 `minus`、`comma`、`ampersand`、`plus`、`backtick` 等命名标点。直接绑定 `n` 这样的普通可打印键并不安全，因为它会拦截输入；除非你有意设置直接绑定，否则请使用 `prefix+n`。`navigate_workspace_*` 和 `navigate_pane_*` 字段仅在导航模式中生效，可以使用 `j` 或 `k` 等普通按键；它们不得使用 `prefix+`、`esc`、`enter`、`tab`、`shift+tab`、`left`、`right`，也不得使用无修饰键的 `1` 到 `9`。左右方向键是向左和向右导航窗格的永久别名。这些导航模式快捷键独立于 `focus_pane_down = "prefix+j"` 等通用动作绑定；两者使用同一按键时，打开导航模式后，导航模式快捷键优先。Alt、Cmd/Super 以及带修饰键的标点取决于你的终端和 tmux 设置。
 
@@ -238,6 +258,9 @@ dark_name = "catppuccin"
 
 ```toml
 [theme.custom]
+sidebar_bg = "#181825"
+active_row_bg = "#1e1e2e"
+selection_bg = "#313244"
 panel_bg = "reset"
 accent = "#a6e3a1"
 green = "#a6e3a1"
@@ -246,11 +269,59 @@ red = "#f38ba8"
 yellow = "#f9e2af"
 ```
 
+`sidebar_bg` 可单独设置桌面侧边栏的背景色。省略时，侧边栏继续使用宿主终端背景。`active_row_bg` 可更改当前 Space 和已聚焦 Agent 行的背景色，而不会影响分隔线或滚动条轨道。`selection_bg` 可更改侧边栏中 Navigate 模式光标行的背景色。
+
 颜色值支持十六进制、命名颜色、`rgb(r,g,b)`，以及 `reset`、`default`、`none`、`transparent` 等重置别名。
 
 ## UI 与侧边栏
 
 侧边栏是 Herdr 的主仪表盘。在[配置参考](/docs/config-reference/)中搜索 `ui.`，可查看尺寸、折叠模式、Agent 面板排序、鼠标行为、窗格边框和其他显示设置。
+
+在 `[ui]` 下设置 `tab_bar_position = "bottom"`，可将桌面标签栏放到终端窗格下方。Prefix、Navigate、Copy 和 Resize 模式栏会在显示期间临时替换底部标签栏。默认值为 `"top"`。
+
+可在标签栏右侧配置一个类似 tmux 的有序状态区：
+
+```toml
+[ui]
+tab_bar_right = [
+  { type = "zoom" },
+  { type = "hostname" },
+  { type = "datetime", format = "%H:%M" },
+  { type = "text", text = "prod" },
+  { type = "command", command = "~/.config/herdr/status.sh", interval_seconds = 5, timeout_seconds = 2 },
+]
+tab_bar_right_separator = " · "
+```
+
+状态区默认为空。添加 `zoom` 后，活动标签页处于缩放状态时会显示固定的 `ZOOM` 标记；它与现有的逐标签页 `Z` 标记相互独立。`hostname`、`datetime` 和 `command` 在 Herdr 服务器上解析，因此使用 `herdr --remote` 时会显示远程机器的值。日期时间条目使用 `strftime` 格式。由于该值是服务器本地的墙上时钟时间，需要 UTC 偏移量或 Unix 时间戳的 `%z`、`%s` 等指令会被拒绝。
+
+命令条目会立即运行，之后按 `interval_seconds` 刷新，不会阻塞渲染，也不会与上一次运行重叠。间隔范围为 1–31,536,000 秒，超时范围为 1–3,600 秒。Herdr 使用成功输出的最后一行；执行失败、输出为空或超过 `timeout_seconds` 后会清除该值。命令会获得与自定义命令按键绑定相同的活动工作区、标签页、窗格、socket、二进制文件和工作目录上下文。Linux、macOS 和 Windows 均支持命令条目；Linux 和 macOS 使用 `/bin/sh -lc`，Windows 使用 `cmd.exe /d /c`。
+
+分隔符只会出现在可见条目之间。设置 `tab_bar_right_separator = ""` 可直接连接条目。标签栏较窄时，整个状态区会让位给标签页及其控件。
+
+### 外层终端窗口标题
+
+Herdr 会模拟各窗格中的终端，因此窗格内写入的 `OSC 0`/`OSC 2` 标题只会停留在 Herdr。Herdr 会向自己所运行的终端写入自己的标题，窗口管理器和终端标签栏读取的正是这个标题：
+
+```toml
+[ui]
+window_title = "{hostname}: {workspace}"
+```
+
+可用记号为 `{hostname}`、`{workspace}`、`{tab}`、`{pane}`（聚焦窗格的手动名称）和 `{terminal_title}`（聚焦窗格自身的终端标题，已去除加载动画字符）。用 `{{` 和 `}}` 表示字面花括号。没有值的记号会渲染为空。
+
+标题在 Herdr 服务器上生成，因此即使通过 `herdr --remote` 连接或经由 SSH 运行 `herdr`，`{hostname}` 仍然指向运行窗格的那台机器。设置 `window_title = ""` 可以不改动外层终端标题。
+
+`client.window_title.set` 会覆盖配置的标题，直到 `client.window_title.clear` 将其交还。
+
+智能体状态默认使用紧凑的彩色圆点。若要同时通过形状和颜色区分 blocked、working、done、idle 与 unknown 状态，请在设置中选择 **distinct symbols**，或配置：
+
+```toml
+[ui]
+status_indicators = "symbols"
+```
+
+这些符号是静态的，因此该选项不会启用旋转动画。
 
 ### 侧边栏行布局
 
@@ -366,6 +437,8 @@ position = "bottom-right"
 ```
 
 选择 `herdr` 可使用应用内 toast，选择 `terminal` 可使用适合 SSH 场景的外层终端通知，选择 `system` 可使用本地操作系统通知服务，选择 `off` 可禁用弹出通知。Herdr 会抑制活动标签页的弹出通知。在[配置参考](/docs/config-reference/)中搜索 `ui.toast`，可查看位置、延迟行为和剪贴板反馈设置。
+
+在 macOS 上，`system` 会先尝试 `terminal-notifier`；如果它不可用或执行失败，则回退到 `/usr/bin/osascript`。该回退方式会在通知中心显示为 Script Editor，并且无法激活承载 Herdr 的终端。可运行 `brew install terminal-notifier` 安装 `terminal-notifier`。如果 Herdr 检测到受支持的终端，点击通知时它可以激活该终端应用。也可以选择 `terminal`，让受支持的外层终端负责发送通知。
 
 ## 声音
 

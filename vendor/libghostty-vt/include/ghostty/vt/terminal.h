@@ -1197,6 +1197,13 @@ typedef enum GHOSTTY_ENUM_TYPED {
    * Output type: bool *
    */
   GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE = 32,
+
+  /**
+   * Whether xterm modifyOtherKeys mode 2 is enabled.
+   *
+   * Output type: bool *
+   */
+  GHOSTTY_TERMINAL_DATA_MODIFY_OTHER_KEYS = 33,
   GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalData;
 
