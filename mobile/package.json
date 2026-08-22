@@ -18,7 +18,8 @@
     "format:check": "oxfmt --check .",
     "typecheck:android": "modules/herdr-ssh/typecheck/run.sh",
     "typecheck:ios": "modules/herdr-ssh/typecheck/ios/run.sh",
-    "typecheck:keyformats": "modules/herdr-ssh/typecheck/keyformats/run.sh"
+    "typecheck:keyformats": "modules/herdr-ssh/typecheck/keyformats/run.sh",
+    "typecheck:closepayload": "modules/herdr-ssh/typecheck/closepayload/run.sh"
   },
   "dependencies": {
     "@herdr/client-ts": "link:../packages/herdr-client-ts",

@@ -1,6 +1,7 @@
 // Not from orca.
 //
-// ⚠️⚠️ **UNVERIFIED SOURCE.** Never compiled. See the header of `HerdrSshModule.kt`.
+// Compiled and exercised by `modules/herdr-ssh/typecheck/`. See the header of `HerdrSshModule.kt`
+// for what that proves and what it does not.
 //
 // The sshj plumbing: dialing, one connection with N sessions, and the translation of one
 // `Session.Command` into the `(onData, onClose)` pair the TypeScript side handed over.
@@ -25,6 +26,29 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider
 
 /** How many bytes a pump hands to JS at once. Chunk boundaries are meaningless to the framer. */
 private const val PUMP_BUFFER = 32 * 1024
+
+/**
+ * How long a close waits for the channel's own `CHANNEL_CLOSE` before giving up on the exit status.
+ *
+ * Sized against a phone's link, not against sshj's: `conn.getTimeoutMs()` is `connectTimeoutMs`
+ * (20 s, `HerdrSshModule.kt:32`) and that is a *dial* budget. Here the packet being waited for is
+ * already on its way — the remote command has exited, so `exit-status` and `CHANNEL_CLOSE` are one
+ * round trip behind the EOF we just read. 2 s is an order of magnitude more than an LTE round trip
+ * including its tail, and short enough that the supervisor above (`src/transport/`) gets its verdict
+ * inside one reconnect cycle. A remote that has not closed by then is not going to.
+ */
+private const val CHANNEL_CLOSE_TIMEOUT_MS = 2000L
+
+/**
+ * How long a close then waits for the pumps to hand over what the streams still hold.
+ *
+ * By this point the channel is closed, so both streams are at EOF (`AbstractChannel.gotClose`,
+ * sshj 0.40.0 AbstractChannel.java:219-227, closes the streams before it sets the close event) and
+ * a pump has only to move already-buffered bytes into memory — microseconds of work, and 500 ms
+ * survives a thread that is descheduled several times on the way. The budget is only ever spent in
+ * full when a pump is stuck on a stream that never ended, which is the case the bound exists for.
+ */
+private const val PUMP_DRAIN_TIMEOUT_MS = 500L
 
 /**
  * Replaces Android's cut-down "BC" security provider with the full BouncyCastle one.
@@ -250,13 +274,91 @@ class HerdrSshChannel(
       }
       finished = true
     }
-    pumps.shutdownNow()
+    // The payload is assembled on a thread of its own because [completeClose] blocks, and neither
+    // caller can host that wait. `pumpStdout` runs on `pumps`, and waiting for that pool from
+    // inside one of its own threads waits for itself — it would time out every time, by
+    // construction. `close()` runs on the JS thread, where seconds of blocking is an ANR. Nothing
+    // above this file sees a new shape: `onClose` was already delivered asynchronously via
+    // `executeOnJavaScriptThread`.
+    val closer = Thread({ completeClose() }, "herdr-ssh-close")
+    closer.isDaemon = true
+    closer.start()
+  }
+
+  /**
+   * Assembles the close payload once everything that can still add to it has arrived.
+   *
+   * Two pieces of evidence arrive *after* the EOF that wakes `pumpStdout`, and reading the payload
+   * at EOF — `shutdownNow()` and then straight into `exitStatus` — lost both:
+   *
+   * - **The exit status.** `exit-status` is its own channel request, handled in
+   *   `SessionChannel.handleRequest` (sshj 0.40.0 SessionChannel.java:133-134); nothing in the
+   *   protocol ties it to EOF, which is why sshj's own javadoc says "Always call `close()` first
+   *   before inspecting the exit status" (Session.java:64-70). Read at EOF it is legitimately
+   *   `null`, and a null `exitCode` is not a blank in a log line: `src/transport/channel-failure.ts`
+   *   reads `close.exitCode === 127` as a **field** to say "no `herdr` on the remote PATH, stop
+   *   retrying". No stderr text substitutes for it.
+   * - **The tail of stderr.** One `CHANNEL_EOF` ends both streams at once
+   *   (`SessionChannel.eofInputStreams`, :205-209), but each `ChannelInputStream` owns its buffer
+   *   and keeps serving it after EOF (ChannelInputStream.java:94-98) — so when the stdout pump
+   *   reaches EOF first, the stderr pump is typically still moving bytes. The old shape did not
+   *   wait for it *at all*: `shutdownNow()` returns immediately, and the snapshot two lines later
+   *   took whatever had been appended by then. The interrupt only makes it worse, and only
+   *   sometimes — a pump blocked with nothing buffered dies of it (ChannelInputStream.java:106-111
+   *   turns the interrupt into an `InterruptedIOException`, which `pump` swallows as a normal end),
+   *   while one with bytes available keeps reading (:94-98), too late to be in the payload. stderr
+   *   is the bridges' only error channel, and the half that gets cut is where `Permission denied
+   *   (publickey)` lives — losing it demotes a fatal auth verdict to `transport`, which the app
+   *   retries forever on a key only the user can fix.
+   *
+   * So: wait for the close, then let the pumps drain, then snapshot. Both waits are bounded,
+   * because this runs on a phone and a remote that never sends `CHANNEL_CLOSE` must not hold
+   * `onClose` open forever. When a bound is hit the payload is still delivered with whatever is in
+   * hand — a late and partial close beats no close — and `errorMessage` says which bound was hit,
+   * so an absent `exitCode` reads as "not observed" rather than as "the command did not report one".
+   */
+  private fun completeClose() {
+    val closeFailure = runCatching {
+      exec.join(CHANNEL_CLOSE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+    }.exceptionOrNull()
+    // `shutdown` and not `shutdownNow`: "stop pumping" is the wrong instruction for a pump that
+    // still has buffered bytes to move. This one refuses new work and lets the running pumps run
+    // out, which after the join above means draining a stream that is already at EOF. The interrupt
+    // is kept for the case it is actually for — a pump still blocked on a stream that never ended.
+    pumps.shutdown()
+    val drained = runCatching {
+      pumps.awaitTermination(PUMP_DRAIN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+    }.getOrDefault(false)
+    if (!drained) {
+      pumps.shutdownNow()
+    }
     val payload = mutableMapOf<String, Any?>()
     exec.exitStatus?.let { payload["exitCode"] = it }
     exec.exitSignal?.let { payload["signal"] = it.name }
     val transcript = synchronized(stderr) { stderr.toString() }
     if (transcript.isNotEmpty()) {
       payload["stderr"] = transcript
+    }
+    val incomplete = mutableListOf<String>()
+    if (closeFailure != null) {
+      incomplete.add(
+        "the channel did not close within $CHANNEL_CLOSE_TIMEOUT_MS ms" +
+          " (${closeFailure.message}), so the exit status may be missing"
+      )
+    }
+    if (!drained) {
+      incomplete.add(
+        "a stream pump was still running after $PUMP_DRAIN_TIMEOUT_MS ms," +
+          " so stderr may be truncated"
+      )
+    }
+    if (incomplete.isNotEmpty()) {
+      // Deliberately not a new field: `NativeChannelClose` (`../src/native-types.ts`) has four, and
+      // `errorMessage` is the one that means "the local side, not the remote command". It becomes
+      // `close.error` in `ssh-transport.ts:58-60`, which `classifyChannelFailure` reads as text —
+      // and this text matches none of its fatal patterns, so an incomplete close stays retryable.
+      // That is the right verdict: a bound was hit, so we do not know what happened.
+      payload["errorMessage"] = incomplete.joinToString("; ", prefix = "herdr-ssh: ")
     }
     context?.executeOnJavaScriptThread { runCatching { onClose.invoke(payload) } }
     onFinished(this)

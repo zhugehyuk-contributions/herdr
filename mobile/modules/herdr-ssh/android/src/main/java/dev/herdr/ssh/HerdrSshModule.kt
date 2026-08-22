@@ -1,9 +1,13 @@
 // Not from orca.
 //
-// ⚠️⚠️ **UNVERIFIED SOURCE.** This file has never been compiled. No Gradle sync, no `expo prebuild`,
-// no APK, no device run — the receipt for this unit stops at the JavaScript boundary
-// (`modules/herdr-ssh/test/`). The sshj symbols below were taken from its published API, but that is
-// not the same as a green `assembleDebug`.
+// Verified, and here is exactly how far that goes (`mobile/.prd/06-open-decisions.md:146-172`):
+// `:herdr-ssh:assembleDebug` and `:app:assembleDebug` are green, the 246MB APK ran on an emulator,
+// and the chain app -> sshj -> `ssh exec` -> `remote-client-bridge` -> herdr server carried live
+// data end to end. Three JVM harnesses under `modules/herdr-ssh/typecheck/` compile this source
+// (`typecheck:android`) and two of them run it (`typecheck:keyformats`, `typecheck:closepayload`).
+// What none of that covers: a real sshd's packet ordering, iOS, and any physical Android device.
+// One defect class here is invisible to every compiler — Expo's builder throws at *registration*
+// time (a `Class()` without a `Constructor`), which is why the emulator run is not optional.
 //
 // The Android half of `NativeHerdrSsh` (`../../../../../../src/native-types.ts`). Obligations 4, 6,
 // 7, 8 and 9 of `HerdrTransport` (`packages/herdr-client-ts/src/transport.ts`) are enforced in
