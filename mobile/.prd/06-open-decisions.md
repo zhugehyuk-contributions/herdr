@@ -164,3 +164,30 @@ ssh 라이브러리가 정하고 있었고, 아무도 그걸 읽지 않았다.
 
 이 과정에서 결함 2건이 나왔고 둘 다 수정됐다 — gradle 평가 실패(`safeExtGet` 미정의)와 **모듈 등록 실패(`Class()`에 `Constructor` 필수)**. 후자는 컴파일로는 잡히지 않는다: `:herdr-ssh:assembleDebug`가 green이었고 스텁 타입체크도 green이었는데, Expo 빌더가 **등록 시점**에 던진다. 실행이 아니면 못 잡는 등급이다.
 
+## 다음 링크 — 기기에서의 공개키 인증 (2026-08-22, 미해결)
+
+ssh **전송**은 기기에서 동작한다. 앱이 격리 스크래치 서버(폐기 sshd + 폐기 키, adb reverse)와
+전체 핸드셰이크를 완주한 것이 서버 측 `LogLevel DEBUG3` 로그로 확인됐다 `[v]`:
+`remote software version SSHJ_0.40.0` → `kex: algorithm: curve25519-sha256` → `KEX done` →
+`ssh-userauth` 서비스 수락(`send packet: type 6`).
+
+**막힌 곳은 그 다음이다.** 서버가 userauth 서비스를 수락한 뒤 **클라이언트가 인증 시도를 한 건도
+보내지 않고** 끊는다 — 앱에는 `UserAuthException: Exhausted available authentication methods`로
+보인다. 즉 sshj가 주어진 개인키로 쓸 수 있는 인증 수단을 만들지 못한다.
+
+확인된 사실:
+- 같은 키·같은 sshd로 **호스트 `ssh`는 성공**한다(`HOST_SSH_OK`) → 서버·authorized_keys·키 자체는 정상.
+- `OpenSSHKeyFile.init(String, String)`은 경로가 아니라 **내용**을 받는다(`StringReader`,
+  sshj 0.40.0 `OpenSSHKeyFile.java:73`) → 우리 호출 방식은 맞다.
+- Ed25519(OpenSSH 포맷) 키에서 재현. RSA 키로도 앱 측 오류 메시지는 동일했으나, 그 시도가
+  디버그 sshd에 도달했다는 서버 측 증거를 얻지 못해 **RSA는 미판별**로 남긴다(구 sshd가 살아 있던
+  구간과 겹쳐 오염됐다 — 같은 포트에서 dispatcher가 돌린 호스트 `ssh` 성공 로그와 혼동할 뻔했다).
+
+**유력 가설(미검증)**: `BouncyCastleSetup`이 full BC를 1순위로 삽입하는 것과 sshj의 EdDSA 처리
+(`net.i2p.crypto:eddsa`)가 충돌해, 키는 파싱되지만 서명 가능한 형태가 되지 못한다. X25519 수정 없이는
+KEX 자체가 불가능했으므로 이 삽입은 되돌릴 수 없고, 대신 **삽입 위치·범위를 좁히는 방향**이 다음 수다.
+
+**다음 조사 순서**: ① 앱에서 `client.getUserAuthFactories()`/키 로드 결과를 직접 로깅해 "키가
+로드됐는가 vs 서명 팩토리가 없는가"를 가른다 ② provider 삽입을 `insertProviderAt(…, 1)` 대신
+`addProvider`(맨 뒤)로 두고 X25519가 여전히 잡히는지 본다 ③ RSA를 깨끗한 단일 sshd에서 재판별한다.
+
