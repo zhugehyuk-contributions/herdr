@@ -78,6 +78,9 @@ pub enum ResponseResult {
     RemoteEnabledChanged {
         remote: crate::remote_registry::RemoteDefinitionSnapshot,
     },
+    SessionList {
+        sessions: Vec<crate::session::SessionInfo>,
+    },
     UiSettings {
         settings: UiSettingsInfo,
     },

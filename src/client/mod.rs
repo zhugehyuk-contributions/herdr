@@ -388,6 +388,14 @@ enum ClientInputDispatch {
         remote_id: String,
         auto_update: bool,
     },
+    /// C4/C6: re-point a remote at another session (`None` = its default) off the UI loop against
+    /// `ServerId::main()`. On success the apply handler REBUILDS the bridge (teardown + immediate
+    /// reconnect) so the far side is re-attached with the new `herdr --session <name>`.
+    SetRemoteSession {
+        server_id: supervisor::ServerId,
+        remote_id: String,
+        session: Option<String>,
+    },
     DeleteRemote {
         remote_id: String,
     },
@@ -411,6 +419,12 @@ enum ClientInputDispatch {
     FetchWorktreeList {
         server_id: supervisor::ServerId,
         workspace_id: String,
+    },
+    /// C4: the session picker opened in its loading state; fetch `session.list` from the OWNING
+    /// server off the UI loop and fill the picker.
+    FetchSessionList {
+        server_id: supervisor::ServerId,
+        remote_id: String,
     },
     /// Worktree-menu parity: flip the group's client-local collapsed state — the same set the
     /// sidebar chevron toggles; handled where `&mut compositor` is in scope.
@@ -529,6 +543,53 @@ fn dispatch_for_client_menu_outcome(
         supervisor::ClientMenuOutcome::ToggleWorktreeGroup { group_key } => {
             ClientInputDispatch::ToggleWorktreeGroup { group_key }
         }
+        // C4: the session picker is open in its loading state; fetch the REMOTE host's session
+        // list off the UI loop (the worker is spawned in the loop, where the bridge map lives).
+        supervisor::ClientMenuOutcome::FetchSessionList {
+            server_id,
+            remote_id,
+        } => ClientInputDispatch::FetchSessionList {
+            server_id,
+            remote_id,
+        },
+    }
+}
+
+/// C5: map a `SessionPickerOutcome` into a dispatch. `OpenNewSession` already promoted the picker
+/// into the new-session input inside the model, so it just repaints (mirroring the menu's
+/// overlay-opening rows); `Select` becomes the `remote.set_session` round-trip.
+fn dispatch_for_session_picker_outcome(
+    outcome: supervisor::SessionPickerOutcome,
+) -> ClientInputDispatch {
+    match outcome {
+        supervisor::SessionPickerOutcome::Redraw
+        | supervisor::SessionPickerOutcome::OpenNewSession => ClientInputDispatch::Redraw,
+        supervisor::SessionPickerOutcome::Select {
+            server_id,
+            remote_id,
+            session,
+        } => ClientInputDispatch::SetRemoteSession {
+            server_id,
+            remote_id,
+            session,
+        },
+    }
+}
+
+/// C6: map a `NewSessionOutcome` into a dispatch — the same `remote.set_session` round-trip a
+/// picked row takes, so a typed name and a listed one land on ONE apply path.
+fn dispatch_for_new_session_outcome(outcome: supervisor::NewSessionOutcome) -> ClientInputDispatch {
+    match outcome {
+        supervisor::NewSessionOutcome::Redraw => ClientInputDispatch::Redraw,
+        supervisor::NewSessionOutcome::Submit {
+            server_id,
+            remote_id,
+            session,
+        } => ClientInputDispatch::SetRemoteSession {
+            server_id,
+            remote_id,
+            session,
+        },
     }
 }
 
@@ -640,16 +701,11 @@ fn dispatch_composited_input(
     model: &mut supervisor::ClientSupervisorModel,
     host_size: (u16, u16),
 ) -> ClientInputDispatch {
-    if model.add_remote_form().is_some()
-        || model.client_menu().is_some()
-        || model.new_workspace_picker().is_some()
-        || model.remote_manage_overlay().is_some()
-        || model.rename_workspace_form().is_some()
-        || model.confirm_close_workspace().is_some()
-        || model.new_worktree_form().is_some()
-        || model.confirm_delete_worktree().is_some()
-        || model.worktree_picker().is_some()
-    {
+    // An open overlay OWNS the keyboard. This was a hand-written `||` chain over nine overlays and
+    // silently missed the two new ones, so their keystrokes fell through to the focused pane (the
+    // user's shell ran `demo` as a command). `client_overlay_open` is an exhaustive match on the
+    // overlay state, so a new variant cannot be forgotten here again.
+    if model.any_overlay_open() {
         return dispatch_client_overlay_input(data, compositor, model, host_size);
     }
 
@@ -663,7 +719,8 @@ fn dispatch_composited_input(
     // the SAME client action the mouse path uses. Only a single bare Key event is considered; any
     // multi-event/paste/unmatched input falls through to Forward so terminal input is preserved.
     if let [crate::raw_input::RawInputEvent::Key(key)] = events.as_slice() {
-        if let Some(dispatch) = dispatch_composited_key_input(key.clone(), &data, compositor, model) {
+        if let Some(dispatch) = dispatch_composited_key_input(key.clone(), &data, compositor, model)
+        {
             return dispatch;
         }
     }
@@ -1056,11 +1113,13 @@ fn dispatch_requires_loop_handling(dispatch: &ClientInputDispatch) -> bool {
         ClientInputDispatch::AddRemote(_)
             | ClientInputDispatch::SetRemoteEnabled { .. }
             | ClientInputDispatch::SetRemoteAutoUpdate { .. }
+            | ClientInputDispatch::SetRemoteSession { .. }
             | ClientInputDispatch::DeleteRemote { .. }
             | ClientInputDispatch::DisconnectRemote { .. }
             | ClientInputDispatch::ReconnectRemote { .. }
             | ClientInputDispatch::UpdateRemote { .. }
             | ClientInputDispatch::FetchWorktreeList { .. }
+            | ClientInputDispatch::FetchSessionList { .. }
             | ClientInputDispatch::ToggleWorktreeGroup { .. }
             | ClientInputDispatch::ApiRequest { .. }
             | ClientInputDispatch::ServerControl { .. }
@@ -1144,6 +1203,18 @@ fn dispatch_client_overlay_input(
             }
             crate::raw_input::RawInputEvent::Key(key) if model.worktree_picker().is_some() => {
                 dispatch_for_worktree_picker_outcome(model.handle_worktree_picker_key(key))
+            }
+            // C5/C6: the session picker and its new-session input, routed exactly like the worktree
+            // picker / rename form they mirror. The picker is listed FIRST because activating its
+            // last row swaps the overlay to the input within one key press.
+            crate::raw_input::RawInputEvent::Key(key) if model.session_picker().is_some() => {
+                dispatch_for_session_picker_outcome(model.handle_session_picker_key(key))
+            }
+            crate::raw_input::RawInputEvent::Key(key) if model.new_session_form().is_some() => {
+                dispatch_for_new_session_outcome(model.handle_new_session_key(key))
+            }
+            crate::raw_input::RawInputEvent::Paste(text) if model.new_session_form().is_some() => {
+                dispatch_for_new_session_outcome(model.append_new_session_paste(&text))
             }
             crate::raw_input::RawInputEvent::Mouse(mouse) => {
                 dispatch_composited_mouse_input(data.clone(), compositor, model, host_size, &mouse)
@@ -1548,14 +1619,38 @@ fn dispatch_open_client_menu_mouse(
                 ClientInputDispatch::Redraw
             }
         },
-        // A right/middle press anywhere dismisses the open menu.
+        // C4: "해당 세션 이름에서 우클릭하면" — a right/middle press on the session ROW ACTIVATES it
+        // (the same path the left-click arm takes) instead of dismissing. Keyed off the row's BAKED
+        // action, not its index, so adding menu rows can't move the exception onto another row.
+        // Every other row keeps the dismiss-on-right-click behaviour.
         MouseEventKind::Down(_) => {
+            if let Some(compositor::SidebarHitTarget::ClientMenuRow { index }) = target {
+                if client_menu_row_opens_session_picker(model, index) {
+                    model.set_client_menu_selected(index);
+                    let outcome = model.select_client_menu_item(index);
+                    return dispatch_for_client_menu_outcome(model, outcome);
+                }
+            }
             model.close_client_overlay();
             ClientInputDispatch::Redraw
         }
         // Drags / wheel / button-ups over the open menu are swallowed (the modal owns the rect).
         _ => ClientInputDispatch::Consumed,
     }
+}
+
+/// C4: whether menu row `index` is the one whose baked action opens the session picker — the only
+/// row a right-click ACTIVATES rather than dismissing on.
+fn client_menu_row_opens_session_picker(
+    model: &supervisor::ClientSupervisorModel,
+    index: usize,
+) -> bool {
+    model.client_menu().is_some_and(|menu| {
+        menu.items.get(index).is_some_and(|item| {
+            item.selectable
+                && matches!(item.action, supervisor::ClientMenuAction::OpenSessionPicker)
+        })
+    })
 }
 
 /// item 6 (Area 6): the refresh policy for a focus dispatch. A focus that switches the active
@@ -1739,6 +1834,22 @@ fn dispatch_sidebar_hit_target(
             dispatch_for_confirm_close_outcome(model.accept_confirm_close_workspace())
         }
         compositor::SidebarHitTarget::ConfirmCloseWorkspaceCancel => {
+            model.close_client_overlay();
+            ClientInputDispatch::Redraw
+        }
+        // C5: "클릭해서 선택할수 있고" — a click on a picker row runs the SAME
+        // `select_session_picker_row` path the Enter key takes (including the trailing
+        // `new session…` row, which promotes into the C6 input).
+        compositor::SidebarHitTarget::SessionPickerRow { index } => {
+            model.set_session_picker_selected(index);
+            dispatch_for_session_picker_outcome(model.select_session_picker_row(index))
+        }
+        // C6: the new-session buttons replay the SAME paths the keys use — the submit button
+        // re-runs the exact validation of the Enter KEY (mirrors RenameWorkspaceSubmit).
+        compositor::SidebarHitTarget::NewSessionSubmit => {
+            dispatch_for_new_session_outcome(model.handle_new_session_key(enter_key()))
+        }
+        compositor::SidebarHitTarget::NewSessionCancel => {
             model.close_client_overlay();
             ClientInputDispatch::Redraw
         }
@@ -2315,7 +2426,6 @@ fn set_handshake_recv_timeout(
         .map_err(ClientError::ConnectionFailed)
 }
 
-
 /// Performs the client→server handshake.
 ///
 /// Sends the wire-ABI prelude and `Hello` with the terminal size and protocol version, then reads
@@ -2401,9 +2511,7 @@ fn do_handshake(
 /// unexplained EOF. It is **not** a fallback: a legacy `Welcome` without an error is still refused,
 /// because "the version matched" is exactly the evidence that turned out to be worthless
 /// (herdr-mx and upstream both shipped protocol 20 with different tags).
-fn read_welcome_behind_abi_gate(
-    stream: &mut LocalStream,
-) -> Result<ServerMessage, ClientError> {
+fn read_welcome_behind_abi_gate(stream: &mut LocalStream) -> Result<ServerMessage, ClientError> {
     match protocol::abi::read_peer_handshake_start(stream)? {
         protocol::abi::PeerHandshakeStart::Prelude(peer) => {
             if let protocol::abi::AbiCheck::Rejected(reason) = protocol::abi::check_peer_abi(&peer)
@@ -2541,6 +2649,13 @@ enum ClientLoopEvent {
         server_id: supervisor::ServerId,
         workspace_id: String,
         result: Result<Vec<supervisor::WorktreePickerItem>, String>,
+    },
+    /// C4: a `session.list` fetch for the open session picker completed off the UI loop. Filled via
+    /// `fill_session_picker` (stale results are ignored there); an Err lands on the picker's error
+    /// line and leaves its `new session…` row usable.
+    SessionListFetched {
+        server_id: supervisor::ServerId,
+        result: Result<Vec<supervisor::SessionPickerItem>, String>,
     },
     /// item 3 (Area 5): a remote-management `remote.set_enabled`/`remote.remove` request finished
     /// off the UI loop. The handler branches on `action` to apply teardown / reconnect.
@@ -2971,12 +3086,16 @@ fn connect_secondary_client_stream_for_plan_detached(
         supervisor::ServerConnectionTarget::Ssh {
             destination,
             options,
+            session,
         } => {
             if let Some(path) = existing_ssh_client_socket {
                 path
             } else {
                 let ssh_target =
                     crate::remote::SshTarget::new(destination.clone(), options.clone());
+                // C1/C4: the remote-side session this host is pinned to. `None` = the remote's
+                // default, which is exactly what `start_ssh_remote_bridge` falls back to.
+                let session_name = session.clone();
                 // Provisioning rides the retry sweep (the non-modal add-remote flow): stages are
                 // forwarded to the host's banner sub-lines, and the whole bring-up is bounded by
                 // the per-stage idle window so a stuck host fails instead of hanging the retry.
@@ -2991,7 +3110,7 @@ fn connect_secondary_client_stream_for_plan_detached(
                             ssh_target,
                             restart_incompatible,
                             false,
-                            None,
+                            session_name.as_deref(),
                             sink,
                         )
                     },
@@ -3201,6 +3320,9 @@ fn submit_remote_add_to_main_api(
             method: crate::api::schema::Method::RemoteAdd(crate::api::schema::RemoteAddParams {
                 name: draft.name,
                 target: draft.target,
+                // C1: the form's optional session field; `None` (an empty field) = the remote's
+                // default session. Validated server-side by `normalize_session`.
+                session: draft.session,
                 keybindings: draft.keybindings,
             }),
         })
@@ -3369,34 +3491,55 @@ fn api_client_error_is_timeout(err: &crate::api::client::ApiClientError) -> bool
 
 /// item 3 (Area 5): the kind of registry mutation a manage request performs. Carried back in
 /// `RemoteManageRequestFinished` so the handler can branch teardown vs. reconnect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RemoteManageAction {
     SetEnabled { enabled: bool },
     // #61: persist the per-remote auto-update flag (no connection side-effect — unlike SetEnabled).
     SetAutoUpdate { auto_update: bool },
+    // C4/C6: re-point the remote at another session (`None` = its default). Unlike SetAutoUpdate this
+    // DOES have a connection side-effect: the bridge must be rebuilt with the new `--session`, so the
+    // apply handler tears the stream down and immediately reconnects.
+    SetSession { session: Option<String> },
     Delete,
 }
 
 /// item 3 (Area 5): build the `remote.set_enabled`/`remote.remove` request for a manage action.
+/// Short user-facing verb for a failed manage request, used on the host banner's outcome sub-line.
+fn remote_manage_action_label(action: &RemoteManageAction) -> &'static str {
+    match action {
+        RemoteManageAction::SetEnabled { enabled: true } => "enable",
+        RemoteManageAction::SetEnabled { enabled: false } => "disable",
+        RemoteManageAction::SetAutoUpdate { .. } => "auto-update toggle",
+        RemoteManageAction::SetSession { .. } => "session switch",
+        RemoteManageAction::Delete => "remove",
+    }
+}
+
 fn remote_manage_request(
-    action: RemoteManageAction,
+    action: &RemoteManageAction,
     remote_id: &str,
 ) -> crate::api::schema::Request {
     let method = match action {
         RemoteManageAction::SetEnabled { enabled } => crate::api::schema::Method::RemoteSetEnabled(
             crate::api::schema::RemoteSetEnabledParams {
                 remote_id: remote_id.to_string(),
-                enabled,
+                enabled: *enabled,
             },
         ),
         RemoteManageAction::SetAutoUpdate { auto_update } => {
             crate::api::schema::Method::RemoteSetAutoUpdate(
                 crate::api::schema::RemoteSetAutoUpdateParams {
                     remote_id: remote_id.to_string(),
-                    auto_update,
+                    auto_update: *auto_update,
                 },
             )
         }
+        RemoteManageAction::SetSession { session } => crate::api::schema::Method::RemoteSetSession(
+            crate::api::schema::RemoteSetSessionParams {
+                remote_id: remote_id.to_string(),
+                session: session.clone(),
+            },
+        ),
         RemoteManageAction::Delete => {
             crate::api::schema::Method::RemoteRemove(crate::api::schema::RemoteRemoveParams {
                 remote_id: remote_id.to_string(),
@@ -3423,7 +3566,7 @@ fn spawn_client_remote_manage_request(
 ) {
     let main_id = supervisor::ServerId::main();
     let target = api_target_for_supervisor_server(model, &main_id, ssh_bridges);
-    let request = remote_manage_request(action, &remote_id);
+    let request = remote_manage_request(&action, &remote_id);
     let event_tx = event_tx.clone();
     std::thread::spawn(move || {
         let started_at = Instant::now();
@@ -3463,13 +3606,12 @@ fn spawn_remote_update_for(
     server_id: &supervisor::ServerId,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) {
-    let ssh_target = state.supervisor_model.as_ref().and_then(|model| {
-        model
-            .server_ssh_target(server_id)
-            .map(|(destination, options)| crate::remote::SshTarget::new(destination, options))
-    });
-    match ssh_target {
-        Some(ssh_target) => {
+    let bridge_target = state
+        .supervisor_model
+        .as_ref()
+        .and_then(|model| remote_update_bridge_target(model, server_id));
+    match bridge_target {
+        Some((ssh_target, session_name)) => {
             if let Some(model) = &mut state.supervisor_model {
                 model.clear_update_outcome(server_id);
                 model.set_update_progress(server_id, Some("starting update…".to_string()));
@@ -3478,6 +3620,7 @@ fn spawn_remote_update_for(
             spawn_client_update_remote(
                 server_id.clone(),
                 ssh_target,
+                session_name,
                 event_tx,
                 &mut state.pending_update_remote,
             );
@@ -3491,6 +3634,27 @@ fn spawn_remote_update_for(
             }
         }
     }
+}
+
+/// C4: what the update path hands to `start_ssh_remote_bridge` — this host's ssh target AND the
+/// remote-side session its server lives in (`None` = the remote's default, the same fallback
+/// `start_ssh_remote_bridge` applies).
+///
+/// The two travel together because only one half of an update is session-independent. A host has
+/// ONE herdr binary, so installing it needs no session; but the restart / live-handoff that makes
+/// the RUNNING server adopt that binary is per-session, since every session is its own server
+/// process. Carrying the target without the session reinstalled host-wide, restarted the DEFAULT
+/// session's server, left the pinned one running the old binary — and still reported
+/// "✓ update complete".
+fn remote_update_bridge_target(
+    model: &supervisor::ClientSupervisorModel,
+    server_id: &supervisor::ServerId,
+) -> Option<(crate::remote::SshTarget, Option<String>)> {
+    let (destination, options) = model.server_ssh_target(server_id)?;
+    Some((
+        crate::remote::SshTarget::new(destination, options),
+        model.server_session(server_id),
+    ))
 }
 
 /// #61: with per-remote auto-update enabled, push THIS client's build onto every connected secondary
@@ -3523,6 +3687,7 @@ fn auto_update_mismatched_remotes(
 fn spawn_client_update_remote(
     server_id: supervisor::ServerId,
     ssh_target: crate::remote::SshTarget,
+    session_name: Option<String>,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     pending_update_remote: &mut HashSet<supervisor::ServerId>,
 ) {
@@ -3532,7 +3697,7 @@ fn spawn_client_update_remote(
     let event_tx = event_tx.clone();
     std::thread::spawn(move || {
         let started_at = Instant::now();
-        let result = run_client_update_remote(&server_id, ssh_target, &event_tx);
+        let result = run_client_update_remote(&server_id, ssh_target, session_name, &event_tx);
         let elapsed = started_at.elapsed();
         let _ = event_tx.blocking_send(ClientLoopEvent::UpdateRemoteFinished {
             server_id,
@@ -3548,6 +3713,7 @@ fn spawn_client_update_remote(
 fn run_client_update_remote(
     server_id: &supervisor::ServerId,
     ssh_target: crate::remote::SshTarget,
+    session_name: Option<String>,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<(), String> {
     // (1) Truthful pre-flight: refuse (no download) when this build can't seed the remote platform.
@@ -3569,7 +3735,16 @@ fn run_client_update_remote(
             // #61: the "update" button FORCES a reinstall — reseed the current build even when the
             // remote reports the same version (a dev rebuild at the same version but a newer commit
             // is otherwise treated as already-installed and skipped), then live-hand-off onto it.
-            crate::remote::start_ssh_remote_bridge(ssh_target, true, true, None, sink)
+            // C4: the hand-off is per-session, so it must name the session this host is pinned to —
+            // otherwise it restarts the remote's DEFAULT server and the pinned one keeps the old
+            // binary while we report success.
+            crate::remote::start_ssh_remote_bridge(
+                ssh_target,
+                true,
+                true,
+                session_name.as_deref(),
+                sink,
+            )
         })
         .map_err(|err| {
             let io_err = remote_op_error_io(err);
@@ -3649,6 +3824,63 @@ fn fetch_worktree_picker_items(
             .collect()),
         other => Err(format!(
             "worktree.list returned unexpected result: {other:?}"
+        )),
+    }
+}
+
+/// C4: fetch `session.list` for the open picker from the OWNING server, off the UI loop. The api
+/// target resolves to that host's socket (an ssh remote's LIVE bridge api socket), which is exactly
+/// what makes the answer the REMOTE host's session list rather than this machine's.
+fn spawn_session_list_fetch(
+    state: &mut ClientState,
+    server_id: supervisor::ServerId,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+) {
+    let target = state
+        .supervisor_model
+        .as_ref()
+        .and_then(|model| api_target_for_supervisor_server(model, &server_id, &state.ssh_bridges));
+    let event_tx = event_tx.clone();
+    std::thread::spawn(move || {
+        let result = match target {
+            Some(target) => fetch_session_picker_items(target),
+            None => Err("server is not reachable".to_string()),
+        };
+        let _ = event_tx.blocking_send(ClientLoopEvent::SessionListFetched { server_id, result });
+    });
+}
+
+/// The blocking body of [`spawn_session_list_fetch`]: one `session.list` round-trip mapped to
+/// picker rows. `is_current` is left false — the MODEL owns which row is current (`fill_session_picker`).
+/// An old remote without the method answers with the standard unknown-method error, which lands on
+/// the picker's error line and leaves the `new session…` row usable (C6).
+fn fetch_session_picker_items(
+    target: crate::api::client::ConnectionTarget,
+) -> Result<Vec<supervisor::SessionPickerItem>, String> {
+    let mut api = crate::api::client::ApiClient::for_target(target);
+    let response = supervisor::SupervisorApi::request(
+        &mut api,
+        crate::api::schema::Request {
+            id: "client:session-list".into(),
+            method: crate::api::schema::Method::SessionList(
+                crate::api::schema::EmptyParams::default(),
+            ),
+        },
+    )?;
+    match response.result {
+        crate::api::schema::ResponseResult::SessionList { sessions } => Ok(sessions
+            .into_iter()
+            .map(|session| supervisor::SessionPickerItem {
+                // The registry stores the default session as an ABSENT session, so it must map back
+                // to `None` here — never to the literal "default".
+                name: (!session.default).then(|| session.name.clone()),
+                label: session.name,
+                running: session.running,
+                is_current: false,
+            })
+            .collect()),
+        other => Err(format!(
+            "session.list returned unexpected result: {other:?}"
         )),
     }
 }
@@ -3814,12 +4046,30 @@ fn remote_op_error_io(err: RemoteOpError) -> io::Error {
 fn prepare_client_add_remote_submission(
     draft: supervisor::AddRemoteDraft,
 ) -> Result<crate::remote_registry::RemoteDefinitionSnapshot, String> {
-    let target = crate::remote_registry::RemoteTargetSnapshot::parse(&draft.target)
-        .map_err(|err| err.message().to_string())?;
-    reject_duplicate_main_target(&target)?;
+    preflight_add_remote_target(&draft)?;
 
     let mut main_api = crate::api::client::ApiClient::local();
     submit_remote_add_to_main_api(&mut main_api, draft)
+}
+
+/// C1: resolve the draft's `(target, session)` through the SAME registry helper the server's
+/// `remote.add` uses, then run the local duplicate check on the RESOLVED target.
+///
+/// The fold must happen BEFORE the duplicate check because a LOCAL remote's dedup key INCLUDES its
+/// session: `localhost` + session `work` is the target `local:work`, not `local:default`. Checking
+/// the unfolded target judged every session-pinned local remote a duplicate of this client's own
+/// `local:default` main server and rejected it with "remote already added" — the request never
+/// reached the API. Sharing `resolve_target_and_session` is what stops the two verdicts drifting
+/// again. An invalid session name is rejected here with the exact message the server would return,
+/// rather than reaching the API.
+fn preflight_add_remote_target(
+    draft: &supervisor::AddRemoteDraft,
+) -> Result<crate::remote_registry::RemoteTargetSnapshot, String> {
+    let (target, _session) =
+        crate::remote_registry::resolve_target_and_session(&draft.target, draft.session.clone())
+            .map_err(|err| err.message().to_string())?;
+    reject_duplicate_main_target(&target)?;
+    Ok(target)
 }
 
 fn reject_duplicate_main_target(
@@ -4138,7 +4388,28 @@ fn apply_remote_manage_request_finished(
         warn!(remote_id = %remote_id, err = %err, "remote-manage request failed");
         if let Some(model) = &mut state.supervisor_model {
             model.clear_remote_manage_pending(remote_id);
+            // A rejected registry mutation used to be swallowed here — only a log line, nothing
+            // where the user is looking. (A `remote.set_session` refused with
+            // `duplicate_remote_target` closed the picker and changed nothing, silently.) Surface it
+            // on the host banner's outcome sub-line, the same channel `update` uses for
+            // "✗ update failed", and expire it on the same timer.
+            model.set_update_progress(&server_id, None);
+            model.set_update_outcome(
+                &server_id,
+                crate::app::state::HostUpdateOutcome {
+                    message: format!("✗ {} failed: {err}", remote_manage_action_label(&action)),
+                    success: false,
+                },
+            );
+            // C6: a failed session switch typed into the new-session input keeps THAT overlay open
+            // with the reason inline, instead of closing as if it had worked.
+            if matches!(action, RemoteManageAction::SetSession { .. }) {
+                model.fail_new_session(remote_id, err);
+            }
         }
+        state
+            .update_outcome_expiry
+            .insert(server_id.clone(), Instant::now() + HOST_UPDATE_OUTCOME_TTL);
         return;
     }
 
@@ -4196,6 +4467,39 @@ fn apply_remote_manage_request_finished(
                 model.clear_remote_manage_pending(remote_id);
             }
             auto_update_mismatched_remotes(state, event_tx);
+        }
+        // C4/C6: the session is part of the CONNECTION identity — the bridge is `herdr --session
+        // <name>` on the far side — so a persisted change only takes effect once the bridge is
+        // rebuilt. Reuse the exact `DisconnectRemote` teardown + `ReconnectRemote` reconnect bodies,
+        // but WITHOUT the `manually_disconnected` mark: the user asked to switch sessions, not to
+        // park the host down, so the retry sweep must dial it straight back up.
+        RemoteManageAction::SetSession { .. } => {
+            // C6: the new-session overlay stayed open across the round-trip so a rejection could be
+            // shown inline; the switch landed, so close it now.
+            if let Some(model) = &mut state.supervisor_model {
+                model.finish_new_session(remote_id);
+            }
+            teardown_secondary_connection(state, server_writes, &server_id);
+            state.manually_disconnected.remove(&server_id);
+            state.provision_failed.remove(&server_id);
+            if let Some(model) = &mut state.supervisor_model {
+                // Re-sync the registry first, so the rebuilt connection plan (and the host menu's
+                // session readout) carry the session that was just persisted.
+                refresh_client_supervisor_summaries(
+                    model,
+                    &mut state.pending_main_refresh,
+                    &state.ssh_bridges,
+                    &mut state.pending_summary_refresh_server_ids,
+                    event_tx,
+                );
+                let _ =
+                    model.set_connection_state(&server_id, supervisor::ConnectionState::Connecting);
+                model.set_update_progress(&server_id, None);
+                model.clear_update_outcome(&server_id);
+                model.clear_remote_manage_pending(remote_id);
+            }
+            state.update_outcome_expiry.remove(&server_id);
+            schedule_secondary_retry(state, server_id, 0, Instant::now());
         }
         RemoteManageAction::Delete => {
             teardown_secondary_connection(state, server_writes, &server_id);
@@ -4347,6 +4651,12 @@ fn refetch_secondary_runtime_status(
     }) else {
         return;
     };
+    // C1/C4: probe the session this host is actually pinned to — a throwaway bridge on the wrong
+    // session would spin up (and report) the remote's DEFAULT session instead.
+    let session_name = state
+        .supervisor_model
+        .as_ref()
+        .and_then(|model| model.server_session(server_id));
     let server_id = server_id.clone();
     let event_tx = event_tx.clone();
     std::thread::spawn(move || {
@@ -4354,7 +4664,7 @@ fn refetch_secondary_runtime_status(
             ssh_target,
             false,
             false, // status-only refetch: never reinstall
-            None,
+            session_name.as_deref(),
             &crate::remote::ignore_progress,
         ) {
             Ok(bridge) => bridge,
@@ -5030,7 +5340,6 @@ async fn run_client_loop(
         query_host_cell_size();
     }
 
-
     // Spawn the resize poller thread.
     let resize_quit = should_quit.clone();
     let resize_tx = event_tx.clone();
@@ -5292,6 +5601,24 @@ async fn run_client_loop(
                                 render_cached_composited_frame(&mut state);
                                 continue;
                             }
+                            // C4/C6: persist the new session, then (in the apply handler) rebuild
+                            // the bridge so the far side is re-attached with the new `--session`.
+                            ClientInputDispatch::SetRemoteSession {
+                                server_id: _,
+                                remote_id,
+                                session,
+                            } => {
+                                spawn_client_remote_manage_request(
+                                    model,
+                                    RemoteManageAction::SetSession { session },
+                                    remote_id,
+                                    &state.ssh_bridges,
+                                    &event_tx,
+                                );
+                                state.request_full_redraw();
+                                render_cached_composited_frame(&mut state);
+                                continue;
+                            }
                             ClientInputDispatch::DeleteRemote { remote_id } => {
                                 spawn_client_remote_manage_request(
                                     model,
@@ -5371,6 +5698,17 @@ async fn run_client_loop(
                                     workspace_id,
                                     &event_tx,
                                 );
+                                state.request_full_redraw();
+                                render_cached_composited_frame(&mut state);
+                                continue;
+                            }
+                            // C4: fetch the REMOTE host's session list off the UI loop; the result
+                            // lands as `SessionListFetched` and fills the open picker.
+                            ClientInputDispatch::FetchSessionList {
+                                server_id,
+                                remote_id: _,
+                            } => {
+                                spawn_session_list_fetch(&mut state, server_id, &event_tx);
                                 state.request_full_redraw();
                                 render_cached_composited_frame(&mut state);
                                 continue;
@@ -6180,6 +6518,15 @@ async fn run_client_loop(
             } => {
                 if let Some(model) = &mut state.supervisor_model {
                     model.fill_worktree_picker(&server_id, &workspace_id, result);
+                }
+                state.request_full_redraw();
+                render_cached_composited_frame(&mut state);
+            }
+            // C4: fill the open session picker (stale/closed pickers ignore the result inside
+            // `fill_session_picker`).
+            ClientLoopEvent::SessionListFetched { server_id, result } => {
+                if let Some(model) = &mut state.supervisor_model {
+                    model.fill_session_picker(&server_id, result);
                 }
                 state.request_full_redraw();
                 render_cached_composited_frame(&mut state);
@@ -8120,6 +8467,9 @@ mod tests {
             supervisor::AddRemoteDraft {
                 target: "local:dev".into(),
                 name: Some("dev".into()),
+                // C1: the form's session field must reach `remote.add` — this used to be a
+                // hard-coded `None` placeholder, which silently dropped the user's input.
+                session: Some("work".into()),
                 keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
             },
         )
@@ -8131,9 +8481,24 @@ mod tests {
             Some(crate::api::schema::RemoteAddParams {
                 name: Some("dev".into()),
                 target: "local:dev".into(),
+                session: Some("work".into()),
                 keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
             })
         );
+
+        // …and an empty session field (draft `None`) still means the remote's default session.
+        let mut api = RemoteAddApi::default();
+        submit_remote_add_to_main_api(
+            &mut api,
+            supervisor::AddRemoteDraft {
+                target: "local:dev".into(),
+                name: Some("dev".into()),
+                session: None,
+                keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
+            },
+        )
+        .unwrap();
+        assert_eq!(api.captured.and_then(|params| params.session), None);
     }
 
     #[test]
@@ -8166,6 +8531,112 @@ mod tests {
         assert_eq!(
             reject_duplicate_main_target(&target),
             Err("remote already added".to_string())
+        );
+    }
+
+    /// C1 regression harness: a draft with just a target + optional session.
+    fn session_draft(target: &str, session: Option<&str>) -> supervisor::AddRemoteDraft {
+        supervisor::AddRemoteDraft {
+            target: target.into(),
+            name: None,
+            session: session.map(str::to_string),
+            keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
+        }
+    }
+
+    #[test]
+    fn add_remote_preflight_accepts_a_local_target_pinned_to_another_session() {
+        // RED before the fold moved into the shared helper: the pre-flight compared the UNFOLDED
+        // `localhost` (= `local:default`) against this client's own default-session main server and
+        // rejected the add with "remote already added", so `remote.add` was never sent and the
+        // registry stayed empty. `localhost` + session `work` IS `local:work` — a different host.
+        let _guard = env_lock().lock().unwrap();
+        let _session_env = EnvVarsRemovedGuard::new(&[crate::session::SESSION_ENV_VAR]);
+        let _remote_env = EnvVarsRemovedGuard::new(&[crate::remote::MAIN_REMOTE_TARGET_ENV_VAR]);
+
+        assert_eq!(
+            preflight_add_remote_target(&session_draft("localhost", Some("work"))),
+            Ok(crate::remote_registry::RemoteTargetSnapshot::Local {
+                session: Some("work".into())
+            })
+        );
+    }
+
+    #[test]
+    fn add_remote_preflight_still_rejects_a_local_target_on_the_main_session() {
+        // The duplicate rule this slice must NOT weaken: same target, no session => still the main
+        // server, still rejected.
+        let _guard = env_lock().lock().unwrap();
+        let _session_env = EnvVarsRemovedGuard::new(&[crate::session::SESSION_ENV_VAR]);
+        let _remote_env = EnvVarsRemovedGuard::new(&[crate::remote::MAIN_REMOTE_TARGET_ENV_VAR]);
+
+        assert_eq!(
+            preflight_add_remote_target(&session_draft("localhost", None)),
+            Err("remote already added".to_string())
+        );
+        // …and an explicit "default"/blank session normalizes to the same verdict.
+        assert_eq!(
+            preflight_add_remote_target(&session_draft("localhost", Some("default"))),
+            Err("remote already added".to_string())
+        );
+        assert_eq!(
+            preflight_add_remote_target(&session_draft("localhost", Some("   "))),
+            Err("remote already added".to_string())
+        );
+    }
+
+    #[test]
+    fn add_remote_preflight_accepts_a_session_spelled_into_the_local_target() {
+        // `local:work` with no session field keeps working (that spelling IS the session).
+        let _guard = env_lock().lock().unwrap();
+        let _session_env = EnvVarsRemovedGuard::new(&[crate::session::SESSION_ENV_VAR]);
+        let _remote_env = EnvVarsRemovedGuard::new(&[crate::remote::MAIN_REMOTE_TARGET_ENV_VAR]);
+
+        assert_eq!(
+            preflight_add_remote_target(&session_draft("local:work", None)),
+            Ok(crate::remote_registry::RemoteTargetSnapshot::Local {
+                session: Some("work".into())
+            })
+        );
+    }
+
+    #[test]
+    fn add_remote_preflight_leaves_ssh_targets_untouched_by_the_session() {
+        // An ssh remote's session rides the DEFINITION, never the target — so the dedup key (and
+        // therefore this verdict) must be identical with and without a session.
+        let _guard = env_lock().lock().unwrap();
+        let _session_env = EnvVarsRemovedGuard::new(&[crate::session::SESSION_ENV_VAR]);
+        let _remote_env = EnvVarsRemovedGuard::new(&[crate::remote::MAIN_REMOTE_TARGET_ENV_VAR]);
+
+        let expected = crate::remote_registry::RemoteTargetSnapshot::Ssh {
+            target: "user@dev".into(),
+            args: Vec::new(),
+        };
+        assert_eq!(
+            preflight_add_remote_target(&session_draft("user@dev", Some("work"))),
+            Ok(expected.clone())
+        );
+        assert_eq!(
+            preflight_add_remote_target(&session_draft("user@dev", None)),
+            Ok(expected)
+        );
+    }
+
+    #[test]
+    fn add_remote_preflight_rejects_an_invalid_session_name_before_the_api() {
+        // The same message the server's `invalid_session_name` error carries, surfaced without a
+        // round-trip (and never as a silent success).
+        let _guard = env_lock().lock().unwrap();
+        let _session_env = EnvVarsRemovedGuard::new(&[crate::session::SESSION_ENV_VAR]);
+        let _remote_env = EnvVarsRemovedGuard::new(&[crate::remote::MAIN_REMOTE_TARGET_ENV_VAR]);
+
+        assert_eq!(
+            preflight_add_remote_target(&session_draft("user@dev", Some("bad name!"))),
+            Err("session name is invalid".to_string())
+        );
+        assert_eq!(
+            preflight_add_remote_target(&session_draft("localhost", Some(".."))),
+            Err("session name is invalid".to_string())
         );
     }
 
@@ -8808,10 +9279,10 @@ mod tests {
         assert!(matches!(opened, ClientInputDispatch::Redraw));
         assert!(model.client_menu().is_some());
 
-        // #44: click "add new space" (row 1, after the version readout) -> WorkspaceCreate
-        // ApiRequest on that host; overlay closes.
+        // #44/C3: click "add new space" (row 2, after the version + session readouts) ->
+        // WorkspaceCreate ApiRequest on that host; overlay closes.
         let dispatch = dispatch_sidebar_hit_target(
-            compositor::SidebarHitTarget::ClientMenuRow { index: 1 },
+            compositor::SidebarHitTarget::ClientMenuRow { index: 2 },
             &mut model,
             &down(MouseButton::Left, 1),
         );
@@ -8847,9 +9318,10 @@ mod tests {
             &down(MouseButton::Right, row),
         );
 
-        // #44: click "disable" (row 2) -> SetRemoteEnabled{ registry_id, enabled:false }; overlay closes.
+        // #44/C3: click "disable" (row 3) -> SetRemoteEnabled{ registry_id, enabled:false };
+        // overlay closes.
         let dispatch = dispatch_sidebar_hit_target(
-            compositor::SidebarHitTarget::ClientMenuRow { index: 2 },
+            compositor::SidebarHitTarget::ClientMenuRow { index: 3 },
             &mut model,
             &down(MouseButton::Left, 1),
         );
@@ -8877,10 +9349,10 @@ mod tests {
             &down(MouseButton::Right, row),
         );
 
-        // #44: click "disconnect" (row 3) -> DisconnectRemote{server_id}, NOT SetRemoteEnabled (so it
-        // drops the live stream WITHOUT disabling the registry entry); overlay closes.
+        // #44/C3: click "disconnect" (row 4) -> DisconnectRemote{server_id}, NOT SetRemoteEnabled
+        // (so it drops the live stream WITHOUT disabling the registry entry); overlay closes.
         let dispatch = dispatch_sidebar_hit_target(
-            compositor::SidebarHitTarget::ClientMenuRow { index: 3 },
+            compositor::SidebarHitTarget::ClientMenuRow { index: 4 },
             &mut model,
             &down(MouseButton::Left, 1),
         );
@@ -8895,6 +9367,203 @@ mod tests {
             other => panic!("expected DisconnectRemote, got {other:?}"),
         }
         assert!(model.client_menu().is_none(), "overlay closed");
+    }
+
+    /// C4/C5/C6: open the host menu on the remote and drive its session row. Returns the model +
+    /// compositor + host size so a test can keep clicking through the follow-on overlays.
+    fn host_menu_open_on_remote() -> (
+        supervisor::ClientSupervisorModel,
+        compositor::ClientCompositor,
+        supervisor::ServerId,
+        (u16, u16),
+    ) {
+        let (mut model, remote_id) = mixed_remote_model();
+        let mut compositor = compositor::ClientCompositor::new(26);
+        let host = (60u16, 24u16);
+        let row = host_banner_row(&compositor, &model, &remote_id, host);
+        dispatch_composited_mouse_input(
+            Vec::new(),
+            &mut compositor,
+            &mut model,
+            host,
+            &down(MouseButton::Right, row),
+        );
+        assert!(model.client_menu().is_some(), "host menu open");
+        (model, compositor, remote_id, host)
+    }
+
+    /// The screen row of client-menu row `index`, resolved through the SAME hit_test the renderer's
+    /// geometry feeds — so a synthesized press lands where the row is painted.
+    fn client_menu_row_screen_row(
+        compositor: &compositor::ClientCompositor,
+        model: &supervisor::ClientSupervisorModel,
+        host: (u16, u16),
+        index: usize,
+    ) -> (u16, u16) {
+        for y in 0..host.1 {
+            for x in 0..host.0 {
+                if matches!(
+                    compositor.hit_test(model, x, y, host.0, host.1),
+                    Some(compositor::SidebarHitTarget::ClientMenuRow { index: hit }) if hit == index
+                ) {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("client menu row {index} is not on screen");
+    }
+
+    #[test]
+    fn right_click_activates_the_session_row_but_dismisses_on_any_other() {
+        // C4 literal wording ("해당 세션 이름에서 우클릭하면 현재 세션 리스트 출력"): the session
+        // readout is the ONE row a right-click activates instead of dismissing the menu.
+        let (mut model, mut compositor, _remote_id, host) = host_menu_open_on_remote();
+        let (col, row) = client_menu_row_screen_row(&compositor, &model, host, 1);
+        let dispatch = dispatch_composited_mouse_input(
+            Vec::new(),
+            &mut compositor,
+            &mut model,
+            host,
+            &MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column: col,
+                row,
+                modifiers: KeyModifiers::empty(),
+            },
+        );
+        assert!(
+            matches!(dispatch, ClientInputDispatch::FetchSessionList { .. }),
+            "a right-click on the session row opens the picker: {dispatch:?}"
+        );
+        assert!(model.session_picker().is_some(), "picker replaced the menu");
+
+        // Every OTHER row keeps today's dismiss-on-right-click behaviour.
+        let (mut model, mut compositor, _remote_id, host) = host_menu_open_on_remote();
+        let (col, row) = client_menu_row_screen_row(&compositor, &model, host, 2);
+        let dispatch = dispatch_composited_mouse_input(
+            Vec::new(),
+            &mut compositor,
+            &mut model,
+            host,
+            &MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column: col,
+                row,
+                modifiers: KeyModifiers::empty(),
+            },
+        );
+        assert!(matches!(dispatch, ClientInputDispatch::Redraw));
+        assert!(model.client_menu().is_none(), "the menu was dismissed");
+        assert!(model.session_picker().is_none());
+    }
+
+    #[test]
+    fn clicking_a_session_picker_row_switches_the_session() {
+        // C5: a click on a listed row resolves through hit_test to `SessionPickerRow` and yields the
+        // `remote.set_session` dispatch — the same one Enter produces.
+        let (mut model, mut compositor, remote_id, host) = host_menu_open_on_remote();
+        dispatch_sidebar_hit_target(
+            compositor::SidebarHitTarget::ClientMenuRow { index: 1 },
+            &mut model,
+            &down(MouseButton::Left, 1),
+        );
+        model.fill_session_picker(
+            &remote_id,
+            Ok(vec![
+                supervisor::SessionPickerItem {
+                    name: None,
+                    label: "default".into(),
+                    running: true,
+                    is_current: false,
+                },
+                supervisor::SessionPickerItem {
+                    name: Some("work".into()),
+                    label: "work".into(),
+                    running: false,
+                    is_current: false,
+                },
+            ]),
+        );
+
+        // Row 1 ("work") is hittable at the position the renderer paints it.
+        let mut hit = None;
+        'outer: for y in 0..host.1 {
+            for x in 0..host.0 {
+                if let Some(compositor::SidebarHitTarget::SessionPickerRow { index: 1 }) =
+                    compositor.hit_test(&model, x, y, host.0, host.1)
+                {
+                    hit = Some((x, y));
+                    break 'outer;
+                }
+            }
+        }
+        let (col, row) = hit.expect("session picker row 1 is on screen");
+        let dispatch = dispatch_composited_mouse_input(
+            Vec::new(),
+            &mut compositor,
+            &mut model,
+            host,
+            &MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: col,
+                row,
+                modifiers: KeyModifiers::empty(),
+            },
+        );
+        match dispatch {
+            ClientInputDispatch::SetRemoteSession {
+                server_id,
+                remote_id: registry_id,
+                session,
+            } => {
+                assert_eq!(server_id, remote_id);
+                assert_eq!(registry_id, "remote-x");
+                assert_eq!(session.as_deref(), Some("work"));
+            }
+            other => panic!("expected SetRemoteSession, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_remote_session_rebuilds_the_bridge_instead_of_parking_the_host() {
+        // C4/C6: the session is part of the connection identity, so a successful `remote.set_session`
+        // must tear the stream down AND schedule an immediate reconnect — never leave the host in
+        // `manually_disconnected` (which is what a plain Disconnect does).
+        let (model, remote_id) = mixed_remote_model();
+        let mut state = test_client_state_with_model(model);
+        let mut server_writes: HashMap<supervisor::ServerId, ServerWriteHandle> = HashMap::new();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+        state.manually_disconnected.insert(remote_id.clone());
+
+        apply_remote_manage_request_finished(
+            &mut state,
+            &mut server_writes,
+            RemoteManageAction::SetSession {
+                session: Some("work".into()),
+            },
+            "remote-x",
+            Ok(()),
+            &event_tx,
+        );
+
+        assert!(
+            !state.manually_disconnected.contains(&remote_id),
+            "a session switch must not park the host down"
+        );
+        assert!(
+            state.secondary_retries.contains_key(&remote_id),
+            "an immediate reconnect is scheduled so the bridge is rebuilt with the new --session"
+        );
+        let server = state
+            .supervisor_model
+            .as_ref()
+            .unwrap()
+            .server_for_test(&remote_id)
+            .unwrap();
+        assert_eq!(
+            server.connection_state,
+            supervisor::ConnectionState::Connecting
+        );
     }
 
     #[test]
@@ -9060,7 +9729,7 @@ mod tests {
         // #61: the auto-update toggle routes through a `remote.set_auto_update` request carrying the
         // remote id and the desired flag.
         let request = remote_manage_request(
-            RemoteManageAction::SetAutoUpdate { auto_update: true },
+            &RemoteManageAction::SetAutoUpdate { auto_update: true },
             "remote-7",
         );
         match request.method {
@@ -9084,6 +9753,143 @@ mod tests {
             dispatch,
             ClientInputDispatch::SetRemoteAutoUpdate { remote_id, auto_update: false } if remote_id == "remote-7"
         ));
+    }
+
+    /// An ssh remote with auto-update ON, at a protocol mismatch, optionally pinned to a session.
+    fn ssh_auto_update_model(
+        session: Option<&str>,
+    ) -> (supervisor::ClientSupervisorModel, supervisor::ServerId) {
+        let mut model = supervisor::ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(crate::remote_registry::RemoteDefinitionSnapshot {
+            id: "remote-pin".into(),
+            name: "pin".into(),
+            target: crate::remote_registry::RemoteTargetSnapshot::Ssh {
+                target: "pin-host".into(),
+                args: Vec::new(),
+            },
+            session: session.map(str::to_string),
+            keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
+            disabled: false,
+            auto_update: true,
+        });
+        model.set_remote_runtime_info(
+            &remote,
+            Some("0.5.0".into()),
+            Some(PROTOCOL_VERSION.wrapping_add(1)),
+        );
+        (model, remote)
+    }
+
+    #[test]
+    fn update_of_a_pinned_remote_targets_that_session() {
+        // REGRESSION (feature-created, then over-corrected): the provisioning layer used to be
+        // session-BLIND, so updating a remote pinned to `work` reinstalled the binary host-wide,
+        // restarted the DEFAULT session's server, left `work` on the old binary — and reported
+        // "\u{2713} update complete". The interim fix REFUSED to update a pinned remote at all, which is
+        // the wrong trade: a host has one binary, and the restart/hand-off is what is session-scoped.
+        // Now the session rides down to `start_ssh_remote_bridge`, so a pinned remote updates like
+        // any other one, against its OWN server.
+        let (model, remote) = ssh_auto_update_model(Some("work"));
+        let mut state = test_client_state_with_model(model);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+
+        // The exact pair handed to `start_ssh_remote_bridge` (target, session_name).
+        assert_eq!(
+            remote_update_bridge_target(state.supervisor_model.as_ref().unwrap(), &remote),
+            Some((
+                crate::remote::SshTarget::new("pin-host", Vec::new()),
+                Some("work".to_string())
+            )),
+            "the pinned session must travel with the ssh target, or the hand-off hits the wrong server"
+        );
+
+        spawn_remote_update_for(&mut state, &remote, &event_tx);
+
+        assert!(
+            state.pending_update_remote.contains(&remote),
+            "a pinned remote reaches the update worker like any other ssh remote"
+        );
+        assert_eq!(
+            state
+                .supervisor_model
+                .as_ref()
+                .unwrap()
+                .update_progress_for(&remote),
+            Some("starting update\u{2026}"),
+            "real work started, so the spinner is real too"
+        );
+        assert!(
+            !state.auto_update_suppressed.contains(&remote),
+            "nothing was refused, so nothing is suppressed"
+        );
+    }
+
+    #[test]
+    fn update_still_runs_for_an_unpinned_ssh_remote() {
+        // The no-behaviour-change guard: a remote on its default session updates exactly as before,
+        // and hands the bridge `None` \u{2014} which is the default `start_ssh_remote_bridge` falls back to,
+        // keeping the far-side command byte-identical to the pre-session build.
+        let (model, remote) = ssh_auto_update_model(None);
+        let mut state = test_client_state_with_model(model);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+
+        assert_eq!(
+            remote_update_bridge_target(state.supervisor_model.as_ref().unwrap(), &remote),
+            Some((crate::remote::SshTarget::new("pin-host", Vec::new()), None)),
+        );
+
+        spawn_remote_update_for(&mut state, &remote, &event_tx);
+
+        assert!(
+            state.pending_update_remote.contains(&remote),
+            "an unpinned ssh remote still spawns the update worker"
+        );
+        assert_eq!(
+            state
+                .supervisor_model
+                .as_ref()
+                .unwrap()
+                .update_progress_for(&remote),
+            Some("starting update\u{2026}"),
+        );
+        assert!(
+            !state.auto_update_suppressed.contains(&remote),
+            "an unpinned remote is not suppressed"
+        );
+    }
+
+    #[test]
+    fn auto_update_sweep_fires_once_for_a_pinned_remote() {
+        // The sweep treats a pinned host like any other candidate: it fires, and the
+        // `pending_update_remote` guard \u{2014} not a refusal \u{2014} is what stops it re-firing every ~6s.
+        let (model, remote) = ssh_auto_update_model(Some("work"));
+        let mut state = test_client_state_with_model(model);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+        assert_eq!(
+            state
+                .supervisor_model
+                .as_ref()
+                .unwrap()
+                .auto_update_candidates(),
+            vec![remote.clone()],
+            "a pinned mismatched host IS an auto-update candidate"
+        );
+
+        auto_update_mismatched_remotes(&mut state, &event_tx);
+        assert!(
+            state.pending_update_remote.contains(&remote),
+            "first sweep updates the pinned host instead of refusing it"
+        );
+
+        // Re-sweeping while the first update is still in flight must not stack a second ssh
+        // force-reinstall onto the same host.
+        auto_update_mismatched_remotes(&mut state, &event_tx);
+        auto_update_mismatched_remotes(&mut state, &event_tx);
+        assert_eq!(
+            state.pending_update_remote.len(),
+            1,
+            "the in-flight guard collapses re-fires"
+        );
     }
 
     #[test]
@@ -10416,6 +11222,127 @@ mod tests {
         assert_eq!(model.new_workspace_picker(), None);
     }
 
+    /// D1 harness: open the host menu on the remote, then promote its session row into the picker.
+    fn model_with_session_picker_open() -> (supervisor::ClientSupervisorModel, supervisor::ServerId)
+    {
+        let (mut model, remote_id) = mixed_remote_model();
+        model.open_host_context_menu(remote_id.clone(), "x".into(), 0, 0);
+        // Row 1 is the `session <name>` readout (C3).
+        model.select_client_menu_item(1);
+        assert!(model.session_picker().is_some(), "picker open");
+        (model, remote_id)
+    }
+
+    #[test]
+    fn session_picker_owns_the_keyboard_instead_of_the_pane() {
+        // REGRESSION (D1): the overlay-ownership gate was a hand-written `||` chain that omitted the
+        // session overlays, so every keystroke was FORWARDED to the focused pane — ↓/Esc did nothing
+        // and typing a session name ran it as a shell command. Assert the overlay consumes the key.
+        let (mut model, _remote_id) = model_with_session_picker_open();
+        model.fill_session_picker(
+            &_remote_id,
+            Ok(vec![
+                supervisor::SessionPickerItem {
+                    name: None,
+                    label: "default".into(),
+                    running: true,
+                    is_current: false,
+                },
+                supervisor::SessionPickerItem {
+                    name: Some("work".into()),
+                    label: "work".into(),
+                    running: true,
+                    is_current: false,
+                },
+            ]),
+        );
+        let mut compositor = compositor::ClientCompositor::new(26);
+
+        // ↓ moves the highlight and is NOT forwarded.
+        let before = model.session_picker().unwrap().selected;
+        let dispatch =
+            dispatch_composited_input(b"\x1b[B".to_vec(), &mut compositor, &mut model, (60, 16));
+        assert_eq!(dispatch, ClientInputDispatch::Redraw);
+        assert!(
+            !matches!(dispatch, ClientInputDispatch::Forward(_)),
+            "a picker keystroke must never reach the pane"
+        );
+        assert_eq!(model.session_picker().unwrap().selected, before + 1);
+
+        // Esc closes it and is NOT forwarded.
+        let dispatch =
+            dispatch_composited_input(b"\x1b".to_vec(), &mut compositor, &mut model, (60, 16));
+        assert_eq!(dispatch, ClientInputDispatch::Redraw);
+        assert!(model.session_picker().is_none(), "esc closes the picker");
+    }
+
+    #[test]
+    fn new_session_form_owns_the_keyboard_instead_of_the_pane() {
+        // REGRESSION (D1): typing `demo` into this overlay used to leak to the shell
+        // (`zsh: command not found: demo`) because the gate did not know the overlay existed.
+        let (mut model, _remote_id) = model_with_session_picker_open();
+        model.fill_session_picker(&_remote_id, Ok(Vec::new()));
+        // The only row is the trailing `+ new session…`.
+        model.select_session_picker_row(0);
+        assert!(model.new_session_form().is_some());
+        let mut compositor = compositor::ClientCompositor::new(26);
+
+        for ch in b"demo" {
+            let dispatch =
+                dispatch_composited_input(vec![*ch], &mut compositor, &mut model, (60, 16));
+            assert_eq!(dispatch, ClientInputDispatch::Redraw);
+            assert!(
+                !matches!(dispatch, ClientInputDispatch::Forward(_)),
+                "a new-session keystroke must never reach the pane"
+            );
+        }
+        assert_eq!(
+            model.new_session_form().map(|form| form.name.as_str()),
+            Some("demo"),
+            "the typed name lands in the field, not in the user's shell"
+        );
+    }
+
+    #[test]
+    fn failed_set_session_surfaces_a_message_and_keeps_the_pinned_session() {
+        // REGRESSION (D2): a server-rejected `remote.set_session` (e.g. duplicate_remote_target) was
+        // swallowed — the picker closed, nothing changed, no message anywhere.
+        let (model, remote_id) = mixed_remote_model();
+        let mut state = test_client_state_with_model(model);
+        let mut server_writes: HashMap<supervisor::ServerId, ServerWriteHandle> = HashMap::new();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(8);
+        let before = state
+            .supervisor_model
+            .as_ref()
+            .and_then(|model| model.server_session(&remote_id));
+
+        apply_remote_manage_request_finished(
+            &mut state,
+            &mut server_writes,
+            RemoteManageAction::SetSession {
+                session: Some("work".into()),
+            },
+            "remote-x",
+            Err("remote target already exists".to_string()),
+            &event_tx,
+        );
+
+        let model = state.supervisor_model.as_ref().unwrap();
+        let outcome = model
+            .update_outcome_for(&remote_id)
+            .expect("a rejected session switch is surfaced on the host banner");
+        assert!(!outcome.success);
+        assert!(
+            outcome.message.contains("session switch")
+                && outcome.message.contains("remote target already exists"),
+            "the banner carries the server's reason: {}",
+            outcome.message
+        );
+        // …and the pinned session is untouched, with no teardown/reconnect scheduled.
+        assert_eq!(model.server_session(&remote_id), before);
+        assert!(!state.secondary_retries.contains_key(&remote_id));
+    }
+
     #[test]
     fn composited_input_clicking_menu_opens_client_global_menu() {
         let (mut model, _) = mixed_remote_model();
@@ -10629,6 +11556,7 @@ mod tests {
             ClientInputDispatch::AddRemote(supervisor::AddRemoteDraft {
                 target: "local:dev".into(),
                 name: Some("dev".into()),
+                session: None,
                 keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
             })
         );
@@ -11047,6 +11975,7 @@ mod tests {
         let draft = supervisor::AddRemoteDraft {
             target: "local:slowadd".into(),
             name: Some("slowadd".into()),
+            session: None,
             keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
         };
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(8);
@@ -11318,6 +12247,7 @@ mod tests {
             client_socket_path_for_connection_target(&supervisor::ServerConnectionTarget::Ssh {
                 destination: "host".into(),
                 options: Vec::new(),
+                session: None,
             }),
             None
         );
@@ -11998,7 +12928,7 @@ mod tests {
     /// §G: building the manage request targets the right API method.
     #[test]
     fn remote_manage_request_builds_set_enabled_and_remove() {
-        let set = remote_manage_request(RemoteManageAction::SetEnabled { enabled: true }, "r1");
+        let set = remote_manage_request(&RemoteManageAction::SetEnabled { enabled: true }, "r1");
         match set.method {
             crate::api::schema::Method::RemoteSetEnabled(params) => {
                 assert_eq!(params.remote_id, "r1");
@@ -12006,7 +12936,7 @@ mod tests {
             }
             other => panic!("expected remote.set_enabled, got {other:?}"),
         }
-        let del = remote_manage_request(RemoteManageAction::Delete, "r1");
+        let del = remote_manage_request(&RemoteManageAction::Delete, "r1");
         match del.method {
             crate::api::schema::Method::RemoteRemove(params) => {
                 assert_eq!(params.remote_id, "r1");

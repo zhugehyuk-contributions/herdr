@@ -2154,7 +2154,6 @@ fn render_workspace_list(
                 Rect::new(banner_area.rect.x, sub_y, banner_area.rect.width, 1),
             );
         }
-
     }
 
     // item 4: draw the local→remote divider rule at each `y` from `app.view.divider_rows`.
@@ -4675,7 +4674,6 @@ lines = [
         });
         ws
     }
-
 
     #[test]
     fn parent_workspace_row_stays_clickable_when_grouped() {

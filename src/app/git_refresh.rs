@@ -413,7 +413,10 @@ mod tests {
     #[test]
     fn git_refresh_demand_matches_sidebar_rows() {
         let cases = [
-            (spaces_config(false, false), GitStatusRefreshDemand::default()),
+            (
+                spaces_config(false, false),
+                GitStatusRefreshDemand::default(),
+            ),
             (
                 spaces_config(true, false),
                 GitStatusRefreshDemand {

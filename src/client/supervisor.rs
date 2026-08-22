@@ -52,27 +52,38 @@ pub(crate) enum ServerConnectionTarget {
     LocalSession(Option<String>),
     /// `destination` is the ssh host (dedup/display key); `options` are the extra ssh flags from a
     /// full add-remote spec (e.g. `-L`, `-J`, `-p`) carried so port-forwards/jump hosts apply.
+    /// `session` is the remote-side session this host attaches to (`None` = the remote's default);
+    /// it rides the target so every ssh-bridge start reads it from the SAME place the connection
+    /// identity lives (`herdr --session <name>` on the far side).
     Ssh {
         destination: String,
         options: Vec<String>,
+        session: Option<String>,
     },
 }
 
-impl From<crate::remote_registry::RemoteTargetSnapshot> for ServerConnectionTarget {
-    fn from(target: crate::remote_registry::RemoteTargetSnapshot) -> Self {
-        match target {
-            crate::remote_registry::RemoteTargetSnapshot::Local { session } => {
+impl ServerConnectionTarget {
+    /// Build the connection target from a whole registry definition, so the definition-level
+    /// session reaches the ssh bridge. Replaces the old `From<RemoteTargetSnapshot>`, which only
+    /// saw the target and therefore could never carry an `Ssh` remote's session.
+    /// [`RemoteDefinitionSnapshot::session_name`] is the single source of truth for BOTH kinds (a
+    /// local remote keeps its session in the target, an ssh remote on the definition).
+    pub(crate) fn from_definition(
+        definition: &crate::remote_registry::RemoteDefinitionSnapshot,
+    ) -> Self {
+        let session = definition.session_name().map(str::to_string);
+        match &definition.target {
+            crate::remote_registry::RemoteTargetSnapshot::Local { .. } => {
                 Self::LocalSession(session)
             }
             crate::remote_registry::RemoteTargetSnapshot::Ssh { target, args } => Self::Ssh {
-                destination: target,
-                options: args,
+                destination: target.clone(),
+                options: args.clone(),
+                session,
             },
         }
     }
-}
 
-impl ServerConnectionTarget {
     /// item 3 (Area 5): the short target string shown in the management overlay row.
     pub(crate) fn display_label(&self) -> String {
         match self {
@@ -80,7 +91,24 @@ impl ServerConnectionTarget {
             ServerConnectionTarget::LocalSession(session) => {
                 format!("local:{}", session.as_deref().unwrap_or("default"))
             }
-            ServerConnectionTarget::Ssh { destination, .. } => destination.clone(),
+            ServerConnectionTarget::Ssh {
+                destination,
+                session,
+                ..
+            } => match session {
+                Some(session) => format!("{destination} ({session})"),
+                None => destination.clone(),
+            },
+        }
+    }
+
+    /// The remote-side session this target attaches to (`None` = the remote's default session).
+    /// One accessor for both kinds, so callers never re-derive it per variant.
+    pub(crate) fn session(&self) -> Option<&str> {
+        match self {
+            ServerConnectionTarget::Main => None,
+            ServerConnectionTarget::LocalSession(session) => session.as_deref(),
+            ServerConnectionTarget::Ssh { session, .. } => session.as_deref(),
         }
     }
 }
@@ -281,6 +309,10 @@ pub(crate) enum ClientMenuAction {
     HostToggleAutoUpdate {
         auto_update: bool,
     },
+    /// C4: promote the host menu's `session <name>` readout into the session picker. Reached by
+    /// Enter, a left-click, OR a right-click on that row (the one row that survives the
+    /// right-click-dismisses-the-menu rule, matching the user's literal wording).
+    OpenSessionPicker,
 }
 
 /// #47: the typed outcome of activating a [`ClientMenu`] row, mapped by the client loop into a
@@ -320,18 +352,30 @@ pub(crate) enum ClientMenuOutcome {
     ToggleWorktreeGroup {
         group_key: String,
     },
+    /// C4: the session picker opened in its loading state; the loop must fetch this host's
+    /// `session.list` off the UI thread (against the OWNING server's api target, which is what
+    /// makes it enumerate the REMOTE host's sessions) and fill it via
+    /// [`ClientSupervisorModel::fill_session_picker`].
+    FetchSessionList {
+        server_id: ServerId,
+        remote_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AddRemoteField {
     Target,
     Name,
+    /// C1: the OPTIONAL remote-side session. Empty = the remote's default session.
+    Session,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AddRemoteForm {
     pub(crate) target: String,
     pub(crate) name: String,
+    /// C1: optional session name; empty means the remote's default session.
+    pub(crate) session: String,
     pub(crate) focused_field: AddRemoteField,
     pub(crate) error: Option<String>,
     /// True while the submission worker is connecting/installing/attaching. Rendered as an
@@ -348,6 +392,9 @@ pub(crate) struct AddRemoteForm {
 pub(crate) struct AddRemoteDraft {
     pub(crate) target: String,
     pub(crate) name: Option<String>,
+    /// C1: the requested session, or `None` for the remote's default session (an empty/whitespace
+    /// field). Validated server-side by `normalize_session`, so the form stays a dumb carrier.
+    pub(crate) session: Option<String>,
     pub(crate) keybindings: crate::remote_registry::RemoteKeybindingsSnapshot,
 }
 
@@ -375,6 +422,10 @@ enum ClientOverlayState {
     NewWorktree(NewWorktreeForm),
     ConfirmDeleteWorktree(ConfirmDeleteWorktree),
     WorktreePicker(WorktreePicker),
+    // C4/C5/C6: the two follow-on overlays the host menu's `session` row promotes into — the
+    // remote's session list, and the free-text "new session" input its last row opens.
+    SessionPicker(SessionPicker),
+    NewSession(NewSessionForm),
 }
 
 /// #23: the inline rename text overlay. Mirrors `AddRemoteForm` (a single editable text field +
@@ -487,6 +538,90 @@ pub(crate) enum WorktreePickerOutcome {
         server_id: ServerId,
         workspace_id: String,
         path: String,
+    },
+}
+
+/// C4/C5: the remote's session list, promoted from the host menu's `session <name>` row. Opens in
+/// `loading` while the loop fetches `session.list` from the OWNING server (so it enumerates THAT
+/// host's sessions), then lists them with the current one marked.
+///
+/// The list ALWAYS carries one extra trailing `new session…` row (see [`Self::row_count`]) — it is
+/// NOT part of `items`, so it survives `loading` and the error path. That is what makes C6 reachable
+/// on an old remote whose server has no `session.list` method.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionPicker {
+    pub(crate) server_id: ServerId,
+    /// The registry id the `remote.set_session` mutation addresses (`server_id.registry_id()` at
+    /// open time, captured so the picker stays valid if the menu is gone).
+    pub(crate) remote_id: String,
+    /// The session this host is attached to right now (`None` = its default session).
+    pub(crate) current: Option<String>,
+    pub(crate) loading: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) items: Vec<SessionPickerItem>,
+    pub(crate) selected: usize,
+}
+
+/// One listed session. `name: None` is the remote's default session (the registry stores it as an
+/// absent session, so it must round-trip as `None`, not as the literal `"default"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionPickerItem {
+    pub(crate) name: Option<String>,
+    pub(crate) label: String,
+    pub(crate) running: bool,
+    pub(crate) is_current: bool,
+}
+
+impl SessionPicker {
+    /// Rows the picker renders/hit-tests: every listed session plus the always-present trailing
+    /// `new session…` row.
+    pub(crate) fn row_count(&self) -> usize {
+        self.items.len() + 1
+    }
+
+    /// Whether `index` is the trailing `new session…` row.
+    pub(crate) fn is_new_session_row(&self, index: usize) -> bool {
+        index >= self.items.len()
+    }
+}
+
+/// C5/C6: the typed outcome of activating a session-picker row. The trailing `new session…` row
+/// promotes into the [`NewSessionForm`] inside the model and reports `OpenNewSession` (mirroring how
+/// the menu's overlay-opening rows report `Redraw`); every other row carries the session to apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionPickerOutcome {
+    Redraw,
+    OpenNewSession,
+    Select {
+        server_id: ServerId,
+        remote_id: String,
+        session: Option<String>,
+    },
+}
+
+/// C6: the free-text session input the picker's `new session…` row opens. Mirrors
+/// `RenameWorkspaceForm` (one editable field + an inline error). An EMPTY submit means the remote's
+/// default session; anything else must pass `crate::session::validate_name`, and a rejection keeps
+/// the overlay open with the reason inline instead of silently closing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewSessionForm {
+    pub(crate) server_id: ServerId,
+    pub(crate) remote_id: String,
+    pub(crate) name: String,
+    pub(crate) error: Option<String>,
+    /// True from submit until `remote.set_session` answers. The overlay STAYS OPEN across the
+    /// round-trip so a server-side rejection (`duplicate_remote_target`, `invalid_session_name`)
+    /// lands back on this form's `error` instead of vanishing with the closed overlay.
+    pub(crate) in_flight: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NewSessionOutcome {
+    Redraw,
+    Submit {
+        server_id: ServerId,
+        remote_id: String,
+        session: Option<String>,
     },
 }
 
@@ -946,8 +1081,8 @@ impl ClientSupervisorModel {
             let mut server = existing.unwrap_or_else(|| {
                 managed_secondary(definition.clone(), ConnectionState::Connecting)
             });
-            server.display_name = definition.name;
-            server.target = definition.target.into();
+            server.display_name = definition.name.clone();
+            server.target = ServerConnectionTarget::from_definition(&definition);
             server.keybindings = definition.keybindings;
             // item 3 (Area 5): re-apply the gate input on every sync (like display_name/target/
             // keybindings). NOTE: connection_state is intentionally NOT re-applied here, so a
@@ -1431,7 +1566,9 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmCloseWorkspace(_) => None,
             ClientOverlayState::NewWorktree(_)
             | ClientOverlayState::ConfirmDeleteWorktree(_)
-            | ClientOverlayState::WorktreePicker(_) => None,
+            | ClientOverlayState::WorktreePicker(_)
+            | ClientOverlayState::SessionPicker(_)
+            | ClientOverlayState::NewSession(_) => None,
         }
     }
 
@@ -1445,7 +1582,34 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmCloseWorkspace(_) => None,
             ClientOverlayState::NewWorktree(_)
             | ClientOverlayState::ConfirmDeleteWorktree(_)
-            | ClientOverlayState::WorktreePicker(_) => None,
+            | ClientOverlayState::WorktreePicker(_)
+            | ClientOverlayState::SessionPicker(_)
+            | ClientOverlayState::NewSession(_) => None,
+        }
+    }
+
+    /// Whether a client overlay owns keyboard input right now — the ONE gate the input pipeline
+    /// asks before forwarding a keystroke to the focused pane.
+    ///
+    /// Deliberately an EXHAUSTIVE `match` with no `_` wildcard: this used to be a hand-written
+    /// `||` chain of nine `model.x_form().is_some()` calls in the client, and adding an overlay
+    /// without remembering to extend it silently made that overlay keyboard-dead — typed
+    /// characters leaked straight through to the user's shell. (That is exactly what happened to
+    /// the session picker and the new-session input.) With this shape, a new
+    /// [`ClientOverlayState`] variant is a compile error until it is classified here.
+    pub(crate) fn client_overlay_open(&self) -> bool {
+        match &self.client_overlay {
+            ClientOverlayState::None => false,
+            ClientOverlayState::Menu(_)
+            | ClientOverlayState::AddRemote(_)
+            | ClientOverlayState::ManageRemotes(_)
+            | ClientOverlayState::RenameWorkspace(_)
+            | ClientOverlayState::ConfirmCloseWorkspace(_)
+            | ClientOverlayState::NewWorktree(_)
+            | ClientOverlayState::ConfirmDeleteWorktree(_)
+            | ClientOverlayState::WorktreePicker(_)
+            | ClientOverlayState::SessionPicker(_)
+            | ClientOverlayState::NewSession(_) => true,
         }
     }
 
@@ -1456,16 +1620,16 @@ impl ClientSupervisorModel {
         matches!(self.client_overlay, ClientOverlayState::Menu(_))
     }
 
-    /// #47: whether ANY client overlay is open — the three menus plus the add-remote / manage-remotes
-    /// / new-workspace-picker / rename / confirm-close forms. Used by the shared top-border drag so
-    /// every overlay can be repositioned with one mechanism.
+    /// #47: whether ANY overlay is open. THE predicate behind all three cross-cutting gates — the
+    /// keyboard-ownership gate in the client's input pipeline, the compositor's modal (cursor-hide)
+    /// flag, and the shared top-border drag — so those can never disagree about what is open.
+    ///
+    /// Delegates to the exhaustive [`Self::client_overlay_open`] instead of re-listing overlays by
+    /// hand; the previous chain had silently fallen behind by five overlays (the three worktree ones
+    /// plus both session ones). `new_workspace_picker` is a separate model field, not a
+    /// `ClientOverlayState` variant, so it is ORed in explicitly.
     pub(crate) fn any_overlay_open(&self) -> bool {
-        self.client_menu().is_some()
-            || self.add_remote_form().is_some()
-            || self.new_workspace_picker().is_some()
-            || self.remote_manage_overlay().is_some()
-            || self.rename_workspace_form().is_some()
-            || self.confirm_close_workspace().is_some()
+        self.client_overlay_open() || self.new_workspace_picker().is_some()
     }
 
     /// #47: the first selectable row — the initial highlight, so a menu never opens on a
@@ -1682,6 +1846,18 @@ impl ClientSupervisorModel {
                     .map(ClientMenuOutcome::HostUpdate)
                     .unwrap_or(ClientMenuOutcome::Redraw)
             }
+            ClientMenuAction::OpenSessionPicker => {
+                // Open in the loading state and hand the fetch to the loop (the list lives on the
+                // REMOTE host; the round-trip must stay off the UI thread) — same shape as
+                // `OpenWorktreePicker`.
+                match self.open_session_picker() {
+                    Some((server_id, remote_id)) => ClientMenuOutcome::FetchSessionList {
+                        server_id,
+                        remote_id,
+                    },
+                    None => ClientMenuOutcome::Redraw,
+                }
+            }
             ClientMenuAction::HostToggleAutoUpdate { auto_update } => {
                 self.close_client_overlay();
                 host_server_id
@@ -1700,6 +1876,7 @@ impl ClientSupervisorModel {
         self.client_overlay = ClientOverlayState::AddRemote(AddRemoteForm {
             target: String::new(),
             name: String::new(),
+            session: String::new(),
             focused_field: AddRemoteField::Target,
             error: None,
             in_progress: false,
@@ -1717,7 +1894,9 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmCloseWorkspace(_) => None,
             ClientOverlayState::NewWorktree(_)
             | ClientOverlayState::ConfirmDeleteWorktree(_)
-            | ClientOverlayState::WorktreePicker(_) => None,
+            | ClientOverlayState::WorktreePicker(_)
+            | ClientOverlayState::SessionPicker(_)
+            | ClientOverlayState::NewSession(_) => None,
         }
     }
 
@@ -1740,7 +1919,8 @@ impl ClientSupervisorModel {
                 if let Some(form) = self.add_remote_form_mut() {
                     form.focused_field = match form.focused_field {
                         AddRemoteField::Target => AddRemoteField::Name,
-                        AddRemoteField::Name => AddRemoteField::Target,
+                        AddRemoteField::Name => AddRemoteField::Session,
+                        AddRemoteField::Session => AddRemoteField::Target,
                     };
                     form.error = None;
                 }
@@ -1756,9 +1936,11 @@ impl ClientSupervisorModel {
                     return AddRemoteFormOutcome::Redraw;
                 }
                 let name = trimmed_optional(&form.name);
+                let session = trimmed_optional(&form.session);
                 AddRemoteFormOutcome::Submit(AddRemoteDraft {
                     target,
                     name,
+                    session,
                     keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
                 })
             }
@@ -1863,7 +2045,9 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmCloseWorkspace(_) => None,
             ClientOverlayState::NewWorktree(_)
             | ClientOverlayState::ConfirmDeleteWorktree(_)
-            | ClientOverlayState::WorktreePicker(_) => None,
+            | ClientOverlayState::WorktreePicker(_)
+            | ClientOverlayState::SessionPicker(_)
+            | ClientOverlayState::NewSession(_) => None,
         }
     }
 
@@ -1877,7 +2061,9 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmCloseWorkspace(_) => None,
             ClientOverlayState::NewWorktree(_)
             | ClientOverlayState::ConfirmDeleteWorktree(_)
-            | ClientOverlayState::WorktreePicker(_) => None,
+            | ClientOverlayState::WorktreePicker(_)
+            | ClientOverlayState::SessionPicker(_)
+            | ClientOverlayState::NewSession(_) => None,
         }
     }
 
@@ -2268,6 +2454,9 @@ impl ClientSupervisorModel {
                 )
             })
             .unwrap_or((false, false, None, None, false));
+        // C3: the effective session this host is attached to; an unset session IS the remote's
+        // `default` session, so it reads as that rather than as blank.
+        let session = self.server_session(&server_id);
         let (version_label, is_mismatch) =
             host_version_readout(remote_version.as_deref(), remote_protocol);
         let items = vec![
@@ -2279,6 +2468,18 @@ impl ClientSupervisorModel {
                 },
                 selectable: false,
                 action: ClientMenuAction::Noop,
+            },
+            // C2/C3: the session readout, directly under the version. Unlike the version row it is
+            // SELECTABLE — activating it (Enter / left-click / right-click) opens the picker.
+            ClientMenuItem {
+                label: format!(
+                    "session  {}",
+                    session
+                        .as_deref()
+                        .unwrap_or(crate::session::DEFAULT_SESSION_NAME)
+                ),
+                selectable: true,
+                action: ClientMenuAction::OpenSessionPicker,
             },
             ClientMenuItem {
                 label: "add new space".to_string(),
@@ -2383,7 +2584,9 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmCloseWorkspace(_) => None,
             ClientOverlayState::NewWorktree(_)
             | ClientOverlayState::ConfirmDeleteWorktree(_)
-            | ClientOverlayState::WorktreePicker(_) => None,
+            | ClientOverlayState::WorktreePicker(_)
+            | ClientOverlayState::SessionPicker(_)
+            | ClientOverlayState::NewSession(_) => None,
         }
     }
 
@@ -2397,7 +2600,9 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmCloseWorkspace(_) => None,
             ClientOverlayState::NewWorktree(_)
             | ClientOverlayState::ConfirmDeleteWorktree(_)
-            | ClientOverlayState::WorktreePicker(_) => None,
+            | ClientOverlayState::WorktreePicker(_)
+            | ClientOverlayState::SessionPicker(_)
+            | ClientOverlayState::NewSession(_) => None,
         }
     }
 
@@ -2817,6 +3022,300 @@ impl ClientSupervisorModel {
         }
     }
 
+    // ----- C4/C5/C6: the host-menu session picker + its new-session input ----------------------
+
+    /// C4: promote the open HOST menu into the session picker (loading state). Returns the
+    /// `(server_id, remote_id)` the loop must fetch `session.list` for. Mirrors
+    /// `open_worktree_picker`; a no-op (`None`) when the open menu is not a host menu.
+    pub(crate) fn open_session_picker(&mut self) -> Option<(ServerId, String)> {
+        let server_id = match self.client_menu().map(|menu| &menu.kind) {
+            Some(ClientMenuKind::Host { server_id }) => server_id.clone(),
+            _ => return None,
+        };
+        let remote_id = server_id.registry_id().to_string();
+        let current = self.server_session(&server_id);
+        self.overlay_drag_offset = (0, 0);
+        self.client_overlay = ClientOverlayState::SessionPicker(SessionPicker {
+            server_id: server_id.clone(),
+            remote_id: remote_id.clone(),
+            current,
+            loading: true,
+            error: None,
+            items: Vec::new(),
+            selected: 0,
+        });
+        Some((server_id, remote_id))
+    }
+
+    pub(crate) fn session_picker(&self) -> Option<&SessionPicker> {
+        match &self.client_overlay {
+            ClientOverlayState::SessionPicker(picker) => Some(picker),
+            _ => None,
+        }
+    }
+
+    fn session_picker_mut(&mut self) -> Option<&mut SessionPicker> {
+        match &mut self.client_overlay {
+            ClientOverlayState::SessionPicker(picker) => Some(picker),
+            _ => None,
+        }
+    }
+
+    /// Apply the off-thread `session.list` result to the open picker. Ignored when the picker has
+    /// been closed or re-targeted meanwhile (a stale fetch must not resurrect it). The model — not
+    /// the worker — decides which row is CURRENT, and the selection lands on it. An error (e.g. an
+    /// old remote with no `session.list` method) is shown inline and leaves the trailing
+    /// `new session…` row usable, so C6 still works.
+    pub(crate) fn fill_session_picker(
+        &mut self,
+        server_id: &ServerId,
+        result: Result<Vec<SessionPickerItem>, String>,
+    ) {
+        let Some(picker) = self.session_picker_mut() else {
+            return;
+        };
+        if &picker.server_id != server_id {
+            return;
+        }
+        picker.loading = false;
+        match result {
+            Ok(items) => {
+                let current = picker.current.clone();
+                picker.items = items
+                    .into_iter()
+                    .map(|item| SessionPickerItem {
+                        is_current: item.name.as_deref() == current.as_deref(),
+                        ..item
+                    })
+                    .collect();
+                picker.error = None;
+                picker.selected = picker
+                    .items
+                    .iter()
+                    .position(|item| item.is_current)
+                    .unwrap_or(0);
+            }
+            Err(error) => {
+                picker.items = Vec::new();
+                picker.error = Some(error);
+                picker.selected = 0;
+            }
+        }
+    }
+
+    /// C5: mouse row-select — clamp to the row range (listed sessions + the trailing
+    /// `new session…` row) and highlight. Mirrors `set_client_menu_selected`.
+    pub(crate) fn set_session_picker_selected(&mut self, index: usize) {
+        if let Some(picker) = self.session_picker_mut() {
+            picker.selected = index.min(picker.row_count().saturating_sub(1));
+        }
+    }
+
+    /// C5: activate row `index` — the ONE selection path shared by Enter and a click.
+    pub(crate) fn select_session_picker_row(&mut self, index: usize) -> SessionPickerOutcome {
+        let Some(picker) = self.session_picker() else {
+            return SessionPickerOutcome::Redraw;
+        };
+        if index >= picker.row_count() {
+            return SessionPickerOutcome::Redraw;
+        }
+        if picker.is_new_session_row(index) {
+            // C6: promote into the free-text input (the model owns the overlay transition, like the
+            // menu's `OpenRename`); the loop just repaints.
+            self.open_new_session_form();
+            return SessionPickerOutcome::OpenNewSession;
+        }
+        let Some(item) = picker.items.get(index) else {
+            return SessionPickerOutcome::Redraw;
+        };
+        let outcome = SessionPickerOutcome::Select {
+            server_id: picker.server_id.clone(),
+            remote_id: picker.remote_id.clone(),
+            session: item.name.clone(),
+        };
+        self.close_client_overlay();
+        outcome
+    }
+
+    /// C5: Up/Down moves over listed sessions AND the trailing `new session…` row, Enter activates
+    /// the highlighted one, Esc closes. Mirrors `handle_worktree_picker_key`.
+    pub(crate) fn handle_session_picker_key(
+        &mut self,
+        key: crate::input::TerminalKey,
+    ) -> SessionPickerOutcome {
+        use crossterm::event::{KeyCode, KeyEventKind};
+
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return SessionPickerOutcome::Redraw;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.close_client_overlay();
+                SessionPickerOutcome::Redraw
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(picker) = self.session_picker_mut() {
+                    picker.selected = picker.selected.saturating_sub(1);
+                }
+                SessionPickerOutcome::Redraw
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(picker) = self.session_picker_mut() {
+                    if picker.selected + 1 < picker.row_count() {
+                        picker.selected += 1;
+                    }
+                }
+                SessionPickerOutcome::Redraw
+            }
+            KeyCode::Enter => {
+                let Some(selected) = self.session_picker().map(|picker| picker.selected) else {
+                    return SessionPickerOutcome::Redraw;
+                };
+                self.select_session_picker_row(selected)
+            }
+            _ => SessionPickerOutcome::Redraw,
+        }
+    }
+
+    /// C6: transition the open session picker into the free-text session input. A no-op when the
+    /// picker is not open. Mirrors `open_rename_workspace`.
+    pub(crate) fn open_new_session_form(&mut self) {
+        let form = match self.session_picker() {
+            Some(picker) => NewSessionForm {
+                server_id: picker.server_id.clone(),
+                remote_id: picker.remote_id.clone(),
+                name: String::new(),
+                error: None,
+                in_flight: false,
+            },
+            None => return,
+        };
+        self.overlay_drag_offset = (0, 0);
+        self.client_overlay = ClientOverlayState::NewSession(form);
+    }
+
+    pub(crate) fn new_session_form(&self) -> Option<&NewSessionForm> {
+        match &self.client_overlay {
+            ClientOverlayState::NewSession(form) => Some(form),
+            _ => None,
+        }
+    }
+
+    fn new_session_form_mut(&mut self) -> Option<&mut NewSessionForm> {
+        match &mut self.client_overlay {
+            ClientOverlayState::NewSession(form) => Some(form),
+            _ => None,
+        }
+    }
+
+    /// C6: text editing for the new-session input. Mirrors `handle_rename_workspace_key`; Enter
+    /// submits. An EMPTY name is the remote's default session (`None`); anything else must pass
+    /// `crate::session::validate_name` — a rejection keeps the overlay OPEN with the reason inline
+    /// (the same rule the server enforces, surfaced before the round-trip).
+    pub(crate) fn handle_new_session_key(
+        &mut self,
+        key: crate::input::TerminalKey,
+    ) -> NewSessionOutcome {
+        use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return NewSessionOutcome::Redraw;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                self.close_client_overlay();
+                NewSessionOutcome::Redraw
+            }
+            KeyCode::Enter => {
+                let Some(form) = self.new_session_form_mut() else {
+                    return NewSessionOutcome::Redraw;
+                };
+                // One submit at a time — the in-flight flag also blocks the double-Enter that the
+                // now-persistent overlay would otherwise allow.
+                if form.in_flight {
+                    return NewSessionOutcome::Redraw;
+                }
+                let name = form.name.trim().to_string();
+                let session = if name.is_empty() || name == crate::session::DEFAULT_SESSION_NAME {
+                    None
+                } else {
+                    if let Err(err) = crate::session::validate_name(&name) {
+                        form.error = Some(err);
+                        return NewSessionOutcome::Redraw;
+                    }
+                    Some(name)
+                };
+                // Deliberately NOT closed here (unlike rename): the overlay stays open until
+                // `remote.set_session` answers, so a rejection can be shown inline. `finish_new_session`
+                // closes it on success, `fail_new_session` re-arms it with the error. Esc still bails.
+                form.in_flight = true;
+                form.error = None;
+                NewSessionOutcome::Submit {
+                    server_id: form.server_id.clone(),
+                    remote_id: form.remote_id.clone(),
+                    session,
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(form) = self.new_session_form_mut() {
+                    form.name.clear();
+                    form.error = None;
+                }
+                NewSessionOutcome::Redraw
+            }
+            KeyCode::Backspace => {
+                if let Some(form) = self.new_session_form_mut() {
+                    form.name.pop();
+                    form.error = None;
+                }
+                NewSessionOutcome::Redraw
+            }
+            KeyCode::Char(ch) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
+                if let Some(form) = self.new_session_form_mut() {
+                    form.name.push(ch);
+                    form.error = None;
+                }
+                NewSessionOutcome::Redraw
+            }
+            _ => NewSessionOutcome::Redraw,
+        }
+    }
+
+    /// C6: the in-flight `remote.set_session` for `remote_id` SUCCEEDED — close the new-session
+    /// overlay if it is still the one that submitted it. A no-op when the user already moved on.
+    pub(crate) fn finish_new_session(&mut self, remote_id: &str) {
+        if self
+            .new_session_form()
+            .is_some_and(|form| form.remote_id == remote_id)
+        {
+            self.close_client_overlay();
+        }
+    }
+
+    /// C6: the in-flight `remote.set_session` for `remote_id` was REJECTED — put the server's reason
+    /// on the still-open overlay and let the user correct the name. A no-op when the overlay is gone
+    /// (the picker-click path, which has no overlay to return to — that failure is surfaced on the
+    /// host banner instead).
+    pub(crate) fn fail_new_session(&mut self, remote_id: &str, message: String) {
+        if let Some(form) = self.new_session_form_mut() {
+            if form.remote_id == remote_id {
+                form.in_flight = false;
+                form.error = Some(message);
+            }
+        }
+    }
+
+    /// C6: paste support for the new-session field, mirroring `append_rename_workspace_paste`.
+    pub(crate) fn append_new_session_paste(&mut self, text: &str) -> NewSessionOutcome {
+        if let Some(form) = self.new_session_form_mut() {
+            form.name.push_str(text);
+            form.error = None;
+        }
+        NewSessionOutcome::Redraw
+    }
+
     pub(crate) fn choose_new_workspace_destination(
         &mut self,
         server_id: &ServerId,
@@ -3172,9 +3671,19 @@ impl ClientSupervisorModel {
             Some(ServerConnectionTarget::Ssh {
                 destination,
                 options,
+                ..
             }) => Some((destination.clone(), options.clone())),
             _ => None,
         }
+    }
+
+    /// The remote-side session `id` attaches to (`None` = its default session). Sibling of
+    /// `server_ssh_target` so a throwaway bridge (post-update status refetch) and the host menu's
+    /// session readout both read the SAME session the live bridge was built with.
+    pub(crate) fn server_session(&self, id: &ServerId) -> Option<String> {
+        self.server(id)
+            .and_then(|server| server.target.session())
+            .map(str::to_string)
     }
 
     /// #61: secondary SSH remotes with per-remote auto-update enabled that are at a KNOWN protocol
@@ -3236,7 +3745,9 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmCloseWorkspace(_) => None,
             ClientOverlayState::NewWorktree(_)
             | ClientOverlayState::ConfirmDeleteWorktree(_)
-            | ClientOverlayState::WorktreePicker(_) => None,
+            | ClientOverlayState::WorktreePicker(_)
+            | ClientOverlayState::SessionPicker(_)
+            | ClientOverlayState::NewSession(_) => None,
         }
     }
 
@@ -3245,6 +3756,7 @@ impl ClientSupervisorModel {
         match form.focused_field {
             AddRemoteField::Target => Some(&mut form.target),
             AddRemoteField::Name => Some(&mut form.name),
+            AddRemoteField::Session => Some(&mut form.session),
         }
     }
 
@@ -3442,11 +3954,12 @@ fn managed_secondary(
     definition: crate::remote_registry::RemoteDefinitionSnapshot,
     connection_state: ConnectionState,
 ) -> ManagedServer {
+    let target = ServerConnectionTarget::from_definition(&definition);
     ManagedServer {
         id: ServerId::secondary(definition.id),
         display_name: definition.name,
         role: ServerRole::Secondary,
-        target: definition.target.into(),
+        target,
         keybindings: definition.keybindings,
         connection_state,
         summaries: ServerSummary::default(),
@@ -4303,6 +4816,7 @@ mod tests {
                     target: ServerConnectionTarget::Ssh {
                         destination: "prod.example.com".into(),
                         options: Vec::new(),
+                        session: None,
                     },
                     keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
                 },
@@ -4463,6 +4977,7 @@ mod tests {
                 ServerConnectionTarget::Ssh {
                     destination: "prod.example.com".into(),
                     options: Vec::new(),
+                    session: None,
                 },
             ]
         );
@@ -5696,6 +6211,7 @@ mod tests {
             Some(&AddRemoteForm {
                 target: String::new(),
                 name: String::new(),
+                session: String::new(),
                 focused_field: AddRemoteField::Target,
                 error: None,
                 in_progress: false,
@@ -5765,6 +6281,90 @@ mod tests {
             AddRemoteFormOutcome::Submit(AddRemoteDraft {
                 target: "local:dev".into(),
                 name: Some("dev".into()),
+                session: None,
+                keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
+            })
+        );
+    }
+
+    #[test]
+    fn add_remote_form_cycles_three_fields_and_carries_the_session() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        fn key(code: KeyCode) -> crate::input::TerminalKey {
+            crate::input::TerminalKey::new(code, KeyModifiers::empty())
+        }
+        fn type_into(model: &mut ClientSupervisorModel, text: &str) {
+            for ch in text.chars() {
+                assert_eq!(
+                    model.handle_add_remote_key(key(KeyCode::Char(ch))),
+                    AddRemoteFormOutcome::Redraw
+                );
+            }
+        }
+
+        let mut model = ClientSupervisorModel::new("local");
+        model.open_add_remote_form();
+        // C1: the session field opens empty (= the remote's default session).
+        assert_eq!(
+            model.add_remote_form().map(|form| form.session.as_str()),
+            Some("")
+        );
+
+        type_into(&mut model, "user@dev");
+        model.handle_add_remote_key(key(KeyCode::Tab));
+        assert_eq!(
+            model.add_remote_form().map(|form| form.focused_field),
+            Some(AddRemoteField::Name)
+        );
+        type_into(&mut model, "dev");
+        model.handle_add_remote_key(key(KeyCode::Tab));
+        assert_eq!(
+            model.add_remote_form().map(|form| form.focused_field),
+            Some(AddRemoteField::Session)
+        );
+        type_into(&mut model, "work");
+
+        // …and a third Tab wraps back to `target` (target -> name -> session -> target).
+        model.handle_add_remote_key(key(KeyCode::Tab));
+        assert_eq!(
+            model.add_remote_form().map(|form| form.focused_field),
+            Some(AddRemoteField::Target)
+        );
+
+        assert_eq!(
+            model.handle_add_remote_key(key(KeyCode::Enter)),
+            AddRemoteFormOutcome::Submit(AddRemoteDraft {
+                target: "user@dev".into(),
+                name: Some("dev".into()),
+                session: Some("work".into()),
+                keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
+            })
+        );
+    }
+
+    #[test]
+    fn add_remote_draft_treats_a_blank_session_as_the_default_session() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        fn key(code: KeyCode) -> crate::input::TerminalKey {
+            crate::input::TerminalKey::new(code, KeyModifiers::empty())
+        }
+
+        let mut model = ClientSupervisorModel::new("local");
+        model.open_add_remote_form();
+        for ch in "user@dev".chars() {
+            model.handle_add_remote_key(key(KeyCode::Char(ch)));
+        }
+        // Focus the session field and leave only whitespace on it.
+        model.handle_add_remote_key(key(KeyCode::Tab));
+        model.handle_add_remote_key(key(KeyCode::Tab));
+        model.handle_add_remote_key(key(KeyCode::Char(' ')));
+
+        assert_eq!(
+            model.handle_add_remote_key(key(KeyCode::Enter)),
+            AddRemoteFormOutcome::Submit(AddRemoteDraft {
+                target: "user@dev".into(),
+                name: None,
+                session: None,
                 keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
             })
         );
@@ -6863,17 +7463,19 @@ mod tests {
         // the version-readout row (0) is non-selectable; connected + enabled state shows in the
         // baked labels asserted below ("disable" / "disconnect").
         assert!(!menu.items[0].selectable);
-        // #46 (item 5): opens on the first actionable row (1 == add-space), skipping the
-        // non-selectable version-readout at row 0.
+        // #46 (item 5): opens on the first actionable row, skipping the non-selectable
+        // version-readout at row 0. C3: that first actionable row is now the session readout.
         assert_eq!(menu.selected, 1);
         assert_eq!(menu.anchor_col, 4);
         assert_eq!(menu.anchor_row, 5);
-        // #44/#61: a non-selectable version-readout row leads; then add/disable/disconnect; then
-        // update; then the per-remote auto-update toggle (off -> "enable auto-update").
+        // #44/#61: a non-selectable version-readout row leads; C3 puts the session readout right
+        // under it; then add/disable/disconnect; then update; then the per-remote auto-update
+        // toggle (off -> "enable auto-update").
         assert_eq!(
             menu_labels(&model),
             [
                 "unknown",
+                "session  default",
                 "add new space",
                 "disable",
                 "disconnect",
@@ -6881,6 +7483,9 @@ mod tests {
                 "enable auto-update"
             ]
         );
+        // C4: activating that row opens the picker (asserted in full below).
+        assert_eq!(menu.items[1].action, ClientMenuAction::OpenSessionPicker);
+        assert!(menu.items[1].selectable);
 
         // A disabled + disconnected host flips both toggle labels.
         let mut model = ClientSupervisorModel::new("local");
@@ -6895,6 +7500,7 @@ mod tests {
             menu_labels(&model),
             [
                 "unknown",
+                "session  default",
                 "add new space",
                 "enable",
                 "reconnect",
@@ -6906,14 +7512,14 @@ mod tests {
 
     #[test]
     fn host_context_menu_toggle_label_reflects_state() {
-        // #44: the toggle row is now index 2 (after the version readout + add-space rows).
+        // #44/C3: the toggle row is index 3 (after version readout / session readout / add-space).
         // A disabled host shows "enable" there, and selecting it yields ToggleEnabled{true}.
         let mut model = ClientSupervisorModel::new("local");
         let remote = model.add_secondary(disabled_ssh_remote("r1", "alpha", "alpha"));
         model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
-        assert_eq!(menu_labels(&model)[2], "enable");
+        assert_eq!(menu_labels(&model)[3], "enable");
         assert_eq!(
-            model.select_client_menu_item(2),
+            model.select_client_menu_item(3),
             ClientMenuOutcome::HostToggleEnabled {
                 remote_id: "r1".into(),
                 enabled: true,
@@ -6924,9 +7530,9 @@ mod tests {
         let mut model = ClientSupervisorModel::new("local");
         let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
         model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
-        assert_eq!(menu_labels(&model)[2], "disable");
+        assert_eq!(menu_labels(&model)[3], "disable");
         assert_eq!(
-            model.select_client_menu_item(2),
+            model.select_client_menu_item(3),
             ClientMenuOutcome::HostToggleEnabled {
                 remote_id: "r1".into(),
                 enabled: false,
@@ -6936,10 +7542,11 @@ mod tests {
 
     #[test]
     fn host_context_menu_add_space_unavailable_when_disconnected() {
-        // #44 row order: 0=version readout, 1=add space, 2=toggle, 3=disconnect/reconnect, 4=update.
+        // #44/C3 row order: 0=version readout, 1=session readout, 2=add space, 3=toggle,
+        // 4=disconnect/reconnect, 5=update.
         // #47: activating a terminal row closes the menu (it has done its job), so re-open before
-        // each selection. Disconnected host: add-space (1) and update (4) are no-op redraws; the
-        // version row (0) is non-selectable (redraw); the disconnect row (3) reconnects instead.
+        // each selection. Disconnected host: add-space (2) and update (5) are no-op redraws; the
+        // version row (0) is non-selectable (redraw); the disconnect row (4) reconnects instead.
         let mut model = ClientSupervisorModel::new("local");
         let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
         model
@@ -6948,16 +7555,16 @@ mod tests {
         model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
         assert_eq!(model.select_client_menu_item(0), ClientMenuOutcome::Redraw);
         model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
-        assert_eq!(model.select_client_menu_item(1), ClientMenuOutcome::Redraw);
+        assert_eq!(model.select_client_menu_item(2), ClientMenuOutcome::Redraw);
         model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
         assert_eq!(
-            model.select_client_menu_item(3),
+            model.select_client_menu_item(4),
             ClientMenuOutcome::HostReconnect(remote.clone())
         );
         model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
-        assert_eq!(model.select_client_menu_item(4), ClientMenuOutcome::Redraw);
+        assert_eq!(model.select_client_menu_item(5), ClientMenuOutcome::Redraw);
 
-        // Connected host: add-space (row 1) yields AddSpace; row 3 disconnects; row 4 updates.
+        // Connected host: add-space (row 2) yields AddSpace; row 4 disconnects; row 5 updates.
         let mut model = ClientSupervisorModel::new("local");
         let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
         model
@@ -6965,17 +7572,17 @@ mod tests {
             .unwrap();
         model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
         assert_eq!(
-            model.select_client_menu_item(1),
+            model.select_client_menu_item(2),
             ClientMenuOutcome::HostAddSpace(remote.clone())
         );
         model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
         assert_eq!(
-            model.select_client_menu_item(3),
+            model.select_client_menu_item(4),
             ClientMenuOutcome::HostDisconnect(remote.clone())
         );
         model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
         assert_eq!(
-            model.select_client_menu_item(4),
+            model.select_client_menu_item(5),
             ClientMenuOutcome::HostUpdate(remote.clone())
         );
     }
@@ -6990,9 +7597,9 @@ mod tests {
             .unwrap();
         model.open_host_context_menu(remote, "alpha".into(), 0, 0);
 
-        // #44/#61: Down advances through the 6-row menu (version/add/toggle/disconnect/update/
-        // auto-update), clamped at the last row (index 5). #46: the menu now OPENS on row 1 (add),
-        // skipping the non-actionable version readout, so the first Down lands on row 2.
+        // #44/#61/C3: Down advances through the 7-row menu (version/session/add/toggle/disconnect/
+        // update/auto-update), clamped at the last row (index 6). #46: the menu OPENS on row 1
+        // (the session readout), skipping the non-actionable version readout.
         assert_eq!(model.client_menu().unwrap().selected, 1);
         assert_eq!(
             model.handle_client_menu_key(press(KeyCode::Down)),
@@ -7003,16 +7610,340 @@ mod tests {
         assert_eq!(model.client_menu().unwrap().selected, 3);
         model.handle_client_menu_key(press(KeyCode::Down));
         model.handle_client_menu_key(press(KeyCode::Down));
-        assert_eq!(model.client_menu().unwrap().selected, 5);
         model.handle_client_menu_key(press(KeyCode::Down));
-        assert_eq!(model.client_menu().unwrap().selected, 5);
+        assert_eq!(model.client_menu().unwrap().selected, 6);
+        model.handle_client_menu_key(press(KeyCode::Down));
+        assert_eq!(model.client_menu().unwrap().selected, 6);
         // k moves back up.
         model.handle_client_menu_key(press(KeyCode::Char('k')));
-        assert_eq!(model.client_menu().unwrap().selected, 4);
+        assert_eq!(model.client_menu().unwrap().selected, 5);
 
         // Esc dismisses.
         model.handle_client_menu_key(press(KeyCode::Esc));
         assert!(model.client_menu().is_none());
+    }
+
+    // ----- C2/C3/C4/C5/C6: the host-menu session readout, picker, and new-session input ---------
+
+    fn ssh_remote_with_session(
+        id: &str,
+        name: &str,
+        target: &str,
+        session: &str,
+    ) -> crate::remote_registry::RemoteDefinitionSnapshot {
+        let mut remote = ssh_remote(id, name, target);
+        remote.session = Some(session.to_string());
+        remote
+    }
+
+    fn session_item(name: Option<&str>, running: bool) -> SessionPickerItem {
+        SessionPickerItem {
+            name: name.map(str::to_string),
+            label: name.unwrap_or("default").to_string(),
+            running,
+            is_current: false,
+        }
+    }
+
+    #[test]
+    fn host_context_menu_session_row_reads_the_effective_session() {
+        // C3: an unset session IS the remote's `default` session, so the readout says so.
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        model.open_host_context_menu(remote, "alpha".into(), 0, 0);
+        assert_eq!(menu_labels(&model)[1], "session  default");
+
+        // …and a remote pinned to a session shows THAT name.
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote_with_session("r1", "alpha", "alpha", "work"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        assert_eq!(menu_labels(&model)[1], "session  work");
+
+        // C4: activating it opens the picker in its loading state and asks the loop to fetch.
+        assert_eq!(
+            model.select_client_menu_item(1),
+            ClientMenuOutcome::FetchSessionList {
+                server_id: remote.clone(),
+                remote_id: "r1".into(),
+            }
+        );
+        let picker = model.session_picker().expect("picker open");
+        assert!(picker.loading);
+        assert_eq!(picker.current.as_deref(), Some("work"));
+        // C6: the trailing `new session…` row exists even while loading.
+        assert_eq!(picker.row_count(), 1);
+        assert!(picker.is_new_session_row(0));
+    }
+
+    #[test]
+    fn fill_session_picker_marks_the_current_row_and_keeps_the_new_session_row() {
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote_with_session("r1", "alpha", "alpha", "work"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(1);
+
+        model.fill_session_picker(
+            &remote,
+            Ok(vec![
+                session_item(None, true),
+                session_item(Some("work"), true),
+                session_item(Some("scratch"), false),
+            ]),
+        );
+
+        let picker = model.session_picker().expect("picker open");
+        assert!(!picker.loading);
+        assert_eq!(picker.error, None);
+        assert_eq!(
+            picker
+                .items
+                .iter()
+                .map(|item| item.is_current)
+                .collect::<Vec<_>>(),
+            [false, true, false]
+        );
+        // The selection lands on the current session, and the trailing row is one past the list.
+        assert_eq!(picker.selected, 1);
+        assert_eq!(picker.row_count(), 4);
+        assert!(picker.is_new_session_row(3));
+    }
+
+    #[test]
+    fn fill_session_picker_error_still_offers_the_new_session_row() {
+        // C6: an old remote whose server has no `session.list` must still be switchable by name.
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(1);
+
+        model.fill_session_picker(&remote, Err("unknown method: session.list".to_string()));
+
+        let picker = model.session_picker().expect("picker open");
+        assert!(!picker.loading);
+        assert_eq!(
+            picker.error.as_deref(),
+            Some("unknown method: session.list")
+        );
+        assert!(picker.items.is_empty());
+        assert_eq!(picker.row_count(), 1);
+        assert!(picker.is_new_session_row(0));
+
+        // …and activating it opens the free-text input rather than dying on the error.
+        assert_eq!(
+            model.handle_session_picker_key(press(crossterm::event::KeyCode::Enter)),
+            SessionPickerOutcome::OpenNewSession
+        );
+        assert!(model.new_session_form().is_some());
+    }
+
+    #[test]
+    fn session_picker_enter_selects_a_session_or_opens_the_new_session_input() {
+        use crossterm::event::KeyCode;
+
+        // C5: Enter on a listed row yields the session to switch to (the default row -> `None`).
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote_with_session("r1", "alpha", "alpha", "work"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(1);
+        model.fill_session_picker(
+            &remote,
+            Ok(vec![
+                session_item(None, true),
+                session_item(Some("work"), true),
+            ]),
+        );
+        // Selection opened on `work` (row 1); move up to the default session.
+        model.handle_session_picker_key(press(KeyCode::Up));
+        assert_eq!(
+            model.handle_session_picker_key(press(KeyCode::Enter)),
+            SessionPickerOutcome::Select {
+                server_id: remote.clone(),
+                remote_id: "r1".into(),
+                session: None,
+            }
+        );
+        assert!(model.session_picker().is_none(), "picker closes on select");
+
+        // C6: Enter on the LAST row (the trailing `new session…`) opens the input instead.
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(1);
+        model.fill_session_picker(&remote, Ok(vec![session_item(None, true)]));
+        model.handle_session_picker_key(press(KeyCode::Down));
+        assert_eq!(model.session_picker().unwrap().selected, 1);
+        assert_eq!(
+            model.handle_session_picker_key(press(KeyCode::Enter)),
+            SessionPickerOutcome::OpenNewSession
+        );
+        assert_eq!(
+            model.new_session_form().map(|form| form.remote_id.as_str()),
+            Some("r1")
+        );
+        // Down cannot walk past the trailing row.
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(1);
+        model.fill_session_picker(&remote, Ok(vec![session_item(None, true)]));
+        for _ in 0..5 {
+            model.handle_session_picker_key(press(KeyCode::Down));
+        }
+        assert_eq!(model.session_picker().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn session_picker_click_selects_the_same_rows_as_enter() {
+        // C5: "클릭해서 선택할수 있고" — the click path is the SAME `select_session_picker_row`.
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(1);
+        model.fill_session_picker(
+            &remote,
+            Ok(vec![
+                session_item(None, true),
+                session_item(Some("work"), false),
+            ]),
+        );
+
+        assert_eq!(
+            model.select_session_picker_row(1),
+            SessionPickerOutcome::Select {
+                server_id: remote,
+                remote_id: "r1".into(),
+                session: Some("work".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn new_session_submit_rejects_an_invalid_name_without_closing() {
+        use crossterm::event::KeyCode;
+
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(1);
+        model.fill_session_picker(&remote, Ok(Vec::new()));
+        model.handle_session_picker_key(press(KeyCode::Enter));
+
+        for ch in "bad name!".chars() {
+            model.handle_new_session_key(press(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            model.handle_new_session_key(press(KeyCode::Enter)),
+            NewSessionOutcome::Redraw
+        );
+        let form = model
+            .new_session_form()
+            .expect("invalid name keeps the overlay open");
+        assert_eq!(form.name, "bad name!");
+        assert!(
+            form.error.is_some(),
+            "the rejection reason is shown inline: {form:?}"
+        );
+
+        // A valid name submits and closes.
+        for _ in 0..form.name.len() {
+            model.handle_new_session_key(press(KeyCode::Backspace));
+        }
+        for ch in "work".chars() {
+            model.handle_new_session_key(press(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            model.handle_new_session_key(press(KeyCode::Enter)),
+            NewSessionOutcome::Submit {
+                server_id: remote.clone(),
+                remote_id: "r1".into(),
+                session: Some("work".into()),
+            }
+        );
+        // D2: the overlay STAYS OPEN (in flight) so a server-side rejection can land on it; a
+        // second Enter cannot double-submit while it is in flight.
+        let form = model
+            .new_session_form()
+            .expect("overlay open while in flight");
+        assert!(form.in_flight);
+        assert_eq!(form.error, None);
+        assert_eq!(
+            model.handle_new_session_key(press(KeyCode::Enter)),
+            NewSessionOutcome::Redraw,
+            "an in-flight submit must not be re-sent"
+        );
+
+        // The server rejects it -> the reason lands inline and the overlay is editable again.
+        model.fail_new_session("r1", "remote target already exists".into());
+        let form = model
+            .new_session_form()
+            .expect("overlay still open after a rejection");
+        assert!(!form.in_flight);
+        assert_eq!(form.error.as_deref(), Some("remote target already exists"));
+
+        // …and a success closes it.
+        model.finish_new_session("r1");
+        assert!(model.new_session_form().is_none());
+    }
+
+    #[test]
+    fn new_session_empty_submit_means_the_default_session() {
+        use crossterm::event::KeyCode;
+
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote_with_session("r1", "alpha", "alpha", "work"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(1);
+        model.fill_session_picker(&remote, Ok(Vec::new()));
+        model.handle_session_picker_key(press(KeyCode::Enter));
+
+        assert_eq!(
+            model.handle_new_session_key(press(KeyCode::Enter)),
+            NewSessionOutcome::Submit {
+                server_id: remote,
+                remote_id: "r1".into(),
+                session: None,
+            }
+        );
+    }
+
+    #[test]
+    fn secondary_connection_plan_carries_the_remotes_session() {
+        // The value that reaches `start_ssh_remote_bridge` as `--session work` on the far side.
+        let mut model = ClientSupervisorModel::new("local");
+        model.sync_remote_registry(vec![ssh_remote_with_session(
+            "r1", "alpha", "alpha", "work",
+        )]);
+
+        let plans = model.secondary_connection_plans();
+        assert_eq!(
+            plans
+                .iter()
+                .map(|plan| plan.target.clone())
+                .collect::<Vec<_>>(),
+            vec![ServerConnectionTarget::Ssh {
+                destination: "alpha".into(),
+                options: Vec::new(),
+                session: Some("work".into()),
+            }]
+        );
+        assert_eq!(
+            model.server_session(&ServerId::secondary("r1")).as_deref(),
+            Some("work")
+        );
+        // C3: the management-overlay label spells the session out too.
+        assert_eq!(plans[0].target.display_label(), "alpha (work)");
+    }
+
+    #[test]
+    fn local_remote_session_still_comes_from_its_target() {
+        // A `Local` remote keeps its session in the target (`local:<name>`), so `from_definition`
+        // must read it from there — the definition-level field is the SSH-only carrier.
+        let mut model = ClientSupervisorModel::new("local");
+        model.sync_remote_registry(vec![local_remote("r1", "dev", Some("dev"))]);
+        assert_eq!(
+            model.server_session(&ServerId::secondary("r1")).as_deref(),
+            Some("dev")
+        );
     }
 
     // ----- #44: remote version/protocol readout + one-click update -------------------------------

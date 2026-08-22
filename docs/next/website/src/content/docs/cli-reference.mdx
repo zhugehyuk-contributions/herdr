@@ -34,6 +34,8 @@ herdr status server
 herdr status client
 ```
 
+`herdr status` also prints a `sessions:` table covering every session under the herdr config directory — running and stopped — with each session's protocol, compatibility, and version. A `*` marks the session the `server:` block above describes when that server is one of them; when it is not (a `HERDR_SOCKET_PATH` pointing outside the sessions tree), the heading drops the `(* = active)` hint rather than promising a marker that is not there. The table shares one probe budget, so a session that is running but not answering shows as `unknown` instead of stalling the command.
+
 API schema commands:
 
 ```bash
@@ -85,13 +87,15 @@ compinit
 ```bash
 herdr server
 herdr server stop
+herdr server live-handoff
+herdr live-handoff [--session <name>] [--json]
 herdr server reload-config
 herdr server agent-manifests [--json]
 herdr server update-agent-manifests [--json]
 herdr server reload-agent-manifests
 ```
 
-`herdr server` runs the headless server explicitly. Use it for supervised or service-style setups. `reload-config` applies reloadable settings without restarting panes. `agent-manifests` shows the active agent detection manifest sources, cached remote versions, and last remote update results. `update-agent-manifests` fetches remote manifest updates immediately, reloads them into the running server, and prints the updated manifest status; pass `--json` for the raw status response. `reload-agent-manifests` reloads agent detection manifests into the running server after local override edits.
+`herdr server` runs the headless server explicitly. Use it for supervised or service-style setups. `reload-config` applies reloadable settings without restarting panes. `agent-manifests` shows the active agent detection manifest sources, cached remote versions, and last remote update results. `update-agent-manifests` fetches remote manifest updates immediately, reloads them into the running server, and prints the updated manifest status; pass `--json` for the raw status response. `reload-agent-manifests` reloads agent detection manifests into the running server after local override edits. `herdr server live-handoff` hands the running server's live panes to a new server started from the current binary. `herdr live-handoff` is the top-level form: it names the sessions it is about to touch, then hands off every running session one at a time and prints an `N ok, N skipped, N failed` summary. A session running in app mode (`herdr --no-session`) cannot live hand off and is counted as skipped, not failed. It exits non-zero only when a session actually failed, and exits 2 when `--session <name>` names a session that does not exist. `--session <name>` narrows the run to that one session; ambient session context (`HERDR_SESSION`, `HERDR_SOCKET_PATH`) does not, so running it from inside a pane still covers the whole machine.
 
 ## Notifications
 

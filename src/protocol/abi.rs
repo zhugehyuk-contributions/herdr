@@ -596,7 +596,10 @@ fn client_message_exemplars() -> Vec<ClientMessage> {
     // disagree on, so it is not optional here — it is the exemplar that makes the fingerprint
     // witness B1 at all.
     for encoding in [RenderEncoding::SemanticFrame, RenderEncoding::TerminalAnsi] {
-        for surface in [ClientSurfaceMode::FullApp, ClientSurfaceMode::EmbeddedContent] {
+        for surface in [
+            ClientSurfaceMode::FullApp,
+            ClientSurfaceMode::EmbeddedContent,
+        ] {
             for launch in [
                 ClientLaunchMode::App,
                 ClientLaunchMode::TerminalAttach,
@@ -736,7 +739,11 @@ fn server_message_exemplars() -> Vec<ServerMessage> {
         },
     ];
 
-    for kind in [NotifyKind::Sound, NotifyKind::Toast, NotifyKind::SystemToast] {
+    for kind in [
+        NotifyKind::Sound,
+        NotifyKind::Toast,
+        NotifyKind::SystemToast,
+    ] {
         exemplars.push(ServerMessage::Notify {
             kind,
             message: EX_STR.to_owned(),
@@ -846,7 +853,11 @@ mod tests {
         let mut reader = framed.as_slice();
         match read_peer_handshake_start(&mut reader).expect("sniff") {
             PeerHandshakeStart::Legacy(head) => {
-                assert_eq!(head, framed[..4], "the sniffed bytes must be returned verbatim");
+                assert_eq!(
+                    head,
+                    framed[..4],
+                    "the sniffed bytes must be returned verbatim"
+                );
                 // Chaining them back reconstructs the original stream exactly.
                 let mut restored = (&head[..]).chain(reader);
                 let decoded: ClientMessage =
@@ -1002,9 +1013,8 @@ mod tests {
             },
         }
 
-        let without = encode_exemplar(&MouseCaptureWithoutExtraField::WithoutField {
-            enabled: true,
-        });
+        let without =
+            encode_exemplar(&MouseCaptureWithoutExtraField::WithoutField { enabled: true });
         let with = encode_exemplar(&ServerMessage::MouseCapture {
             enabled: true,
             sgr_pixels: true,

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+- Added `herdr live-handoff`: one command hands off every running session to the current binary, one session at a time over that session's own socket. It names the sessions it is about to touch before it starts, then reports each one and a `N ok, N skipped, N failed` summary; a session that reports an error no longer blocks the rest. Sessions running in app mode (`herdr --no-session`) cannot live hand off and are counted as skipped rather than failed, so they do not pin the exit code at 1. Exits non-zero only when a session actually failed, and exits 2 for a `--session <name>` that names no existing session. A `--session <name>` narrows the run to that one session; ambient session context (`HERDR_SESSION`, `HERDR_SOCKET_PATH`) deliberately does not, so running it from inside a pane still covers the whole machine. `--json` reports the same thing with a per-session `status` and a top-level `skipped` count. Previously each session had to be handed off by hand with `herdr server live-handoff --session <name>`.
+- Added a `sessions:` table to `herdr status`: it now lists every session under the herdr config directory — running and stopped — with each one's protocol, compatibility and version, and marks the session the `server:` block describes when that server is one of them. Previously `herdr status` only ever showed the one session the shell was pointed at, so other running sessions were invisible. The whole table shares one probe budget, so a wedged session degrades to `unknown` instead of stalling the command, and `herdr status --json` gains a matching `sessions` array.
+- Added a session choice for remotes: the add-remote dialog takes an optional `session`, and a host's right-click menu shows the session it is attached to, lists the sessions that exist on that host, and can switch it (including to a brand-new name). Previously every remote attached the far side's `default` session.
+- Added `session.list` and `remote.set_session` socket API methods, and an optional `session` on `remote.add`.
+
+### Fixed
+- Fixed a remote whose herdr server is wedged — still holding its API socket but no longer answering status pings — being treated as "not running": attaching would start a replacement server against a socket the old process still owns, and the shutdown wait returned success on its first poll. Such a server is now reported as unreachable, attach fails with the manual stop command instead of doubling up, the shutdown wait keeps polling to its deadline, and installing a remote binary over one asks for confirmation rather than proceeding silently. Remotes running an older herdr, which report no server state, keep working unchanged.
+- Fixed `herdr status` hanging indefinitely when the session it points at is alive but not answering: the server probe is now bounded and such a server is reported as `unreachable` (`"unreachable"` in `--json`) instead of blocking the command.
+- Fixed remote provisioning talking to the wrong server on a host running more than one session: the readiness check, live handoff and stop commands never passed `--session`, so for a remote attached to a named session the compatibility decision was made against the default session's server and a restart landed on unrelated panes. This also affected `herdr --remote <host> --session <name>` from the CLI.
+- Fixed a failed remote management request (enable/disable, remove, auto-update, session switch) being discarded silently instead of reporting on the host banner.
+
 ## [0.8.2] - 2026-08-19
 
 ### Added

@@ -32,6 +32,7 @@ pub(super) fn command() -> Command {
         .subcommand(config_command())
         .subcommand(channel_command())
         .subcommand(server_command())
+        .subcommand(live_handoff_command())
         .subcommand(api_command())
         .subcommand(workspace_command())
         .subcommand(worktree_command())
@@ -183,6 +184,18 @@ fn server_command() -> Command {
         .subcommand(
             Command::new("reload-agent-manifests")
                 .about("Reload local agent detection manifest overrides"),
+        )
+}
+
+fn live_handoff_command() -> Command {
+    Command::new("live-handoff")
+        .about("Live hand off running sessions to the current binary")
+        .arg(json_flag())
+        .arg(path_option("import-exe", "PATH").help("Binary the servers re-exec into"))
+        .arg(option("expected-protocol", "N").help("Protocol version the import binary must speak"))
+        .arg(option("expected-version", "VERSION").help("Version the import binary must report"))
+        .after_help(
+            "Hands off every running session in turn; --session <name> narrows it to one. Sessions running in app mode (herdr --no-session) are skipped, not failed.",
         )
 }
 
@@ -1266,6 +1279,34 @@ mod tests {
         assert!(pane
             .get_subcommands()
             .any(|subcommand| subcommand.get_name() == "wait-output"));
+    }
+
+    #[test]
+    fn spec_lists_live_handoff_as_a_discoverable_root_command() {
+        let cmd = super::command();
+        let live_handoff = command_path(&cmd, &["live-handoff"]);
+        for option in [
+            "json",
+            "import-exe",
+            "expected-protocol",
+            "expected-version",
+        ] {
+            assert!(
+                has_option(live_handoff, option),
+                "herdr live-handoff should advertise --{option}"
+            );
+        }
+
+        let mut root_help = Vec::new();
+        super::command()
+            .write_long_help(&mut root_help)
+            .expect("root help renders");
+        assert!(
+            String::from_utf8(root_help)
+                .unwrap()
+                .contains("live-handoff"),
+            "herdr --help must list live-handoff"
+        );
     }
 
     #[test]

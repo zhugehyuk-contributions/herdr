@@ -34,10 +34,7 @@ async fn cold_redraw_advances_one_bounded_layer_after_each_send() {
         assert!(bytes.len() <= MAX_GRAPHICS_FRAME_SIZE + 4);
         let graphics = read_server_frame_graphics(bytes);
         assert_eq!(
-            graphics
-                .windows(4)
-                .filter(|part| *part == b"a=t,")
-                .count(),
+            graphics.windows(4).filter(|part| *part == b"a=t,").count(),
             1
         );
         assert_eq!(

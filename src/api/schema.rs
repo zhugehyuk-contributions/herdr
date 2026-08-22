@@ -71,6 +71,10 @@ pub enum Method {
     RemoteSetEnabled(RemoteSetEnabledParams),
     #[serde(rename = "remote.set_auto_update")]
     RemoteSetAutoUpdate(RemoteSetAutoUpdateParams),
+    #[serde(rename = "remote.set_session")]
+    RemoteSetSession(RemoteSetSessionParams),
+    #[serde(rename = "session.list")]
+    SessionList(EmptyParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "client.window_title.set")]

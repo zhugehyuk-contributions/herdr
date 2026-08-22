@@ -146,7 +146,10 @@ fn pane_pty_size(socket_path: &Path, pane_id: &str, label: &str) -> String {
         }
     });
     let sent = send_request(socket_path, &request.to_string());
-    assert_eq!(sent["result"]["type"], "ok", "pane.send_input failed: {sent}");
+    assert_eq!(
+        sent["result"]["type"], "ok",
+        "pane.send_input failed: {sent}"
+    );
 
     let waited = send_request(
         socket_path,
@@ -278,7 +281,9 @@ fn read_terminal_frame(stream: &mut UnixStream, timeout: Duration) -> TerminalFr
     while Instant::now() < deadline {
         let (variant, payload) = match read_server_message(stream) {
             Ok(message) => message,
-            Err(err) => panic!("client stream ended before a Terminal frame ({err}); variants seen: {seen:?}"),
+            Err(err) => panic!(
+                "client stream ended before a Terminal frame ({err}); variants seen: {seen:?}"
+            ),
         };
         let (variant, payload) = inflate_compressed_frame(variant, &payload);
         seen.push(variant);
@@ -398,7 +403,10 @@ fn observe_terminal_streams_ansi_bytes_without_resizing_pane() {
         })
         .to_string(),
     );
-    assert_eq!(echoed["result"]["type"], "ok", "send_input failed: {echoed}");
+    assert_eq!(
+        echoed["result"]["type"], "ok",
+        "send_input failed: {echoed}"
+    );
 
     let size_before = settled_pane_pty_size(&api_socket, &pane_id, "BEFORE");
 
@@ -531,7 +539,10 @@ fn retarget_terminal_moves_the_session_and_restores_the_pane_grid() {
             })
             .to_string(),
         );
-        assert_eq!(echoed["result"]["type"], "ok", "send_input failed: {echoed}");
+        assert_eq!(
+            echoed["result"]["type"], "ok",
+            "send_input failed: {echoed}"
+        );
     }
 
     let size_b_before = settled_pane_pty_size(&api_socket, &pane_b, "BBEFORE");
@@ -626,7 +637,9 @@ fn retarget_terminal_moves_the_session_and_restores_the_pane_grid() {
     let still_streaming = read_terminal_frame(&mut stream, Duration::from_secs(20));
     println!(
         "[retarget] post-release frame seq={} {}x{} bytes={}",
-        still_streaming.seq, still_streaming.width, still_streaming.height,
+        still_streaming.seq,
+        still_streaming.width,
+        still_streaming.height,
         still_streaming.bytes.len()
     );
 

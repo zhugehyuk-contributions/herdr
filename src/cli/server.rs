@@ -227,7 +227,7 @@ fn server_live_handoff(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn parse_live_handoff_params(args: &[String]) -> Option<ServerLiveHandoffParams> {
+pub(super) fn parse_live_handoff_params(args: &[String]) -> Option<ServerLiveHandoffParams> {
     let mut params = ServerLiveHandoffParams::default();
     let mut idx = 0;
     while idx < args.len() {
@@ -253,7 +253,7 @@ fn parse_live_handoff_params(args: &[String]) -> Option<ServerLiveHandoffParams>
     Some(params)
 }
 
-fn live_handoff_params_with_cli_defaults(
+pub(super) fn live_handoff_params_with_cli_defaults(
     mut params: ServerLiveHandoffParams,
 ) -> std::io::Result<ServerLiveHandoffParams> {
     if params.import_exe.is_none() {
@@ -282,6 +282,7 @@ fn print_server_help() {
     eprintln!("  herdr server                run as headless server");
     eprintln!("  herdr server stop           stop the running server via the API socket");
     eprintln!("  herdr server live-handoff   hand off live panes to a new local server");
+    eprintln!("  herdr live-handoff          hand off every running session, one at a time");
     eprintln!("  herdr server reload-config  reload config.toml in the running server");
     eprintln!("  herdr server agent-manifests [--json]  show agent detection manifest status");
     eprintln!("  herdr server update-agent-manifests [--json]  fetch and reload agent detection manifests");

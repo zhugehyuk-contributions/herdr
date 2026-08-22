@@ -395,9 +395,7 @@ pub fn send_observe_terminal(stream: &mut UnixStream, target: &str) -> Result<()
     stream
         .write_all(&framed)
         .map_err(|e| format!("write observe: {e}"))?;
-    stream
-        .flush()
-        .map_err(|e| format!("flush observe: {e}"))?;
+    stream.flush().map_err(|e| format!("flush observe: {e}"))?;
     Ok(())
 }
 
@@ -422,9 +420,7 @@ pub fn send_retarget_terminal(
     stream
         .write_all(&framed)
         .map_err(|e| format!("write retarget: {e}"))?;
-    stream
-        .flush()
-        .map_err(|e| format!("flush retarget: {e}"))?;
+    stream.flush().map_err(|e| format!("flush retarget: {e}"))?;
     Ok(())
 }
 

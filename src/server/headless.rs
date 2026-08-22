@@ -1968,7 +1968,11 @@ impl HeadlessServer {
         target: String,
         mode: protocol::TerminalSessionMode,
     ) -> bool {
-        let current = match self.clients.get(&client_id).map(|client| client.mode.clone()) {
+        let current = match self
+            .clients
+            .get(&client_id)
+            .map(|client| client.mode.clone())
+        {
             Some(ClientConnectionMode::TerminalObserve { terminal_id }) => (terminal_id, false),
             Some(ClientConnectionMode::TerminalAttach { terminal_id }) => (terminal_id, true),
             _ => {

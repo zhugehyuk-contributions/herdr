@@ -27,6 +27,7 @@ mod api;
 mod bundle;
 mod completion;
 mod integration;
+mod live_handoff;
 mod notification;
 mod pane;
 mod plugin;
@@ -109,6 +110,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
             };
             exit_code
         }
+        "live-handoff" => live_handoff::run_live_handoff_command(&args[2..])?,
         "api" => api::run_api_command(&args[2..])?,
         "status" => status::run_status_command(&args[2..])?,
         "bundle" => bundle::run_bundle_command(&args[2..])?,
@@ -826,6 +828,17 @@ pub(super) fn server_not_running_error(err: &std::io::Error) -> bool {
     matches!(
         err.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// True when a bounded request hit its own deadline: a socket send/recv timeout
+/// surfaces as `WouldBlock` on unix and `TimedOut` on Windows, and both mean the
+/// peer accepted us and then said nothing. Shared so every bounded caller
+/// (status probes, live handoff) classifies the wedged case identically.
+pub(super) fn probe_timed_out(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
     )
 }
 

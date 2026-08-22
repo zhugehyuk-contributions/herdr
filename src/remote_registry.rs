@@ -71,6 +71,7 @@ pub enum RemoteRegistryError {
     DuplicateName,
     DuplicateTarget,
     NotFound,
+    InvalidSession,
 }
 
 impl RemoteRegistryError {
@@ -81,6 +82,7 @@ impl RemoteRegistryError {
             Self::DuplicateName => "duplicate_remote_name",
             Self::DuplicateTarget => "duplicate_remote_target",
             Self::NotFound => "remote_not_found",
+            Self::InvalidSession => "invalid_session_name",
         }
     }
 
@@ -91,6 +93,19 @@ impl RemoteRegistryError {
             Self::DuplicateName => "remote name already exists",
             Self::DuplicateTarget => "remote target already exists",
             Self::NotFound => "remote not found",
+            Self::InvalidSession => "session name is invalid",
+        }
+    }
+}
+
+impl RemoteDefinitionSnapshot {
+    /// The session this remote attaches to, or `None` for the remote's default session. Single
+    /// source of truth: a `Local` remote keeps its session in the target (`local:<name>`), an `Ssh`
+    /// remote on the definition (the ssh bridge passes it as `herdr --session <name>`).
+    pub fn session_name(&self) -> Option<&str> {
+        match &self.target {
+            RemoteTargetSnapshot::Local { session } => session.as_deref(),
+            RemoteTargetSnapshot::Ssh { .. } => self.session.as_deref(),
         }
     }
 }
@@ -103,17 +118,24 @@ impl RemoteRegistrySnapshot {
         target: String,
         keybindings: RemoteKeybindingsSnapshot,
     ) -> Result<RemoteDefinitionSnapshot, RemoteRegistryError> {
-        self.add_excluding_targets(name, target, keybindings, &[])
+        self.add_excluding_targets(name, target, None, keybindings, &[])
     }
 
+    /// `session` is the optional session this remote attaches to (`None` = the remote's default
+    /// session). Normalized through [`normalize_session`], so an empty/whitespace value or the
+    /// literal `"default"` collapses to `None` — matching `RemoteTargetSnapshot::parse`'s
+    /// `local:default` handling.
     pub fn add_excluding_targets(
         &mut self,
         name: Option<String>,
         target: String,
+        session: Option<String>,
         keybindings: RemoteKeybindingsSnapshot,
         excluded_targets: &[RemoteTargetSnapshot],
     ) -> Result<RemoteDefinitionSnapshot, RemoteRegistryError> {
-        let target = RemoteTargetSnapshot::parse(&target)?;
+        // The ONE place the requested (target, session) pair becomes the stored pair — shared with
+        // the client's add-remote pre-flight so the two dedup verdicts can never drift.
+        let (target, session) = resolve_target_and_session(&target, session)?;
         let name = normalize_name(name.unwrap_or_else(|| target.default_display_name()))?;
         if self.remotes.iter().any(|remote| remote.name == name) {
             return Err(RemoteRegistryError::DuplicateName);
@@ -139,7 +161,7 @@ impl RemoteRegistrySnapshot {
             id: self.next_id(),
             name,
             target,
-            session: None,
+            session,
             keybindings,
             disabled: false,
             auto_update: false,
@@ -211,6 +233,57 @@ impl RemoteRegistrySnapshot {
             .find(|remote| remote.id == remote_id)
             .ok_or(RemoteRegistryError::NotFound)?;
         remote.auto_update = auto_update;
+        Ok(remote.clone())
+    }
+
+    /// Point a remote at a different session (`None` = the remote's default session).
+    ///
+    /// A `Local` remote carries its session inside the target (`local:<name>`), so the target is
+    /// rewritten and re-checked for collisions against `excluded_targets` (the main server) and the
+    /// other remotes — the same duplicate rule `add_excluding_targets` enforces. An `Ssh` remote
+    /// carries it on the definition, where the bridge command reads it. The registry is left
+    /// unchanged on every error path. Returns the updated definition clone.
+    pub fn set_session(
+        &mut self,
+        remote_id: &str,
+        session: Option<String>,
+        excluded_targets: &[RemoteTargetSnapshot],
+    ) -> Result<RemoteDefinitionSnapshot, RemoteRegistryError> {
+        let session = normalize_session(session)?;
+        let index = self
+            .remotes
+            .iter()
+            .position(|remote| remote.id == remote_id)
+            .ok_or(RemoteRegistryError::NotFound)?;
+
+        if matches!(
+            self.remotes[index].target,
+            RemoteTargetSnapshot::Local { .. }
+        ) {
+            let target = RemoteTargetSnapshot::Local {
+                session: session.clone(),
+            };
+            let target_key = target.canonical_key();
+            if excluded_targets
+                .iter()
+                .any(|excluded| excluded.canonical_key() == target_key)
+            {
+                return Err(RemoteRegistryError::DuplicateTarget);
+            }
+            if self.remotes.iter().enumerate().any(|(other, remote)| {
+                other != index && remote.target.canonical_key() == target_key
+            }) {
+                return Err(RemoteRegistryError::DuplicateTarget);
+            }
+            self.remotes[index].target = target;
+            // One home per kind: the session now lives in the target, so the definition-level copy
+            // must be cleared rather than left as a second, drift-prone source of truth.
+            self.remotes[index].session = None;
+            return Ok(self.remotes[index].clone());
+        }
+
+        let remote = &mut self.remotes[index];
+        remote.session = session;
         Ok(remote.clone())
     }
 
@@ -331,6 +404,104 @@ impl RemoteTargetSnapshot {
             Self::Ssh { target, .. } => ssh_display_name(target),
         }
     }
+}
+
+/// Resolve a requested `(target, session)` pair into the pair the registry actually stores.
+///
+/// This is the single source of truth for the fold, because the DEDUP KEY depends on it: a `Local`
+/// remote carries its session INSIDE the target (`local:<name>`), so `localhost` + session `work`
+/// is the target `local:work` — NOT `local:default` with a side-car session. Both the registry's
+/// [`RemoteRegistrySnapshot::add_excluding_targets`] and the client's add-remote pre-flight call
+/// this, so the "is this a duplicate of the main server?" verdict is computed the same way on both
+/// sides. (They drifted once: the client rejected `localhost` + `work` as a duplicate of its own
+/// `local:default` main server, and the request never reached the API.)
+///
+/// Precedence matches [`RemoteRegistrySnapshot::set_session`]: an explicit `session` overrides one
+/// spelled into a `local:<name>` target; an ABSENT `session` leaves the target alone (that spelling
+/// IS the session). `Ssh` targets are never rewritten — their session rides the definition.
+///
+/// Returns `(target, definition_session)` where `definition_session` is exactly what belongs in
+/// [`RemoteDefinitionSnapshot::session`] — **`None` for a `Local` remote**, whose session lives in
+/// the target and is read back from there by [`RemoteDefinitionSnapshot::session_name`]. Storing it
+/// in both places left a dead second copy that could drift out of sync with the authoritative one.
+pub fn resolve_target_and_session(
+    target: &str,
+    session: Option<String>,
+) -> Result<(RemoteTargetSnapshot, Option<String>), RemoteRegistryError> {
+    // Classify BEFORE parsing/folding: `normalize_session` alone maps both "no request" and an
+    // explicit `"default"` onto `None`, and folding on that collapsed value cannot tell them apart.
+    let request = SessionRequest::classify(session)?;
+    let target = RemoteTargetSnapshot::parse(target)?;
+    match target {
+        RemoteTargetSnapshot::Local { session: spelled } => {
+            let session = match request {
+                // Only a genuinely absent request defers to the `local:<name>` spelling.
+                SessionRequest::Unspecified => spelled,
+                // An explicit `default` IS a request — for the default session.
+                SessionRequest::Default => None,
+                SessionRequest::Named(name) => Some(name),
+            };
+            // One home per kind: a local remote's session IS its target.
+            Ok((RemoteTargetSnapshot::Local { session }, None))
+        }
+        target @ RemoteTargetSnapshot::Ssh { .. } => {
+            let session = match request {
+                SessionRequest::Unspecified | SessionRequest::Default => None,
+                SessionRequest::Named(name) => Some(name),
+            };
+            Ok((target, session))
+        }
+    }
+}
+
+/// The three distinguishable things a caller can ask for in a `session` field.
+///
+/// Modeled as an enum rather than an `Option<String>` because the last two states are what
+/// [`normalize_session`] deliberately collapses: it answers "which session?" (`None` = the default),
+/// which is the right shape for STORAGE but loses "did the user ask at all?" — the bit the `Local`
+/// fold needs. Conflating them silently turned `{target: "local:dev", session: "default"}` into
+/// `local:dev`, i.e. the opposite of what was asked. Keeping three variants makes the third case
+/// impossible to forget at the match.
+enum SessionRequest {
+    /// No session field, or an empty/whitespace one (the add-remote form sends `None` for a blank
+    /// field, and a blank must not clobber a spelled `local:<name>` target either).
+    Unspecified,
+    /// Explicitly the default session; stored as `None`.
+    Default,
+    /// An explicitly named session, already trimmed and validated.
+    Named(String),
+}
+
+impl SessionRequest {
+    fn classify(session: Option<String>) -> Result<Self, RemoteRegistryError> {
+        let Some(raw) = session else {
+            return Ok(Self::Unspecified);
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(Self::Unspecified);
+        }
+        if trimmed == crate::session::DEFAULT_SESSION_NAME {
+            return Ok(Self::Default);
+        }
+        crate::session::validate_name(trimmed).map_err(|_| RemoteRegistryError::InvalidSession)?;
+        Ok(Self::Named(trimmed.to_string()))
+    }
+}
+
+/// Normalize a requested session name: an empty/whitespace value or the literal `"default"`
+/// means the default session (`None`), anything else must pass the session-name rules
+/// (`crate::session::validate_name`).
+pub fn normalize_session(session: Option<String>) -> Result<Option<String>, RemoteRegistryError> {
+    let Some(session) = session else {
+        return Ok(None);
+    };
+    let session = session.trim();
+    if session.is_empty() || session == "default" {
+        return Ok(None);
+    }
+    crate::session::validate_name(session).map_err(|_| RemoteRegistryError::InvalidSession)?;
+    Ok(Some(session.to_string()))
 }
 
 fn normalize_name(name: String) -> Result<String, RemoteRegistryError> {
@@ -588,6 +759,7 @@ mod tests {
             .add_excluding_targets(
                 Some("local".into()),
                 "localhost".into(),
+                None,
                 RemoteKeybindingsSnapshot::Local,
                 &excluded,
             )
@@ -734,6 +906,402 @@ mod tests {
         assert_eq!(
             registry.set_auto_update("missing", true).unwrap_err(),
             RemoteRegistryError::NotFound
+        );
+    }
+
+    #[test]
+    fn normalize_session_collapses_empty_and_default_to_none() {
+        assert_eq!(normalize_session(None).unwrap(), None);
+        assert_eq!(normalize_session(Some("".into())).unwrap(), None);
+        assert_eq!(normalize_session(Some("   ".into())).unwrap(), None);
+        assert_eq!(normalize_session(Some("default".into())).unwrap(), None);
+        assert_eq!(
+            normalize_session(Some("  work  ".into())).unwrap(),
+            Some("work".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_session_rejects_invalid_names() {
+        assert_eq!(
+            normalize_session(Some("bad name!".into())).unwrap_err(),
+            RemoteRegistryError::InvalidSession
+        );
+        assert_eq!(
+            normalize_session(Some("..".into())).unwrap_err(),
+            RemoteRegistryError::InvalidSession
+        );
+    }
+
+    #[test]
+    fn resolve_target_and_session_distinguishes_absent_from_explicit_default() {
+        // REGRESSION: `normalize_session` collapses BOTH "absent" and an explicit "default" to
+        // `None`, so folding on the normalized value could not tell them apart — asking for the
+        // default session on a `local:dev` target silently kept `dev`. The three request states
+        // (unspecified / explicitly-default / named) must stay distinguishable AT the fold.
+        //
+        // Matrix: target x {absent, "", "default", "work"} -> resulting target.
+        let key = |target: &str, session: Option<&str>| {
+            resolve_target_and_session(target, session.map(str::to_string))
+                .unwrap()
+                .0
+                .canonical_key()
+        };
+
+        // A spelled `local:<name>` target: only an EXPLICIT request overrides it.
+        assert_eq!(key("local:dev", None), "local:dev");
+        assert_eq!(
+            key("local:dev", Some("")),
+            "local:dev",
+            "empty = unspecified"
+        );
+        assert_eq!(
+            key("local:dev", Some("   ")),
+            "local:dev",
+            "blank = unspecified"
+        );
+        assert_eq!(
+            key("local:dev", Some("default")),
+            "local:default",
+            "an explicit `default` means the DEFAULT session, not 'leave dev alone'"
+        );
+        assert_eq!(key("local:dev", Some("work")), "local:work");
+
+        // A bare `localhost` target has nothing spelled in, so every request lands the same way.
+        assert_eq!(key("localhost", None), "local:default");
+        assert_eq!(key("localhost", Some("")), "local:default");
+        assert_eq!(key("localhost", Some("default")), "local:default");
+        assert_eq!(key("localhost", Some("work")), "local:work");
+
+        // An ssh target is never rewritten; only its definition-level session varies.
+        let ssh = |session: Option<&str>| {
+            resolve_target_and_session("user@dev", session.map(str::to_string)).unwrap()
+        };
+        let ssh_target = RemoteTargetSnapshot::Ssh {
+            target: "user@dev".into(),
+            args: Vec::new(),
+        };
+        assert_eq!(ssh(None), (ssh_target.clone(), None));
+        assert_eq!(ssh(Some("")), (ssh_target.clone(), None));
+        assert_eq!(ssh(Some("default")), (ssh_target.clone(), None));
+        assert_eq!(ssh(Some("work")), (ssh_target, Some("work".to_string())));
+    }
+
+    #[test]
+    fn resolve_target_and_session_is_the_one_fold_rule() {
+        // The shared SSOT behind BOTH the registry add and the client's add-remote pre-flight.
+        // A local target absorbs the session (that is its dedup identity)…
+        // …and the definition-level copy stays `None` for Local: the target IS the single home.
+        assert_eq!(
+            resolve_target_and_session("localhost", Some("work".into())).unwrap(),
+            (
+                RemoteTargetSnapshot::Local {
+                    session: Some("work".into())
+                },
+                None
+            )
+        );
+        // …an explicit session overrides one spelled into the target…
+        assert_eq!(
+            resolve_target_and_session("local:dev", Some("work".into()))
+                .unwrap()
+                .0
+                .canonical_key(),
+            "local:work"
+        );
+        // …an absent session leaves `local:<name>` alone…
+        assert_eq!(
+            resolve_target_and_session("local:dev", None)
+                .unwrap()
+                .0
+                .canonical_key(),
+            "local:dev"
+        );
+        // …blank/"default" collapse to the default session…
+        for blank in [
+            Some("".to_string()),
+            Some("  ".to_string()),
+            Some("default".to_string()),
+        ] {
+            assert_eq!(
+                resolve_target_and_session("localhost", blank).unwrap(),
+                (RemoteTargetSnapshot::Local { session: None }, None)
+            );
+        }
+        // …an ssh target is NEVER rewritten (its session rides the definition)…
+        assert_eq!(
+            resolve_target_and_session("user@dev", Some("work".into())).unwrap(),
+            (
+                RemoteTargetSnapshot::Ssh {
+                    target: "user@dev".into(),
+                    args: Vec::new()
+                },
+                Some("work".to_string())
+            )
+        );
+        // …and an invalid session name is rejected before any dedup work.
+        assert_eq!(
+            resolve_target_and_session("localhost", Some("bad name!".into())).unwrap_err(),
+            RemoteRegistryError::InvalidSession
+        );
+    }
+
+    #[test]
+    fn add_folds_the_session_into_a_local_target() {
+        // `session_name()` reads the TARGET for a local remote, so `add` must fold the requested
+        // session into it — otherwise the add-remote session field silently did nothing locally.
+        let mut registry = RemoteRegistrySnapshot::default();
+        let remote = registry
+            .add_excluding_targets(
+                Some("work".into()),
+                "localhost".into(),
+                Some("work".into()),
+                RemoteKeybindingsSnapshot::Local,
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(
+            remote.target,
+            RemoteTargetSnapshot::Local {
+                session: Some("work".into())
+            }
+        );
+        assert_eq!(remote.session_name(), Some("work"));
+        // ONE home per kind: stored in the target, NOT duplicated onto the definition.
+        assert_eq!(remote.session, None);
+
+        // …and the folded target participates in the dedup key, so `local:work` can't be added twice.
+        assert_eq!(
+            registry
+                .add_excluding_targets(
+                    Some("work-again".into()),
+                    "local:work".into(),
+                    None,
+                    RemoteKeybindingsSnapshot::Local,
+                    &[],
+                )
+                .unwrap_err(),
+            RemoteRegistryError::DuplicateTarget
+        );
+    }
+
+    #[test]
+    fn add_persists_the_requested_session() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        let remote = registry
+            .add_excluding_targets(
+                Some("dev".into()),
+                "user@dev".into(),
+                Some("work".into()),
+                RemoteKeybindingsSnapshot::Local,
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(remote.session.as_deref(), Some("work"));
+        assert_eq!(remote.session_name(), Some("work"));
+        assert_eq!(registry.remotes[0].session.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn add_with_invalid_session_leaves_registry_unchanged() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        let err = registry
+            .add_excluding_targets(
+                Some("dev".into()),
+                "user@dev".into(),
+                Some("bad name!".into()),
+                RemoteKeybindingsSnapshot::Local,
+                &[],
+            )
+            .unwrap_err();
+
+        assert_eq!(err, RemoteRegistryError::InvalidSession);
+        assert!(registry.remotes.is_empty());
+    }
+
+    #[test]
+    fn session_name_reads_the_target_for_local_remotes() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        let named = registry
+            .add(
+                Some("dev".into()),
+                "local:dev".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+        assert_eq!(named.session_name(), Some("dev"));
+
+        let default = registry
+            .add(
+                Some("local".into()),
+                "localhost".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+        assert_eq!(default.session_name(), None);
+    }
+
+    #[test]
+    fn set_session_updates_ssh_definition_and_clears_back_to_default() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        let remote = registry
+            .add(
+                Some("dev".into()),
+                "user@dev".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+
+        let updated = registry
+            .set_session(&remote.id, Some("work".into()), &[])
+            .unwrap();
+        assert_eq!(updated.session_name(), Some("work"));
+        assert_eq!(registry.remotes[0].session.as_deref(), Some("work"));
+
+        let cleared = registry
+            .set_session(&remote.id, Some("default".into()), &[])
+            .unwrap();
+        assert_eq!(cleared.session_name(), None);
+        assert_eq!(registry.remotes[0].session, None);
+    }
+
+    #[test]
+    fn set_session_rewrites_the_local_target() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        let remote = registry
+            .add(
+                Some("local".into()),
+                "local:dev".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+
+        let updated = registry
+            .set_session(&remote.id, Some("work".into()), &[])
+            .unwrap();
+
+        assert_eq!(
+            updated.target,
+            RemoteTargetSnapshot::Local {
+                session: Some("work".into())
+            }
+        );
+        assert_eq!(updated.session_name(), Some("work"));
+        assert_eq!(registry.remotes[0].target.canonical_key(), "local:work");
+        // ONE home per kind: a local remote's session lives in the target, so the definition-level
+        // field must stay `None` rather than becoming a second, drift-prone copy.
+        assert_eq!(updated.session, None);
+        assert_eq!(registry.remotes[0].session, None);
+    }
+
+    #[test]
+    fn set_session_rejects_a_local_target_collision_without_mutating() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        let first = registry
+            .add(
+                Some("one".into()),
+                "local:dev".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+        registry
+            .add(
+                Some("two".into()),
+                "local:work".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+
+        let err = registry
+            .set_session(&first.id, Some("work".into()), &[])
+            .unwrap_err();
+
+        assert_eq!(err, RemoteRegistryError::DuplicateTarget);
+        assert_eq!(registry.remotes[0].target.canonical_key(), "local:dev");
+        assert_eq!(registry.remotes[0].session, None);
+    }
+
+    #[test]
+    fn set_session_rejects_an_excluded_local_target_without_mutating() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        let remote = registry
+            .add(
+                Some("one".into()),
+                "local:dev".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+        let excluded = vec![RemoteTargetSnapshot::Local { session: None }];
+
+        let err = registry
+            .set_session(&remote.id, None, &excluded)
+            .unwrap_err();
+
+        assert_eq!(err, RemoteRegistryError::DuplicateTarget);
+        assert_eq!(registry.remotes[0].target.canonical_key(), "local:dev");
+    }
+
+    #[test]
+    fn set_session_keeping_its_own_local_target_is_allowed() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        let remote = registry
+            .add(
+                Some("one".into()),
+                "local:dev".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+
+        let updated = registry
+            .set_session(&remote.id, Some("dev".into()), &[])
+            .unwrap();
+
+        assert_eq!(updated.session_name(), Some("dev"));
+    }
+
+    #[test]
+    fn set_session_invalid_name_and_missing_id_are_rejected() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        let remote = registry
+            .add(
+                Some("dev".into()),
+                "user@dev".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .set_session(&remote.id, Some("bad name!".into()), &[])
+                .unwrap_err(),
+            RemoteRegistryError::InvalidSession
+        );
+        assert_eq!(registry.remotes[0].session, None);
+        assert_eq!(
+            registry
+                .set_session("missing", Some("work".into()), &[])
+                .unwrap_err(),
+            RemoteRegistryError::NotFound
+        );
+    }
+
+    #[test]
+    fn default_session_remote_serializes_without_the_session_key() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        registry
+            .add(
+                Some("dev".into()),
+                "user@dev".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+
+        let json = serde_json::to_string(&registry).unwrap();
+        assert!(
+            !json.contains("session"),
+            "a default-session remote must not serialize the key: {json}"
         );
     }
 }

@@ -144,17 +144,13 @@ jobs:
           cache-bin: false
           key: ${{ matrix.os }}
 
-      # herdr-mx#68: `mx` runs `ci-mx` (clippy + nextest), not `ci` (which also enforces
-      # `cargo fmt --check`). This fork's tree is not rustfmt-clean by choice - see the
-      # `lint-no-fmt` comment in the justfile - so gating mx on fmt would make the check
-      # permanently red and therefore worthless as a signal, which is the opposite of #68.
+      # herdr-mx#68: `mx` pushes run the same checks every other branch does. This used to be
+      # a separate `ci-mx` step that skipped `cargo fmt --check`, because the tree was not
+      # rustfmt-clean; `808b5ca7` made it clean instead, so the exemption would now only let
+      # drift back in.
       - name: Run checks
-        if: matrix.kind == 'unix' && github.ref_name != 'mx'
+        if: matrix.kind == 'unix'
         run: just ci '${{ matrix.nextest_filter }}'
-
-      - name: Run checks (mx)
-        if: matrix.kind == 'unix' && github.ref_name == 'mx'
-        run: just ci-mx '${{ matrix.nextest_filter }}'
 
       - name: Run Windows checks
         if: matrix.kind == 'windows' && github.ref_name != 'mx'

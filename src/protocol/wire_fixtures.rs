@@ -676,11 +676,7 @@ fn fixtures_decode_back_through_the_rust_codec() {
         .iter()
         .find(|vector| vector["name"] == "observe_terminal")
         .expect("observe_terminal vector");
-    let observe_bytes = decode_hex(
-        observe["framed_hex"]
-            .as_str()
-            .expect("observe framed_hex"),
-    );
+    let observe_bytes = decode_hex(observe["framed_hex"].as_str().expect("observe framed_hex"));
     let (observe_len, payload) = split_frame(&observe_bytes);
     assert_eq!(
         observe_len,
@@ -706,8 +702,7 @@ fn fixtures_decode_back_through_the_rust_codec() {
         Some(FIXTURE_OBSERVE_TARGET.len() as u64)
     );
     assert_ne!(
-        observe["fields"]["target_utf8_len"],
-        observe["fields"]["target_char_count"],
+        observe["fields"]["target_utf8_len"], observe["fields"]["target_char_count"],
         "the observe target must stay non-ASCII or it stops witnessing the byte-vs-char boundary"
     );
 
@@ -987,7 +982,9 @@ fn abi_history_mirrors_the_accepted_table() {
         .filter(|entry| entry["accepted_by_current_server"] == Value::Bool(true))
         .map(|entry| {
             (
-                entry["protocol_version"].as_u64().expect("protocol_version"),
+                entry["protocol_version"]
+                    .as_u64()
+                    .expect("protocol_version"),
                 entry["wire_abi_epoch"].as_u64().expect("wire_abi_epoch"),
             )
         })
