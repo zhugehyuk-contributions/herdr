@@ -439,3 +439,37 @@ upstream v0.8.2가 `unix.rs`를 `attach.rs`로 재편했을 뿐, **무체크섬 
 ### 그래도 차단이 아닌 이유
 
 차단은 노출을 **1도 줄이지 않는다**. mx는 이미 바이트 동일한 무체크섬 경로를 배포 중이고(`origin/mx:src/remote/unix.rs:1946` ↔ `attach.rs:1951`, 유일한 차이는 `private_download_dir` base가 `std::env::temp_dir()`→`remote_private_temp_base()`로 **강화**된 것), 머지를 거절하면 노출은 그대로인 채 모바일 작업과 upstream 133커밋(그 강화 포함)을 잃는다. 노출 조건도 좁다: `channel != "stable"`이면 다운로드 전 Err, 번들 페이로드나 `HERDR_REMOTE_BINARY`가 있으면 Download 티어 미도달, TLS가 전송을 덮으므로 남는 위협은 릴리즈 자산/오리진 치환.
+
+## O. 세대 격리 실패 — 라운드 3 리뷰가 낸 차단 결함 (2026-08-22)
+
+외부 패널 1인이 라운드 3에서 낸 것. dispatcher가 `file:line`으로 재구성해 확인했다. **mx 기존 부채가 아니라 이 브랜치가 들여오는 supervisor의 결함이다.**
+
+### 결함 1 — 폐기된 세대가 현재 세대의 liveness를 죽인다
+
+```
+1. Gen A 다이얼 → observe-stream-link.ts:88  dialToken = A
+2. supervisor가 stale dial 폐기 (connection-supervisor.ts:225-239)
+   → :218-224 주석이 자인: pending dial은 promise일 뿐이라 this.link === null,
+     닫을 객체가 없다. 세대만 교체된다.
+3. Gen B 핸드셰이크 성공 → :171 activeToken = B. 정상 연결.
+4. Gen A의 늦은 Welcome → onMessage(:99-115)에 세대 검사 없음 → A의 handshake 해소
+   → :171 activeToken = token   ← 가드 없이 A로 덮어쓴다
+5. A의 promise → connection-supervisor.ts:302-305가 stale로 보고 link.terminate()
+   → terminate가 activeToken을 null로
+6. Gen B의 probe()(:176-178) → activeToken !== token → 영구 false
+   → 워치독이 침묵으로 읽고 멀쩡한 연결을 죽인다
+```
+
+4단계만으로 이미 B가 깨진다. 5단계는 null로 만들 뿐이다.
+
+**커버리지 비대칭이 원인**: `onClose`(`:126-133`)에는 `dialToken !== token` 가드가 있는데(커밋 `d8d36bb5`가 넣은 것) `onMessage`·`onUndecodable`·핸드셰이크 후 상태 변경에는 없다. §M이 close 경로만 닫고 welcome 경로를 남겼다.
+
+### 결함 2 — 응답 없는 dial의 exec 채널이 고아가 된다
+
+`channel = opened`(`:154`)는 공유 변수이고 새 dial이 덮는다. 폐기된 dial의 `opened`는 그 클로저에서만 도달 가능한데, peer가 Welcome도 close도 안 보내면 `await handshake`가 영원히 안 풀려 **`SupervisedLink`를 반환하지 못한다** → 아무도 `terminate()`를 못 부른다 → `opened.close()`가 절대 안 불린다. supervisor도 `this.link === null`이라 못 닫는다.
+
+foreground 부활마다 exec 채널 + 원격 `herdr` bridge 프로세스가 누적된다. B8(1 JSON = 1 ssh exec = 1 원격 프로세스)이 이미 압박받는 자원이다.
+
+### 이것이 주는 교훈
+
+`proxy-green` — close-evidence 테스트가 green이어도 pending dial의 **자원 소유권과 세대 격리**를 검증하지 않으면 연결 수명주기는 green이 아니다. 기존 테스트 `cannot latch the generation that replaced it`은 **close 경로의 세대 격리만** 증명한다. welcome 경로는 무증명이었다.
