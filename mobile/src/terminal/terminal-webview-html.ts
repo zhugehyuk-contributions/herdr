@@ -8,6 +8,7 @@ import { TERMINAL_TEXT_SCALES } from '../storage/terminal-text-scales'
 import { TERMINAL_PATH_TAP_JS } from './terminal-path-tap-injected'
 import { TERMINAL_KEYBOARD_AVOIDANCE_METRICS_JS } from './terminal-keyboard-avoidance-metrics-injected'
 import { XTERM_ENGINE_CSS, XTERM_ENGINE_JS } from './terminal-webview-engine.generated'
+import { TERMINAL_PAINTED_CELL_JS } from './terminal-webview-painted-cell-injected'
 import { TERMINAL_REFLOW_JS } from './terminal-webview-reflow-injected'
 import { TERMINAL_SURFACE_SWAP_JS } from './terminal-webview-surface-swap-injected'
 import { TERMINAL_TAP_DISPATCH_JS } from './terminal-webview-tap-dispatch-injected'
@@ -353,8 +354,7 @@ window.onerror = function(msg) {
 
   // Why: width measurement strategy.
   //   1. Prefer cellWidth × term.cols — this is what xterm's renderer uses
-  //      to lay out and is independent of buffer content. It's the "logical
-  //      width" of the terminal grid.
+  //      to lay out, widened to the advance the font actually paints.
   //   2. Fall back to term.element.scrollWidth — the actual rendered DOM
   //      width — only when cellWidth isn't available yet (renderer not
   //      initialized). This is content-dependent (reflects widest row),
@@ -369,15 +369,9 @@ window.onerror = function(msg) {
     return Math.min(1, vpWidth / termWidth);
   }
 
-  // Why the grid and not the DOM: cellW x cols is xterm's own layout width (strategy 1 above) and
-  // stays right when the widest painted row is short — scrollWidth would then clamp the pan before
-  // the right-hand columns the cursor lives in. It stays the pre-renderer fallback.
-  function getContentWidth() {
-    if (!term) return 0;
-    var cellW = getCellWidth();
-    if (cellW > 0 && term.cols > 0) return cellW * term.cols;
-    return term.element ? term.element.scrollWidth : 0;
-  }
+  // getContentWidth() — the grid width every fit and clamp is measured against. It widens the
+  // xterm metric to whatever the font really paints; see terminal-webview-painted-cell-injected.ts.
+${TERMINAL_PAINTED_CELL_JS}
 
   function getContentHeight() {
     if (!term) return 0;
