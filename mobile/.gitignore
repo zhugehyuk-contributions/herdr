@@ -11,3 +11,9 @@ web-build/
 *.key
 *.mobileprovision
 *.orig.*
+
+# Gradle build products for the local native module. Added 2026-08-22 after 149 of them were
+# committed by accident in 1fa543b4 (`git add mobile/modules/herdr-ssh` swept the build dir).
+modules/*/android/build/
+modules/*/android/.gradle/
+modules/*/typecheck/.cache/
