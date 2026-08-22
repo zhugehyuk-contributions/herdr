@@ -1,0 +1,3 @@
+.build/
+Sources/WriteRaceProbe/HerdrSshSession.swift
+Sources/WriteRaceProbe/ConfigExtract.swift

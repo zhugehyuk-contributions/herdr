@@ -19,7 +19,8 @@
     "typecheck:android": "modules/herdr-ssh/typecheck/run.sh",
     "typecheck:ios": "modules/herdr-ssh/typecheck/ios/run.sh",
     "typecheck:keyformats": "modules/herdr-ssh/typecheck/keyformats/run.sh",
-    "typecheck:closepayload": "modules/herdr-ssh/typecheck/closepayload/run.sh"
+    "typecheck:closepayload": "modules/herdr-ssh/typecheck/closepayload/run.sh",
+    "typecheck:writerace": "modules/herdr-ssh/typecheck/writerace/run.sh"
   },
   "dependencies": {
     "@herdr/client-ts": "link:../packages/herdr-client-ts",
