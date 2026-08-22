@@ -18,6 +18,23 @@
  * else here; that run reproduced every pre-existing vector below byte for byte, which is what makes
  * the two new ones trustworthy rather than hand-typed.
  *
+ * ## The `_V21` twins, and why the version-20 vectors stay
+ *
+ * `PROTOCOL_VERSION` moved to 21 when the wire-ABI prelude landed (`src/protocol/abi.rs`), and the
+ * version is a *field* of both `Hello` and `Welcome`, so the current-version bytes differ from the
+ * ones below by one varint (`14` -> `15`). Both sets are kept, deliberately:
+ *
+ *   - the **20** vectors pin that this codec is version-AGNOSTIC where it should be. `decodeWelcome`
+ *     must read whatever version arrived rather than assume its own, and the tests that use them
+ *     pass the version explicitly. Deleting them would delete that property.
+ *   - the **`_V21`** vectors pin the bytes that actually go on the wire today, for the tests that
+ *     exercise `encodeHello`'s default and the end-to-end handshake flow.
+ *
+ * The `_V21` bytes are not hand-typed either: `test/fixtures.test.ts` compares
+ * `encodeHelloFrame(...)` against `docs/next/protocol/fixtures.json`, which
+ * `src/protocol/wire_fixtures.rs` generates from the production encoder. That artifact, not this
+ * file, is the anchor for the current version.
+ *
  * `OBSERVE_TERMINAL_W1_P1` was likewise reconciled against
  * `tests/support/mod.rs::send_observe_terminal(stream, "w1:p1")`, which builds
  * `encode_varint_u32(12) ++ encode_varint_u32(target.len()) ++ target.as_bytes()`. Note
@@ -27,6 +44,10 @@
 export const HELLO_SEMANTIC_APP_80X24 = "00145018081000000000";
 export const HELLO_ANSI_ATTACH_300X100 = "0014fb2c0164081001000001";
 export const HELLO_ANSI_ATTACH_65535_NO_CELLPX = "0014fbfffffbffff000001000001";
+
+/** The same messages at the current `PROTOCOL_VERSION` (21): the version varint is `15`, not `14`. */
+export const HELLO_SEMANTIC_APP_80X24_V21 = "00155018081000000000";
+export const HELLO_ANSI_ATTACH_65535_NO_CELLPX_V21 = "0015fbfffffbffff000001000001";
 
 /**
  * `ClientMessage::RequestFullFrame` — a UNIT variant (`src/protocol/wire.rs:462-467`), so the whole
@@ -49,6 +70,8 @@ export const OBSERVE_TERMINAL_LEN_251 = "0cfbfb00" + "61".repeat(251);
 
 export const WELCOME_OK_ANSI = "00140100";
 export const WELCOME_OK_SEMANTIC = "00140000";
+/** An accepted TerminalAnsi handshake at the current `PROTOCOL_VERSION` (21). */
+export const WELCOME_OK_ANSI_V21 = "00150100";
 export const WELCOME_ERROR =
   "0014000131636c69656e742076657273696f6e203139206973206f6c646572207468616e" +
   "207365727665722076657273696f6e203230";

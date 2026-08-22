@@ -11,7 +11,13 @@ import {
   RUST_MAX_FRAME_SIZE,
   RUST_MAX_GRAPHICS_FRAME_SIZE,
   ServerMessageTag,
+  WIRE_ABI_EPOCH,
+  WIRE_ABI_FORK,
+  WIRE_ABI_PRELUDE_LEN,
+  WIRE_SCHEMA_FINGERPRINT,
   decodeServerMessage,
+  decodeWirePrelude,
+  encodeWirePrelude,
   encodeHelloFrame,
   encodeObserveTerminalFrame,
   serverFrameSizeCap,
@@ -315,7 +321,36 @@ describe.skipIf(!HAS_FIXTURES)("docs/next/protocol/fixtures.json cross-check", (
 
   it("reports the same PROTOCOL_VERSION", () => {
     if (typeof fixtures!.protocol_version === "number") {
-      expect(fixtures!.protocol_version).toBe(20);
+      expect(fixtures!.protocol_version).toBe(21);
     }
+  });
+
+  /**
+   * The one cross-check this codec cannot do on its own.
+   *
+   * Every other constant here is derivable from a bincode encoder; the schema fingerprint is a
+   * sha256 over the *Rust* wire types, so `src/abi.ts` transcribes it. A transcription with no
+   * mechanical check is exactly the drift the corpus exists to catch — and drifting on this one
+   * constant is worse than drifting on a tag, because the server rejects the connection instead of
+   * mis-parsing it, i.e. the app simply stops connecting after an unrelated herdr upgrade.
+   */
+  it("re-encodes the wire-ABI prelude to the same bytes the server publishes", () => {
+    const vector = (fixtures!.vectors ?? []).find((entry) => entry.name === "wire_abi_prelude");
+    expect(vector, "the corpus must publish the wire-ABI prelude").toBeDefined();
+    expect(typeof vector!.framed_hex, "wire_abi_prelude.framed_hex").toBe("string");
+
+    expect(toHex(encodeWirePrelude())).toBe(vector!.framed_hex);
+    expect(fromHex(vector!.framed_hex!).length).toBe(WIRE_ABI_PRELUDE_LEN);
+
+    // And the parsed view agrees field by field, so a byte match cannot hide a transposition.
+    const peer = decodeWirePrelude(fromHex(vector!.framed_hex!));
+    const fields = vector!.fields ?? {};
+    expect(peer.fork).toBe(WIRE_ABI_FORK);
+    expect(peer.fork).toBe(fieldOf(fields, "fork"));
+    expect(peer.abiEpoch).toBe(WIRE_ABI_EPOCH);
+    expect(peer.abiEpoch).toBe(fieldOf(fields, "abi_epoch"));
+    expect(peer.protocolVersion).toBe(fixtures!.protocol_version);
+    expect(peer.schemaFingerprint).toBe(WIRE_SCHEMA_FINGERPRINT);
+    expect(peer.schemaFingerprint).toBe(fieldOf(fields, "schema_fingerprint"));
   });
 });

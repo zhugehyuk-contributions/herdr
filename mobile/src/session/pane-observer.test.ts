@@ -6,7 +6,7 @@
 // file's idea of the protocol and disagree with the codec's. Both are reachable because the port
 // map puts the shared TS in a workspace package Metro already watches (02-architecture.md §2.5).
 import { describe, expect, it } from 'vitest'
-import { HerdrChannelKind, RenderEncoding } from '@herdr/client-ts'
+import { HerdrChannelKind, PROTOCOL_VERSION, RenderEncoding } from '@herdr/client-ts'
 import {
   FakeTransport,
   type FakeChannel
@@ -15,9 +15,9 @@ import { frameHex, fromHex, toHex } from '../../../packages/herdr-client-ts/test
 import {
   TERMINAL_SMALL_DIFF,
   TERMINAL_SMALL_FULL,
-  WELCOME_OK_ANSI,
-  WELCOME_OK_SEMANTIC
+  WELCOME_OK_ANSI_V21
 } from '../../../packages/herdr-client-ts/test/vectors'
+import { createWireAbiGate } from '../../test/wire-abi-peer'
 import { PaneObserver } from './pane-observer'
 import { createTransportConnection } from '../transport/herdr-connection'
 import type { TerminalFrameSinkTarget } from '../terminal/terminal-frame-sink'
@@ -48,6 +48,26 @@ type Recorded = {
 }
 
 /**
+ * A `Welcome` payload at the version this client actually speaks.
+ *
+ * `vectors.ts` ships a current-version twin for the TerminalAnsi arm (`WELCOME_OK_ANSI_V21`) but
+ * not for SemanticFrame, and the v20 `WELCOME_OK_SEMANTIC` is no longer usable here: the client
+ * rejects it on the version before it ever looks at the encoding, which would quietly turn the
+ * encoding-mismatch test below into a second version test.
+ *
+ * Built from the constants rather than hand-typed. `Welcome`'s bincode field order is
+ * (version, encoding, error) — `src/protocol/wire.rs:799`, and the generated
+ * `docs/next/protocol/fixtures.json` vector `welcome_ok` — the tag, version and encoding are all
+ * varints below 251 and so one byte each, and `error: None` is the bare Option tag `00`. The
+ * encoding-mismatch test anchors this against the golden ANSI vector before it uses the semantic
+ * one, so these bytes are checked against real bincode rather than trusted.
+ */
+function welcomePayloadHex(encoding: RenderEncoding): string {
+  const varint = (value: number) => value.toString(16).padStart(2, '0')
+  return `00${varint(PROTOCOL_VERSION)}${varint(encoding)}00`
+}
+
+/**
  * A fake herdr: answers `pane.layout` on the API bridge, and on the client bridge replies to
  * `Hello` with `welcome` and to `ObserveTerminal` with the two golden `Terminal` frames.
  */
@@ -57,14 +77,21 @@ function scriptedServer(options: { welcome?: string } = {}): Recorded {
   const apiRequests: Recorded['apiRequests'] = []
   transport.onOpen = (channel: FakeChannel) => {
     const write = channel.write.bind(channel)
+    // The server reads and validates the client's wire-ABI prelude before any bincode; this gate is
+    // that step, and it keeps `clientMessages` a list of *messages* rather than of writes.
+    const wireAbi = createWireAbiGate()
     channel.write = (bytes: Uint8Array) => {
       write(bytes)
       if (channel.kind === HerdrChannelKind.ClientStream) {
+        const framed = wireAbi(bytes)
+        if (framed === null) {
+          return
+        }
         // Strip the `[u32 LE len]` envelope this codec wrote; the payload's first byte is the tag.
-        const payload = bytes.subarray(4)
+        const payload = framed.subarray(4)
         clientMessages.push(toHex(payload))
         if (payload[0] === 0x00) {
-          channel.emit(fromHex(frameHex(options.welcome ?? WELCOME_OK_ANSI)))
+          channel.emit(fromHex(frameHex(options.welcome ?? WELCOME_OK_ANSI_V21)))
         } else if (payload[0] === 0x0c) {
           channel.emit(fromHex(frameHex(TERMINAL_SMALL_FULL)))
           channel.emit(fromHex(frameHex(TERMINAL_SMALL_DIFF)))
@@ -150,15 +177,23 @@ describe('pane observer', () => {
     // this number cannot have come from a viewport.
     expect(geometry).toEqual({ cols: 80, rows: 24 })
     // And it is on the wire. `Hello`'s varints are, in order (`src/protocol/wire.rs:368-387`):
-    // tag 00, version 0x14=20, cols 0x50=80, rows 0x18=24, cell_width_px 00, cell_height_px 00,
-    // requested_encoding 01=TerminalAnsi, surface_mode 00=FullApp, keybindings 00=Server,
-    // launch_mode 01=TerminalAttach.
-    expect(server.clientMessages[0]).toBe('00145018000001000001')
+    // tag 00, version (0x15=21 today), cols 0x50=80, rows 0x18=24, cell_width_px 00,
+    // cell_height_px 00, requested_encoding 01=TerminalAnsi, surface_mode 00=FullApp,
+    // keybindings 00=Server, launch_mode 01=TerminalAttach.
+    //
+    // The version is spliced from `PROTOCOL_VERSION` so the next bump moves it with the client:
+    // the field under test here is the GEOMETRY (0x50/0x18 = the pane's 80x24, not the device's),
+    // and a literal version would keep re-breaking a geometry assertion for protocol reasons.
+    const versionVarint = PROTOCOL_VERSION.toString(16).padStart(2, '0')
+    expect(server.clientMessages[0]).toBe(`00${versionVarint}5018000001000001`)
     observer.close()
   })
 
   it('hard-fails instead of painting when the server picked another encoding', async () => {
-    const server = scriptedServer({ welcome: WELCOME_OK_SEMANTIC })
+    // Anchor first: the same builder, on the arm that DOES have a generated twin, must reproduce
+    // it byte for byte. That is what makes the semantic payload below real bincode.
+    expect(welcomePayloadHex(RenderEncoding.TerminalAnsi)).toBe(WELCOME_OK_ANSI_V21)
+    const server = scriptedServer({ welcome: welcomePayloadHex(RenderEncoding.SemanticFrame) })
     const applied: Applied[] = []
     const errors: string[] = []
     const observer = new PaneObserver({

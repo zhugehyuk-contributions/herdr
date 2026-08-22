@@ -431,11 +431,14 @@ fn client_handshake(stream: &mut UnixStream, version: u32, cols: u16, rows: u16)
     payload.extend_from_slice(&encode_varint_u32(0)); // ClientKeybindings::Server
     payload.extend_from_slice(&encode_varint_u32(0)); // ClientLaunchMode::App
 
+    // The wire-ABI prelude precedes the Hello frame (`src/protocol/abi.rs`).
+    support::send_wire_abi_prelude(stream).expect("write wire-ABI prelude");
     stream
         .write_all(&frame_message(&payload))
         .expect("write hello");
     stream.flush().expect("flush hello");
 
+    support::expect_wire_abi_prelude(stream).expect("read server wire-ABI prelude");
     let mut len_buf = [0u8; 4];
     stream
         .read_exact(&mut len_buf)

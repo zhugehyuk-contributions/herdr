@@ -22,9 +22,13 @@ import {
   PROTOCOL_VERSION,
   RenderEncoding,
   ServerMessageChannel,
+  WIRE_ABI_EPOCH,
+  WIRE_ABI_FORK,
+  WIRE_SCHEMA_FINGERPRINT,
   assertWelcomeAccepted,
   createTransportJsonApiClient,
   describeClose,
+  describeWireAbi,
   encodeHelloFrame,
   encodeObserveTerminalFrame,
   type JsonApiClient,
@@ -269,6 +273,21 @@ describe.skipIf(skipReason !== null)("live: herdr over an ssh transport", () => 
         `verdict=${stream.layoutMismatch?.message ?? "none"}\n`,
     );
     expect(stream.layoutMismatch).toBeUndefined();
+
+    // The gate that turned that probe from the primary detector into a backstop, over the real ssh
+    // bridge. Nothing in this test had to be changed for it: `ServerMessageChannel` writes the
+    // prelude on open and strips the server's before framing, so the whole ssh path — a byte pump
+    // that splits chunks wherever the network does — carried it transparently.
+    process.stdout.write(
+      `[ssh] peer wire ABI ${stream.peerAbi === undefined ? "MISSING" : describeWireAbi(stream.peerAbi)}\n`,
+    );
+    expect(stream.abiMismatch).toBeUndefined();
+    expect(stream.peerAbi).toEqual({
+      fork: WIRE_ABI_FORK,
+      abiEpoch: WIRE_ABI_EPOCH,
+      protocolVersion: PROTOCOL_VERSION,
+      schemaFingerprint: WIRE_SCHEMA_FINGERPRINT,
+    });
 
     stream.close();
   }, 120_000);

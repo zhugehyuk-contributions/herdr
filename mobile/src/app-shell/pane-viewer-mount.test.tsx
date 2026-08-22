@@ -16,7 +16,7 @@
 import { Children, createElement, type ElementType, type ReactNode } from 'react'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HerdrChannelKind } from '@herdr/client-ts'
+import { HerdrChannelKind, PROTOCOL_VERSION } from '@herdr/client-ts'
 import {
   FakeTransport,
   type FakeChannel
@@ -25,8 +25,9 @@ import { frameHex, fromHex, toHex } from '../../../packages/herdr-client-ts/test
 import {
   TERMINAL_SMALL_DIFF,
   TERMINAL_SMALL_FULL,
-  WELCOME_OK_ANSI
+  WELCOME_OK_ANSI_V21
 } from '../../../packages/herdr-client-ts/test/vectors'
+import { createWireAbiGate } from '../../test/wire-abi-peer'
 import type { HerdrRemoteConnection } from '../transport/herdr-connection'
 
 const routerState = vi.hoisted(() => ({
@@ -106,13 +107,20 @@ function scriptedServer(): Scripted {
   transport.onOpen = (channel: FakeChannel) => {
     const index = sent.push([]) - 1
     const write = channel.write.bind(channel)
+    // The server reads and validates the client's wire-ABI prelude before any bincode; this gate is
+    // that step, and it keeps `sent` a list of `ClientMessage`s rather than of writes.
+    const wireAbi = createWireAbiGate()
     channel.write = (bytes: Uint8Array) => {
       write(bytes)
       if (channel.kind === HerdrChannelKind.ClientStream) {
-        const payload = bytes.subarray(4)
+        const framed = wireAbi(bytes)
+        if (framed === null) {
+          return
+        }
+        const payload = framed.subarray(4)
         sent[index]!.push(toHex(payload))
         if (payload[0] === 0x00) {
-          channel.emit(fromHex(frameHex(WELCOME_OK_ANSI)))
+          channel.emit(fromHex(frameHex(WELCOME_OK_ANSI_V21)))
         } else if (payload[0] === 0x0c) {
           channel.emit(fromHex(frameHex(TERMINAL_SMALL_FULL)))
           channel.emit(fromHex(frameHex(TERMINAL_SMALL_DIFF)))
@@ -266,7 +274,12 @@ describe('pane viewer route', () => {
     // The geometry came from the pane, not from any device metric: cols 0x78 = 120 is
     // `pane.layout`'s area width, rows 0x2c = 44 is the fixture's own `scroll.viewport_rows`,
     // which is exact and therefore beats the area's 40 (`src/session/observer-geometry.ts`).
-    expect(server.sent.flat()[0]).toBe('0014782c000001000001')
+    //
+    // The version varint is spliced from `PROTOCOL_VERSION` rather than written out: the claim
+    // under test is the geometry, and a literal version turns every protocol bump into a failure
+    // of a geometry assertion that never changed.
+    const versionVarint = PROTOCOL_VERSION.toString(16).padStart(2, '0')
+    expect(server.sent.flat()[0]).toBe(`00${versionVarint}782c000001000001`)
 
     const commands = postedCommands()
     const init = commands.find((command) => command['type'] === 'init')

@@ -117,6 +117,22 @@ fn client_protocol_accepts_hello(socket_path: &Path) -> io::Result<bool> {
         Err(err) => return Err(err),
     };
 
+    // The wire-ABI prelude comes first here for the same reason it does in `do_handshake`: a
+    // protocol-21 server reads the first four bytes as the prelude magic, and a `Hello` sent
+    // without one is rejected as unidentifiable (`crate::protocol::abi`). This probe only asks
+    // "did the write land", so the prelude is what has to land.
+    if let Err(err) = crate::protocol::abi::write_prelude(&mut stream) {
+        return match err.kind() {
+            io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::NotFound
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset => Ok(false),
+            _ => Err(err),
+        };
+    }
+
     let hello = crate::protocol::ClientMessage::Hello {
         version: crate::protocol::PROTOCOL_VERSION,
         cols: 80,

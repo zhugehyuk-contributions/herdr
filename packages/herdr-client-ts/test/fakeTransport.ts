@@ -12,6 +12,7 @@
  */
 import {
   HerdrChannelKind,
+  encodeWirePrelude,
   type HerdrChannel,
   type HerdrChannelClose,
   type HerdrChannelHandlers,
@@ -31,11 +32,45 @@ export class FakeChannel implements HerdrChannel {
   writesAfterClose = 0;
   closed = false;
 
+  /**
+   * What this fake peer announces before its first bytes, mirroring a real herdr server.
+   *
+   * Defaulted for {@link HerdrChannelKind.ClientStream} because a fake that skipped the prelude
+   * would be testing a peer that does not exist — the real server writes it before its `Welcome`
+   * (`src/server/client_transport.rs`), and a test whose peer is less realistic than production
+   * proves nothing about production.
+   *
+   * Set to `null` to play a **pre-prelude / foreign** peer, or to other bytes to play a peer that
+   * announces a different layout. Both are cases the client is required to refuse, so both need a
+   * fake that can produce them.
+   */
+  wireAbiPrelude: Uint8Array | null;
+  private preludeEmitted = false;
+
   private readonly handlers: HerdrChannelHandlers;
 
   constructor(kind: HerdrChannelKind, handlers: HerdrChannelHandlers) {
     this.kind = kind;
     this.handlers = handlers;
+    this.wireAbiPrelude = kind === HerdrChannelKind.ClientStream ? encodeWirePrelude() : null;
+  }
+
+  /**
+   * Everything the client wrote **except** its opening wire-ABI prelude.
+   *
+   * `ServerMessageChannel.open` writes the prelude before the caller sends anything
+   * (`src/transport.ts`), so `written[0]` on a `ClientStream` is always those 28 bytes. Assertions
+   * about *messages* want this; assertions about the prelude itself want {@link written}.
+   */
+  get clientMessages(): Uint8Array[] {
+    if (this.kind !== HerdrChannelKind.ClientStream) {
+      return this.written;
+    }
+    const first = this.written[0];
+    if (first !== undefined && first.length === 28 && first[0] === 0x48 && first[1] === 0x52) {
+      return this.written.slice(1);
+    }
+    return this.written;
   }
 
   /** Everything written, concatenated and UTF-8 decoded. Convenient for the NDJSON kinds. */
@@ -65,8 +100,26 @@ export class FakeChannel implements HerdrChannel {
 
   // --- server side -------------------------------------------------------
 
-  /** Delivers bytes as if the remote bridge had produced them. */
+  /**
+   * Delivers bytes as if the remote bridge had produced them, prefixed — exactly once, on the
+   * first emit — by {@link FakeChannel.wireAbiPrelude}.
+   *
+   * Deliberately a *separate* `onData` call rather than a concatenation: a real bridge splits
+   * wherever the network splits, and the client has to survive the prelude arriving on its own.
+   */
   emit(chunk: Uint8Array): void {
+    if (!this.preludeEmitted) {
+      this.preludeEmitted = true;
+      if (this.wireAbiPrelude !== null) {
+        this.handlers.onData(this.wireAbiPrelude);
+      }
+    }
+    this.handlers.onData(chunk);
+  }
+
+  /** Emits without the prelude prefix, for a test that is scripting the prelude itself. */
+  emitRaw(chunk: Uint8Array): void {
+    this.preludeEmitted = true;
     this.handlers.onData(chunk);
   }
 

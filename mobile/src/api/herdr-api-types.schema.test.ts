@@ -5,6 +5,7 @@
 // directory (`src/shared`, port map §6 risk 1); herdr's server is Rust, so the schema is the seam.
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { PROTOCOL_VERSION } from '@herdr/client-ts'
 import { describe, expect, it } from 'vitest'
 
 const SCHEMA_PATH = fileURLToPath(new URL('../../../docs/next/api/herdr-api.schema.json', import.meta.url))
@@ -69,8 +70,13 @@ const ENUM_TYPES: Array<[string, string]> = [
 ]
 
 describe('herdr JSON API type transcription', () => {
+  // Against `PROTOCOL_VERSION` rather than a literal: the number is bumped whenever the wire
+  // changes (20 -> 21 for the wire-ABI prelude), and a literal here only ever records which bump
+  // last broke this file. Bound to the constant, the assertion says the thing worth saying — the
+  // schema artefact this file transcribes and the codec mobile actually dials with are the same
+  // protocol — and it keeps failing for the one reason it should: the two drifting apart.
   it('is written against the protocol the repo ships', () => {
-    expect(schemaFile.protocol).toBe(20)
+    expect(schemaFile.protocol).toBe(PROTOCOL_VERSION)
   })
 
   it.each(OBJECT_TYPES)('%s declares exactly the required fields of %s', (tsName, defName) => {

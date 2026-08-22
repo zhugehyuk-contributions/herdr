@@ -15,6 +15,9 @@ import {
   ClientLaunchMode,
   PROTOCOL_VERSION,
   RenderEncoding,
+  WIRE_ABI_EPOCH,
+  WIRE_ABI_FORK,
+  WIRE_SCHEMA_FINGERPRINT,
   assertWelcomeAccepted,
   encodeHelloFrame,
   encodeObserveTerminalFrame,
@@ -107,6 +110,20 @@ describe.skipIf(skipReason !== null)("live: TerminalAnsi observe against a real 
         launchMode: ClientLaunchMode.TerminalAttach,
       }),
     );
+
+    // The wire-ABI prelude, end to end against a real server: the bytes this codec transcribed
+    // from `src/protocol/abi.rs` are the bytes the server actually sends back, and `Welcome`
+    // arrives *behind* them. A harness that skipped the prelude would have been refused before
+    // this point, so reaching it at all is half the assertion.
+    const peerAbi = await stream.waitForPeerAbi(10_000);
+    process.stdout.write(
+      `[live] peer wire ABI fork=${peerAbi.fork} protocol=${peerAbi.protocolVersion} ` +
+        `epoch=${peerAbi.abiEpoch} schema=${peerAbi.schemaFingerprint}\n`,
+    );
+    expect(peerAbi.fork).toBe(WIRE_ABI_FORK);
+    expect(peerAbi.abiEpoch).toBe(WIRE_ABI_EPOCH);
+    expect(peerAbi.protocolVersion).toBe(PROTOCOL_VERSION);
+    expect(peerAbi.schemaFingerprint).toBe(WIRE_SCHEMA_FINGERPRINT);
 
     const welcome = await stream.next<WelcomeMessage>(
       (message): message is WelcomeMessage => message.type === "welcome",

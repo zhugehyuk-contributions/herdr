@@ -38,6 +38,24 @@ export {
 } from "./constants.js";
 
 export {
+  ACCEPTED_WIRE_ABIS,
+  LOCAL_WIRE_ABI,
+  WIRE_ABI_EPOCH,
+  WIRE_ABI_FORK,
+  WIRE_ABI_MAGIC,
+  WIRE_ABI_PRELUDE_LEN,
+  WIRE_SCHEMA_FINGERPRINT,
+  assertPeerAbiAccepted,
+  decodeWirePrelude,
+  describeWireAbi,
+  encodeWirePrelude,
+  startsWithWireAbiMagic,
+  type WireAbi,
+  type WirePrelude,
+} from "./abi.js";
+
+export {
+  AbiMismatchError,
   CorruptError,
   EncodingMismatchError,
   FieldRangeError,
@@ -51,6 +69,7 @@ export {
   desynchronizesScreen,
   type ObservedTag,
   type WireErrorCode,
+  type WirePreludeSummary,
 } from "./errors.js";
 
 export {

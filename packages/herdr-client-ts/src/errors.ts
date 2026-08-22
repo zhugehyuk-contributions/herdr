@@ -18,7 +18,9 @@ export type WireErrorCode =
   /** `Welcome.encoding` is not the encoding we requested. */
   | "encoding-mismatch"
   /** The peer's traffic does not look like this codec's wire layout. Inferred, never proven. */
-  | "layout-mismatch";
+  | "layout-mismatch"
+  /** The peer's ANNOUNCED wire ABI is not one this codec decodes. Proven, not inferred. */
+  | "abi-mismatch";
 
 /**
  * Does losing this frame invalidate the **rendered screen**, as opposed to merely the frame?
@@ -37,9 +39,10 @@ export type WireErrorCode =
  *   which cells the server believes are on screen, and the length prefix — which kept the *wire*
  *   in sync — says nothing about that.
  *
- * `oversized` and `layout-mismatch` never reach here: both are terminal for the connection —
- * `FrameReader` poisons itself on a bad length prefix, and a layout verdict means nothing on this
- * stream will ever decode — so there is no baseline left to repair.
+ * `oversized`, `layout-mismatch` and `abi-mismatch` never reach here: all three are terminal for
+ * the connection — `FrameReader` poisons itself on a bad length prefix, a layout verdict means
+ * nothing on this stream will ever decode, and an ABI mismatch is raised on the prelude, before a
+ * `ServerMessage` exists at all — so there is no baseline left to repair.
  */
 export function desynchronizesScreen(error: WireError): boolean {
   return error.code !== "unsupported-variant";
@@ -167,6 +170,41 @@ export class EncodingMismatchError extends WireError {
   }
 }
 
+/**
+ * The peer announced a wire ABI this codec does not decode — or announced none at all.
+ *
+ * The **proven** counterpart to {@link LayoutMismatchError}'s inference: the peer's own prelude
+ * says which byte layout it was built from (`src/abi.ts`), so this is read off the wire rather than
+ * guessed from traffic shape, and it is raised **before any bincode is parsed** — nothing of the
+ * peer's stream is ever interpreted.
+ *
+ * `peer` is `undefined` in exactly one case: a server that sent no prelude at all. That is a
+ * pre-prelude herdr (protocol <= 20) or a foreign fork, and it is refused rather than accepted on
+ * its version, because a version match is precisely the evidence that turned out to be worthless.
+ */
+export class AbiMismatchError extends WireError {
+  /** What the peer announced, or `undefined` when it announced nothing. */
+  readonly peer: WirePreludeSummary | undefined;
+
+  constructor(peer: WirePreludeSummary | undefined, message: string) {
+    super("abi-mismatch", message);
+    this.peer = peer;
+  }
+}
+
+/**
+ * The peer identity fields {@link AbiMismatchError} carries.
+ *
+ * Structurally identical to `WirePrelude` in `src/abi.ts` and declared here instead of imported
+ * to keep `errors.ts` free of an import cycle (`abi.ts` throws this class).
+ */
+export interface WirePreludeSummary {
+  fork: string;
+  abiEpoch: number;
+  protocolVersion: number;
+  schemaFingerprint: string;
+}
+
 /** One `ServerMessage` tag this codec could not decode, and how often it arrived. */
 export interface ObservedTag {
   /** The wire tag as it arrived. */
@@ -199,9 +237,20 @@ export interface ObservedTag {
  * upstream, because that is where upstream's `Terminal` lives). It can also stay silent on a
  * skewed peer that never sends enough frames to reach the threshold — an alarm, not a gate.
  *
- * The real fix is not in this package: the server must put an ABI/layout fingerprint in `Welcome`
- * so the client can *check* rather than guess (`mobile/.prd/03-blockers.md` M0-a). Until it does,
- * this is the strongest signal a client-side codec can produce.
+ * ## The real fix landed; this is now a backstop
+ *
+ * When this class was written the note here read "the real fix is not in this package: the server
+ * must put an ABI/layout fingerprint in `Welcome`". **That fix exists now** — and it is not in
+ * `Welcome`, because `Welcome` is a *reply* and the first divergent value (`ClientLaunchMode`) is
+ * a field of `Hello` that the *server* decodes. It is a fixed prelude ahead of all bincode, in
+ * both directions: `src/abi.ts` here, `src/protocol/abi.rs` there. {@link AbiMismatchError} is the
+ * *proven* form of what this class infers, and `ServerMessageChannel` raises it before a single
+ * frame is read.
+ *
+ * This class stays because the two answer different questions: the prelude checks what the peer
+ * **claims**, this checks how the peer **behaves**. A peer that announces this exact ABI and then
+ * streams tags this codec cannot decode is a case the prelude cannot see, and the one it was
+ * always weakest at (a same-fingerprint build with a patched enum) is exactly the one left.
  */
 export class LayoutMismatchError extends WireError {
   /** Every undecodable tag seen while the probe was armed, most frequent first. */

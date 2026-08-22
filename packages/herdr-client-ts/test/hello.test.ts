@@ -11,8 +11,9 @@ import {
 import { frameHex, toHex } from "./helpers.js";
 import {
   HELLO_ANSI_ATTACH_300X100,
-  HELLO_ANSI_ATTACH_65535_NO_CELLPX,
+  HELLO_ANSI_ATTACH_65535_NO_CELLPX_V21,
   HELLO_SEMANTIC_APP_80X24,
+  HELLO_SEMANTIC_APP_80X24_V21,
 } from "./vectors.js";
 
 describe("ClientMessage::Hello encode", () => {
@@ -66,8 +67,10 @@ describe("ClientMessage::Hello encode", () => {
       requestedEncoding: RenderEncoding.TerminalAnsi,
       launchMode: ClientLaunchMode.TerminalAttach,
     });
-    expect(PROTOCOL_VERSION).toBe(20);
-    expect(toHex(payload)).toBe(HELLO_ANSI_ATTACH_65535_NO_CELLPX);
+    // The default is the CURRENT version, so this vector moves with `src/protocol/wire.rs`; the
+    // explicit-version tests above keep the version-20 bytes pinned separately.
+    expect(PROTOCOL_VERSION).toBe(21);
+    expect(toHex(payload)).toBe(HELLO_ANSI_ATTACH_65535_NO_CELLPX_V21);
   });
 
   it("defaults surface_mode to FullApp and keybindings to Server", () => {
@@ -80,7 +83,7 @@ describe("ClientMessage::Hello encode", () => {
       launchMode: ClientLaunchMode.App,
       surfaceMode: ClientSurfaceMode.FullApp,
     });
-    expect(toHex(explicit)).toBe(HELLO_SEMANTIC_APP_80X24);
+    expect(toHex(explicit)).toBe(HELLO_SEMANTIC_APP_80X24_V21);
   });
 
   it("frames the payload with a u32 LE length prefix", () => {

@@ -1,0 +1,32 @@
+{
+  "$comment": "APPEND-ONLY wire-ABI ledger for herdr-mx. One entry per (protocol_version, wire_abi_epoch) this fork has shipped, oldest first. Hand-maintained; checked by `abi_history_*` in src/protocol/wire_fixtures.rs. Adding an entry is the ONLY correct response to a red `wire_schema_fingerprint_is_pinned` — repinning the constant without appending here is the laundering the whole mechanism exists to prevent.",
+  "rules": [
+    "1. Existing fixture corpora are never overwritten. Only the LAST entry may point at docs/next/protocol/fixtures.json (the live, regenerated corpus); every earlier entry must point at a file under docs/next/protocol/fixtures/ whose sha256 is pinned here.",
+    "2. A wire change bumps WIRE_ABI_EPOCH (src/protocol/abi.rs), repins WIRE_SCHEMA_FINGERPRINT, archives the outgoing fixtures.json under fixtures/, and appends an entry here. `fixtures_are_current` then forces the new corpus to be regenerated.",
+    "3. Every entry states, explicitly, whether the current server still accepts that ABI. `accepted_by_current_server: true` MUST have a matching row in `abi::accepted_wire_abis()`; the two are compared by `abi_history_mirrors_the_accepted_table`. Silence is not a decision."
+  ],
+  "entries": [
+    {
+      "protocol_version": 20,
+      "wire_abi_epoch": 0,
+      "schema_fingerprint": null,
+      "fixtures": "fixtures/protocol-20-epoch-0.json",
+      "fixtures_sha256": "0375bb2294047679ca53783e2491415a1ccf6fcdbf022a3d982240e8d3daa315",
+      "accepted_by_current_server": false,
+      "decided_on": "2026-08-22",
+      "decision": "REJECTED. Epoch 0 is the pre-prelude handshake: it announced no fork, no epoch and no schema fingerprint, so a peer speaking it cannot be identified at all. An unannotated Hello claiming protocol 20 is equally consistent with herdr-mx and with upstream/master, and those two disagree on ClientLaunchMode::TerminalAttach (1 vs 2) and ServerMessage::Terminal (13 vs 2) - mobile/.prd/03-blockers.md B1. Accepting epoch 0 would therefore mean guessing, and a wrong guess is a silent mis-parse rather than a loud rejection, which is exactly the failure M0-a was created to remove. Note the fingerprint field is null on purpose: epoch 0 builds never computed one, so recording a value here would be a claim about bytes nobody ever sent.",
+      "user_impact": "A herdr client built before this change cannot connect to a server built after it, and vice versa. This is the same breakage class as any PROTOCOL_VERSION bump (11 of them in the 79 days to 2026-08-08), and it lands on the same, already-built recovery path: `validate_running_server_compatibility` (src/server/autodetect.rs) compares the running server's reported protocol before a socket is even opened and prints the session restart guidance. Rejection is also diagnosable on the socket itself - the server answers a prelude-less client with a legacy-framed Welcome carrying `abi::legacy_peer_rejection()`, so an old client prints a reason instead of dying on an unexplained close."
+    },
+    {
+      "protocol_version": 21,
+      "wire_abi_epoch": 1,
+      "schema_fingerprint": "3ce2d29b371f9dbe",
+      "fixtures": "fixtures.json",
+      "fixtures_sha256": null,
+      "accepted_by_current_server": true,
+      "decided_on": "2026-08-22",
+      "decision": "ACCEPTED - this is the ABI this build speaks. Epoch 1 introduces the fixed 28-byte wire-ABI prelude ahead of the bincode Hello (src/protocol/abi.rs), so both peers identify each other's byte layout before either decodes anything. PROTOCOL_VERSION moves 20 -> 21 because the handshake's byte stream changed and 20 must not name two different handshakes.",
+      "user_impact": "No behaviour change between a client and server from this build. The desktop TUI, `herdr attach`, the observe/terminal-ANSI stream and the JSON API are byte-identical after the prelude; only the first 28 bytes of the client socket are new."
+    }
+  ]
+}

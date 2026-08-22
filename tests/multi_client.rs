@@ -715,12 +715,15 @@ fn client_handshake(
             &encode_varint_u32(0),  // ClientLaunchMode::App
         ],
     );
+    // The wire-ABI prelude precedes the Hello frame (`src/protocol/abi.rs`).
+    support::send_wire_abi_prelude(stream)?;
     stream
         .write_all(&frame_message(&hello_payload))
         .map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())?;
 
-    // Read ServerMessage::Welcome = variant 0
+    // The server's prelude, then ServerMessage::Welcome = variant 0
+    support::expect_wire_abi_prelude(stream)?;
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
     let len = u32::from_le_bytes(len_buf) as usize;

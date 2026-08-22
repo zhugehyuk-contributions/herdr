@@ -16,8 +16,9 @@ import { describe, expect, it } from 'vitest'
 import { HerdrChannelKind } from '@herdr/client-ts'
 import { FakeTransport, type FakeChannel } from '../../../packages/herdr-client-ts/test/fakeTransport'
 import { frameHex, fromHex, toHex } from '../../../packages/herdr-client-ts/test/helpers'
-import { WELCOME_OK_ANSI } from '../../../packages/herdr-client-ts/test/vectors'
+import { WELCOME_OK_ANSI_V21 } from '../../../packages/herdr-client-ts/test/vectors'
 import { FakeClock, flushMicrotasks } from '../../test/fake-clock'
+import { createWireAbiGate } from '../../test/wire-abi-peer'
 import { SupervisedRemote } from './supervised-remote'
 import { createObserveStreamLink, HEALTH_LINK_COLS, HEALTH_LINK_ROWS } from './observe-stream-link'
 import { createTransportConnection } from './herdr-connection'
@@ -47,13 +48,21 @@ function scriptedTransport(): Scripted {
     const index = streams.push(channel) - 1
     sent.push([])
     const write = channel.write.bind(channel)
+    // The dial opens with the 28-byte wire-ABI prelude, which the server reads and validates before
+    // any bincode. Consuming it here keeps `sent` a list of `ClientMessage`s — the hex the live
+    // receipt compares against — instead of a list of writes.
+    const wireAbi = createWireAbiGate()
     channel.write = (bytes: Uint8Array) => {
       write(bytes)
-      const payload = bytes.subarray(4)
+      const framed = wireAbi(bytes)
+      if (framed === null) {
+        return
+      }
+      const payload = framed.subarray(4)
       sent[index]!.push(toHex(payload))
       // 0x00 is `ClientMessage::Hello` (`packages/herdr-client-ts/src/messages.ts`).
       if (payload[0] === 0x00 && state.welcome) {
-        channel.emit(fromHex(frameHex(WELCOME_OK_ANSI)))
+        channel.emit(fromHex(frameHex(WELCOME_OK_ANSI_V21)))
       }
     }
   }

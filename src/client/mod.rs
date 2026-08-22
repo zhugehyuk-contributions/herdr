@@ -2298,8 +2298,9 @@ fn set_handshake_recv_timeout(
 
 /// Performs the client→server handshake.
 ///
-/// Sends Hello with the terminal size and protocol version, reads the Welcome
-/// response. Returns Ok(()) on success, or an error if the server rejects us.
+/// Sends the wire-ABI prelude and `Hello` with the terminal size and protocol version, then reads
+/// the server's prelude and `Welcome`. Returns Ok(()) on success, or an error if the server
+/// rejects us — or if its wire ABI is not one this build can decode.
 fn do_handshake(
     stream: &mut LocalStream,
     cols: u16,
@@ -2315,7 +2316,11 @@ fn do_handshake(
         .set_nonblocking(false)
         .map_err(ClientError::ConnectionFailed)?;
 
-    // Send Hello.
+    // Send the wire-ABI prelude, then Hello. The prelude goes first in both directions so neither
+    // side ever bincode-decodes bytes from a peer whose layout it has not identified — see
+    // `crate::protocol::abi`.
+    protocol::abi::write_prelude(stream).map_err(ClientError::ConnectionFailed)?;
+
     let launch_mode = if direct_attach_requested {
         ClientLaunchMode::TerminalAttach
     } else {
@@ -2334,18 +2339,19 @@ fn do_handshake(
     protocol::write_message(stream, &hello)
         .map_err(|e| ClientError::ConnectionFailed(io::Error::other(e.to_string())))?;
 
-    // Read Welcome.
+    // Read the server's prelude, then Welcome.
     set_handshake_recv_timeout(
         stream,
         Some(Duration::from_secs(5)),
         "client handshake read timeout unavailable",
     )?;
-    let welcome: ServerMessage = protocol::read_message(stream, MAX_FRAME_SIZE)?;
+    let welcome = read_welcome_behind_abi_gate(stream);
     set_handshake_recv_timeout(
         stream,
         None,
         "failed to clear client handshake read timeout",
     )?;
+    let welcome = welcome?;
 
     match welcome {
         ServerMessage::Welcome {
@@ -2362,6 +2368,53 @@ fn do_handshake(
         _ => Err(ClientError::Protocol(protocol::FramingError::Io(
             io::Error::new(io::ErrorKind::InvalidData, "expected Welcome message"),
         ))),
+    }
+}
+
+/// Reads the server's wire-ABI prelude and then its `Welcome`, refusing to decode anything from a
+/// server whose layout this build cannot identify.
+///
+/// The legacy branch exists purely so the *diagnosis* survives. A pre-prelude server answers a
+/// prelude with either nothing (it reads the magic as a 1.38 GB length prefix, over both frame
+/// caps, and closes) or — in the one case it can still speak — a bare `Welcome`. Chaining the four
+/// sniffed bytes back reconstructs that frame so its `error` string reaches the user instead of an
+/// unexplained EOF. It is **not** a fallback: a legacy `Welcome` without an error is still refused,
+/// because "the version matched" is exactly the evidence that turned out to be worthless
+/// (herdr-mx and upstream both shipped protocol 20 with different tags).
+fn read_welcome_behind_abi_gate(
+    stream: &mut LocalStream,
+) -> Result<ServerMessage, ClientError> {
+    match protocol::abi::read_peer_handshake_start(stream)? {
+        protocol::abi::PeerHandshakeStart::Prelude(peer) => {
+            if let protocol::abi::AbiCheck::Rejected(reason) = protocol::abi::check_peer_abi(&peer)
+            {
+                return Err(ClientError::HandshakeRejected {
+                    version: peer.protocol_version,
+                    error: reason,
+                });
+            }
+            Ok(protocol::read_message(stream, MAX_FRAME_SIZE)?)
+        }
+        protocol::abi::PeerHandshakeStart::Legacy(head) => {
+            let legacy: Result<ServerMessage, _> = {
+                let mut restored = std::io::Read::chain(&head[..], &mut *stream);
+                protocol::read_message(&mut restored, MAX_FRAME_SIZE)
+            };
+            let detail = match legacy {
+                Ok(ServerMessage::Welcome {
+                    error: Some(error), ..
+                }) => error,
+                _ => "the server closed the connection without answering".to_owned(),
+            };
+            Err(ClientError::HandshakeRejected {
+                version: 0,
+                error: format!(
+                    "server did not send the herdr-mx wire-ABI prelude, so its wire layout cannot \
+                     be identified; it is an older or foreign herdr build ({detail}). Restart the \
+                     herdr server from this build."
+                ),
+            })
+        }
     }
 }
 
@@ -6987,6 +7040,148 @@ mod tests {
     use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
 
+    // ---- Wire-ABI gate, client side (M0-a) ----------------------------------------------
+    //
+    // The server-side half lives in `src/server/client_transport.rs`. This is the other
+    // direction: a client must not decode a `Welcome` from a server whose layout it has not
+    // identified, because `ServerMessage::Terminal` is tag 13 here and tag 2 upstream — a
+    // mis-identified server produces a *screen*, not an error.
+
+    fn abi_gate_stream_pair() -> (LocalStream, LocalStream, std::path::PathBuf) {
+        use interprocess::local_socket::traits::Listener as _;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::path::PathBuf::from("/tmp")
+            .join(format!("h-abi-{}-{nanos}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = crate::ipc::bind_local_listener(&path).unwrap();
+        let client = crate::ipc::connect_local_stream(&path).unwrap();
+        let server = listener.accept().unwrap();
+        (client, server, path)
+    }
+
+    /// A server that sends no prelude cannot be identified, so its `Welcome` is never decoded as
+    /// acceptance — even though the version field in it would have matched.
+    ///
+    /// This is B1 from the client's side: an upstream server at the same `PROTOCOL_VERSION`
+    /// answers a legacy `Welcome` that passes a version check and then streams tag-2 `Terminal`
+    /// frames this fork reads as `Graphics`. Refusing here is what keeps that from rendering as a
+    /// black screen with no error.
+    #[test]
+    fn a_server_without_a_prelude_is_refused_even_when_its_welcome_would_have_parsed() {
+        let (mut client, mut server, path) = abi_gate_stream_pair();
+
+        // A legacy accepting Welcome: no prelude, no error, matching version.
+        protocol::write_message(
+            &mut server,
+            &ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: RenderEncoding::TerminalAnsi,
+                error: None,
+            },
+        )
+        .expect("write legacy welcome");
+
+        let result = read_welcome_behind_abi_gate(&mut client);
+        match result {
+            Err(ClientError::HandshakeRejected { error, .. }) => assert!(
+                error.contains("wire-ABI prelude"),
+                "the refusal must name the missing identity; got: {error}"
+            ),
+            other => panic!("an unidentified server must be refused, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A legacy server's *rejection* still has to reach the user. The four sniffed bytes are
+    /// chained back so the `Welcome.error` an old server sends is read and quoted, instead of
+    /// surfacing as an unexplained EOF.
+    #[test]
+    fn a_legacy_servers_rejection_reason_survives_the_gate() {
+        let (mut client, mut server, path) = abi_gate_stream_pair();
+
+        protocol::write_message(
+            &mut server,
+            &ServerMessage::Welcome {
+                version: 19,
+                encoding: RenderEncoding::SemanticFrame,
+                error: Some("client version 21 is newer than server version 19".to_owned()),
+            },
+        )
+        .expect("write legacy rejection");
+
+        match read_welcome_behind_abi_gate(&mut client) {
+            Err(ClientError::HandshakeRejected { error, .. }) => assert!(
+                error.contains("newer than server version 19"),
+                "the old server's own reason must survive; got: {error}"
+            ),
+            other => panic!("expected a rejection carrying the server's reason, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A server whose prelude announces a different layout is refused before its `Welcome` is
+    /// decoded, and the refusal names the axis.
+    #[test]
+    fn a_server_announcing_a_different_layout_is_refused_before_the_welcome() {
+        let (mut client, mut server, path) = abi_gate_stream_pair();
+
+        let mut prelude = protocol::abi::WirePrelude::local().encode();
+        prelude[20] ^= 0xff; // schema fingerprint
+        std::io::Write::write_all(&mut server, &prelude).expect("write skewed prelude");
+        protocol::write_message(
+            &mut server,
+            &ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: RenderEncoding::TerminalAnsi,
+                error: None,
+            },
+        )
+        .expect("write welcome");
+
+        match read_welcome_behind_abi_gate(&mut client) {
+            Err(ClientError::HandshakeRejected { error, .. }) => assert!(
+                error.contains("schema fingerprint"),
+                "the refusal must name the layout axis; got: {error}"
+            ),
+            other => panic!("expected a layout refusal, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The control: a matching peer still handshakes.
+    #[test]
+    fn a_matching_server_is_accepted_through_the_gate() {
+        let (mut client, mut server, path) = abi_gate_stream_pair();
+
+        protocol::abi::write_prelude(&mut server).expect("write prelude");
+        protocol::write_message(
+            &mut server,
+            &ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: RenderEncoding::TerminalAnsi,
+                error: None,
+            },
+        )
+        .expect("write welcome");
+
+        match read_welcome_behind_abi_gate(&mut client).expect("matching peer is accepted") {
+            ServerMessage::Welcome {
+                version,
+                encoding,
+                error,
+            } => {
+                assert_eq!(version, PROTOCOL_VERSION);
+                assert_eq!(encoding, RenderEncoding::TerminalAnsi);
+                assert_eq!(error, None);
+            }
+            other => panic!("expected Welcome, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn run_remote_op_with_progress_returns_fast_success() {
         let value =
@@ -10632,6 +10827,10 @@ mod tests {
         let server_thread = std::thread::spawn(move || {
             let (mut stream, _addr) = listener.accept().unwrap();
             std::thread::sleep(Duration::from_millis(750));
+            // A stand-in server has to speak the wire-ABI prelude too: the client refuses to
+            // decode a `Welcome` from a peer whose layout it has not identified
+            // (`read_welcome_behind_abi_gate`).
+            protocol::abi::write_prelude(&mut stream).unwrap();
             protocol::write_message(
                 &mut stream,
                 &ServerMessage::Welcome {

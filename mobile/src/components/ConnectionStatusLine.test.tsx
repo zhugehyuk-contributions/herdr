@@ -15,8 +15,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HerdrChannelKind } from '@herdr/client-ts'
 import { FakeTransport, type FakeChannel } from '../../../packages/herdr-client-ts/test/fakeTransport'
 import { frameHex, fromHex } from '../../../packages/herdr-client-ts/test/helpers'
-import { WELCOME_OK_ANSI } from '../../../packages/herdr-client-ts/test/vectors'
+import { WELCOME_OK_ANSI_V21 } from '../../../packages/herdr-client-ts/test/vectors'
 import { FakeClock, flushMicrotasks } from '../../test/fake-clock'
+import { createWireAbiGate } from '../../test/wire-abi-peer'
 import { mono } from '../theme/monotone'
 
 vi.mock('react-native', () => ({
@@ -64,10 +65,17 @@ function harness() {
     }
     streams.push(channel)
     const write = channel.write.bind(channel)
+    // Answer the client's wire-ABI prelude the way a herdr server does, before looking for `Hello`.
+    // Not merely cosmetic: without this the prelude's 5th byte would be sniffed as a message tag.
+    const wireAbi = createWireAbiGate()
     channel.write = (bytes: Uint8Array) => {
       write(bytes)
-      if (bytes[4] === 0x00 && welcome) {
-        channel.emit(fromHex(frameHex(WELCOME_OK_ANSI)))
+      const framed = wireAbi(bytes)
+      if (framed === null) {
+        return
+      }
+      if (framed[4] === 0x00 && welcome) {
+        channel.emit(fromHex(frameHex(WELCOME_OK_ANSI_V21)))
       }
     }
   }

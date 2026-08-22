@@ -20,7 +20,14 @@ use serde::{Deserialize, Serialize};
 /// v20: upstream v0.8.0 merge — unions upstream's v19 additions (`KittyKeyboardReportAll`,
 /// appended at the enum tail so mx wire tags stay stable); bumped past both lines
 /// (mx 18, upstream 19) so neither side's peers can false-match.
-pub const PROTOCOL_VERSION: u32 = 20;
+/// v21: the handshake now opens with a fixed-size wire-ABI prelude ahead of the bincode `Hello`
+/// (`crate::protocol::abi`). The handshake's *byte stream* changed, so 20 must not name two
+/// different handshakes — that is exactly the "same integer, different layout" defect this fork
+/// already suffers against upstream (mobile/.prd/03-blockers.md B1). Bumping also means the
+/// pre-connection status check (`src/server/autodetect.rs:158`) rejects a stale in-session server
+/// with its existing "restart the session" guidance *before* a v21 client writes a prelude at a
+/// v20 server that would only read it as an oversized length prefix.
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -1209,12 +1216,18 @@ pub enum VersionCheck {
 
 /// Checks whether a client's protocol version is compatible with this server.
 ///
-/// Current rules:
+/// **This is the second gate, not the first.** The version integer alone is not a layout
+/// identifier — herdr-mx and upstream both shipped `20` with different enum tags — so the
+/// authoritative gate is the wire-ABI prelude (`crate::protocol::abi::check_peer_abi`), which runs
+/// ahead of any bincode decode. What survives here is the version half of that decision, kept as
+/// defence in depth and expressed against the *same table* rather than a hard-coded equality:
+/// `abi::accepted_wire_abis()` is the compatibility window (M0-b), and widening it here without
+/// widening the table would let a peer past the version gate that the ABI gate then rejects.
+///
+/// Rules:
 /// - Version 0 (pre-persistence client) is always rejected.
-/// - Matching major versions are accepted.
-/// - A client with a newer version than the server is rejected.
-/// - A client with an older version than the server is rejected
-///   (backward compatibility is not yet supported).
+/// - A version that appears in `abi::accepted_wire_abis()` is accepted.
+/// - Anything else is rejected, with the direction named so the message says who to upgrade.
 pub fn check_client_version(client_version: u32) -> VersionCheck {
     if client_version == 0 {
         return VersionCheck::Incompatible(
@@ -1222,11 +1235,15 @@ pub fn check_client_version(client_version: u32) -> VersionCheck {
         );
     }
 
-    if client_version == PROTOCOL_VERSION {
+    let accepted = super::abi::accepted_wire_abis()
+        .iter()
+        .any(|abi| abi.protocol_version == client_version);
+    if accepted {
         VersionCheck::Compatible
     } else if client_version < PROTOCOL_VERSION {
+        let min = super::abi::min_supported_protocol();
         VersionCheck::Incompatible(format!(
-            "client version {client_version} is older than server version {PROTOCOL_VERSION}; please upgrade your herdr client"
+            "client version {client_version} is older than server version {PROTOCOL_VERSION} (this server accepts {min}..={PROTOCOL_VERSION}); please upgrade your herdr client"
         ))
     } else {
         VersionCheck::Incompatible(format!(
@@ -1457,6 +1474,90 @@ mod tests {
                 takeover: false,
             }),
             13
+        );
+    }
+
+    /// The mirror of `client_message_wire_tags_preserve_protocol_15_order`, for the enum the
+    /// mobile client's entire screen comes from.
+    ///
+    /// `ClientMessage` had this freeze and `ServerMessage` did not, and the asymmetry was not
+    /// harmless: upstream declares `Terminal` right after `Frame` (tag 2) while this fork appends
+    /// it at the tail (tag 13). An upstream merge that inserts a variant mid-enum therefore slides
+    /// `Welcome`/`Terminal` under a client that is *still handshaking successfully*, because both
+    /// forks report the same `PROTOCOL_VERSION`. The failure is not an error — it is a mis-parse.
+    ///
+    /// The contract this pins is the fork's merge rule: **upstream-inserted variants go to the
+    /// tail, existing wire tags never move** (`ObserveTerminal`'s doc comment records the
+    /// precedent). A red here during a merge means the resolution is wrong; fix the enum order,
+    /// do not "update" the expectations.
+    #[test]
+    fn server_message_wire_tags_preserve_protocol_20_order() {
+        fn tag(msg: &ServerMessage) -> u8 {
+            *bincode::serde::encode_to_vec(msg, bincode::config::standard())
+                .unwrap()
+                .first()
+                .expect("encoded server message should include enum tag")
+        }
+
+        assert_eq!(
+            tag(&ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: RenderEncoding::SemanticFrame,
+                error: None,
+            }),
+            0
+        );
+        assert_eq!(tag(&ServerMessage::Frame(FrameData::blank(1, 1))), 1);
+        assert_eq!(tag(&ServerMessage::Graphics { bytes: Vec::new() }), 2);
+        assert_eq!(tag(&ServerMessage::ServerShutdown { reason: None }), 3);
+        assert_eq!(
+            tag(&ServerMessage::Notify {
+                kind: NotifyKind::Sound,
+                message: String::new(),
+                body: None,
+            }),
+            4
+        );
+        assert_eq!(
+            tag(&ServerMessage::Clipboard {
+                data: String::new()
+            }),
+            5
+        );
+        assert_eq!(tag(&ServerMessage::WindowTitle { title: None }), 6);
+        assert_eq!(tag(&ServerMessage::ReloadSoundConfig), 7);
+        assert_eq!(tag(&ServerMessage::MouseCapture { enabled: false }), 8);
+        // herdr-mx wire layout: the mx variants (FrameDelta..Compressed, tags 9-11) keep their
+        // tags; upstream's later additions are appended after them.
+        assert_eq!(
+            tag(&ServerMessage::FrameDelta(FrameDelta {
+                width: 1,
+                height: 1,
+                cells: Vec::new(),
+                cursor: None,
+                hyperlinks: Vec::new(),
+                graphics: Vec::new(),
+                base_checksum: 0,
+            })),
+            9
+        );
+        assert_eq!(tag(&ServerMessage::Pong { nonce: 1 }), 10);
+        assert_eq!(tag(&ServerMessage::Compressed(Vec::new())), 11);
+        assert_eq!(tag(&ServerMessage::PrefixInputSource { active: false }), 12);
+        // The one the mobile client lives on. Upstream puts this at 2.
+        assert_eq!(
+            tag(&ServerMessage::Terminal(TerminalFrame {
+                seq: 1,
+                width: 1,
+                height: 1,
+                full: true,
+                bytes: Vec::new(),
+            })),
+            13
+        );
+        assert_eq!(
+            tag(&ServerMessage::KittyKeyboardReportAll { enabled: false }),
+            14
         );
     }
 

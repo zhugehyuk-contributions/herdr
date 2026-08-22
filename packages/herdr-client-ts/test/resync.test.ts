@@ -151,11 +151,11 @@ describe("ServerMessageChannel screen resynchronization", () => {
     const transport = new FakeTransport();
     const { channel, wire } = await openChannel(transport);
 
-    expect(wire.written).toHaveLength(0);
+    expect(wire.clientMessages).toHaveLength(0);
     wire.emit(fromHex(CORRUPT_TERMINAL));
 
-    expect(wire.written).toHaveLength(1);
-    expect(toHex(wire.written[0] as Uint8Array)).toBe("010000000b");
+    expect(wire.clientMessages).toHaveLength(1);
+    expect(toHex(wire.clientMessages[0] as Uint8Array)).toBe("010000000b");
     expect(channel.awaitingFullFrame).toBe(true);
     expect(channel.fullFrameRequestCount).toBe(1);
   });
@@ -178,7 +178,7 @@ describe("ServerMessageChannel screen resynchronization", () => {
     expect(channel.awaitingFullFrame).toBe(false);
     expect(channel.droppedDiffCount).toBe(0);
     expect(channel.fullFrameRequestCount).toBe(0);
-    expect(wire.written).toHaveLength(0);
+    expect(wire.clientMessages).toHaveLength(0);
   });
 
   /**
@@ -210,7 +210,10 @@ describe("ServerMessageChannel screen resynchronization", () => {
     wire.emit(fromHex(CORRUPT_TERMINAL));
 
     expect(channel.fullFrameRequestCount).toBe(2);
-    expect(wire.written.map((bytes) => toHex(bytes))).toEqual(["010000000b", "010000000b"]);
+    expect(wire.clientMessages.map((bytes) => toHex(bytes))).toEqual([
+      "010000000b",
+      "010000000b",
+    ]);
   });
 });
 

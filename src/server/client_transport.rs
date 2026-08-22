@@ -480,7 +480,7 @@ fn set_client_recv_timeout(
 
 /// Handles the client handshake on a blocking thread.
 ///
-/// Reads the `Hello` message, validates the version, sends `Welcome`,
+/// Reads the wire-ABI prelude, then the `Hello` message, validates the version, sends `Welcome`,
 /// and then enters a read loop forwarding messages to the server event channel.
 pub(crate) fn handle_client_handshake(
     mut stream: LocalStream,
@@ -498,6 +498,59 @@ pub(crate) fn handle_client_handshake(
         "client handshake read timeout unavailable",
         client_id,
     )?;
+
+    // ---- Wire-ABI gate (M0-a) -------------------------------------------------------------
+    //
+    // This runs BEFORE the bincode decode below, and that ordering is the whole design. The first
+    // value the two forks disagree on is `ClientLaunchMode`, which is a *field of `Hello`*, so a
+    // fingerprint carried in the server's `Welcome` would only be compared after this server had
+    // already mis-parsed the client's `Hello`. Nothing of an unidentified peer's payload is ever
+    // interpreted.
+    match protocol::abi::read_peer_handshake_start(&mut stream) {
+        Ok(protocol::abi::PeerHandshakeStart::Prelude(peer)) => {
+            // Answer with our own identity first, whatever the verdict: a peer that speaks
+            // preludes is owed one, including on rejection, so it can name the disagreement too.
+            if let Err(err) = protocol::abi::write_prelude(&mut stream) {
+                debug!(client_id, err = %err, "failed to write server wire-ABI prelude");
+                return Ok(());
+            }
+            if let protocol::abi::AbiCheck::Rejected(reason) = protocol::abi::check_peer_abi(&peer)
+            {
+                warn!(client_id, peer = %peer.describe(), "rejecting client on wire-ABI mismatch");
+                let welcome = ServerMessage::Welcome {
+                    version: PROTOCOL_VERSION,
+                    encoding: RenderEncoding::SemanticFrame,
+                    error: Some(reason),
+                };
+                let _ = protocol::write_message(&mut stream, &welcome);
+                return Ok(());
+            }
+        }
+        Ok(protocol::abi::PeerHandshakeStart::Legacy(_head)) => {
+            // A peer that sent no prelude cannot be identified: an unannotated `Hello` claiming
+            // protocol 20 is equally consistent with herdr-mx and with upstream, and those two
+            // disagree on `ClientLaunchMode`. Accepting it would trade a loud rejection for a
+            // silent mis-parse, so the bytes it sent are never decoded. The reply is a *legacy*
+            // `Welcome` (no prelude) because that is the framing the old client can read — the
+            // rejection has to be diagnosable, not just correct.
+            debug!(client_id, "client sent no wire-ABI prelude; rejecting");
+            let welcome = ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: RenderEncoding::SemanticFrame,
+                error: Some(protocol::abi::legacy_peer_rejection()),
+            };
+            let _ = protocol::write_message(&mut stream, &welcome);
+            return Ok(());
+        }
+        Err(protocol::FramingError::UnexpectedEof) => {
+            debug!(client_id, "client disconnected before the wire-ABI prelude");
+            return Ok(());
+        }
+        Err(err) => {
+            debug!(client_id, err = %err, "failed to read client wire-ABI prelude");
+            return Ok(());
+        }
+    }
 
     // Read the Hello message.
     let hello: ClientMessage = match protocol::read_message(&mut stream, MAX_FRAME_SIZE) {
@@ -1186,6 +1239,183 @@ new_tab = "ctrl+notakey"
             .any(|binding| binding.label == "prefix+n"));
     }
 
+    // ---- Wire-ABI gate (M0-a) ----------------------------------------------------------
+    //
+    // The claim under test is an ORDERING claim: the gate runs ahead of the bincode decode. That
+    // is only provable by a peer whose payload this fork *cannot* decode — if the decode ran
+    // first, the reply would be the decode-failure Welcome ("incompatible client protocol …"),
+    // and it is not.
+
+    /// Encodes a bincode varint the way `bincode::config::standard()` does, by hand. The point of
+    /// hand-rolling is that these tests must be able to build a message this crate's types cannot
+    /// represent — an upstream-shaped `Hello`.
+    fn varint(value: u32) -> Vec<u8> {
+        if value < 251 {
+            vec![value as u8]
+        } else if value < 65536 {
+            let mut out = vec![251u8];
+            out.extend_from_slice(&(value as u16).to_le_bytes());
+            out
+        } else {
+            let mut out = vec![252u8];
+            out.extend_from_slice(&value.to_le_bytes());
+            out
+        }
+    }
+
+    fn framed(payload: &[u8]) -> Vec<u8> {
+        let mut out = (payload.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// `ClientMessage::Hello` with the launch mode as a raw varint, so a caller can send
+    /// upstream's `TerminalAttach` (2) — a discriminant this fork's `ClientLaunchMode` does not
+    /// have, so `bincode` cannot decode it.
+    fn hello_bytes_with_launch_mode(launch_mode: u32) -> Vec<u8> {
+        let mut payload = varint(0); // ClientMessage::Hello
+        payload.extend(varint(PROTOCOL_VERSION));
+        payload.extend(varint(100)); // cols
+        payload.extend(varint(30)); // rows
+        payload.extend(varint(8)); // cell_width_px
+        payload.extend(varint(16)); // cell_height_px
+        payload.extend(varint(1)); // RenderEncoding::TerminalAnsi
+        payload.extend(varint(0)); // ClientSurfaceMode::FullApp
+        payload.extend(varint(0)); // ClientKeybindings::Server
+        payload.extend(varint(launch_mode));
+        framed(&payload)
+    }
+
+    fn spawn_handshake(
+        server_stream: LocalStream,
+        server_event_tx: mpsc::Sender<ServerEvent>,
+        should_quit: Arc<AtomicBool>,
+    ) -> std::thread::JoinHandle<io::Result<()>> {
+        std::thread::spawn(move || {
+            handle_client_handshake(server_stream, 7, &server_event_tx, &should_quit)
+        })
+    }
+
+    /// Reads a legacy (prelude-less) `Welcome` and returns its error string.
+    fn read_legacy_welcome_error(stream: &mut LocalStream) -> Option<String> {
+        let welcome: ServerMessage =
+            protocol::read_message(stream, MAX_FRAME_SIZE).expect("read welcome");
+        match welcome {
+            ServerMessage::Welcome { error, .. } => error,
+            other => panic!("expected Welcome, got {other:?}"),
+        }
+    }
+
+    /// **The RED case.** A client with upstream's layout — no prelude, and a `launch_mode` this
+    /// fork's `ClientLaunchMode` cannot represent — must be turned away *before* its `Hello` is
+    /// decoded.
+    ///
+    /// The discriminator is the error string. If the server had decoded first, the undecodable
+    /// discriminant 2 would have taken the `FramingError::Bincode` arm and answered
+    /// "incompatible client protocol (server speaks vN); update herdr". Receiving the *prelude*
+    /// rejection instead is the proof that no byte of that `Hello` was ever interpreted.
+    #[test]
+    fn upstream_layout_client_is_rejected_before_its_hello_is_decoded() {
+        let (mut client_stream, server_stream, _path) = local_stream_pair("abi-gate-upstream");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let handle = spawn_handshake(server_stream, server_event_tx, should_quit.clone());
+
+        // upstream/master: `AppDirectGraphics` is inserted before `TerminalAttach`, so its
+        // `TerminalAttach` is 2 (mobile/.prd/03-blockers.md B1). No prelude, exactly like an
+        // upstream binary.
+        client_stream
+            .write_all(&hello_bytes_with_launch_mode(2))
+            .expect("write upstream-shaped hello");
+        client_stream.flush().expect("flush");
+
+        let error = read_legacy_welcome_error(&mut client_stream)
+            .expect("an unidentified peer must be rejected, not welcomed");
+        assert!(
+            error.contains("wire-ABI prelude"),
+            "the rejection must be the ABI gate's, proving it ran before the decode; got: {error}"
+        );
+        assert!(
+            !error.contains("incompatible client protocol"),
+            "this is the decode-failure message: the Hello was decoded after all. got: {error}"
+        );
+        assert!(
+            server_event_rx.try_recv().is_err(),
+            "a rejected peer must never reach the server as a connected client"
+        );
+
+        drop(client_stream);
+        should_quit.store(true, Ordering::Release);
+        handle.join().expect("join").expect("handshake result");
+    }
+
+    /// The same gate, for a peer whose `Hello` this fork *could* have decoded. Decodability is not
+    /// the question the gate asks — identity is — so a perfectly well-formed prelude-less `Hello`
+    /// is refused too. Accepting it is what would turn a loud rejection into a silent mis-parse,
+    /// because a protocol-20 `Hello` is equally consistent with herdr-mx and with upstream.
+    #[test]
+    fn a_well_formed_hello_without_a_prelude_is_still_rejected() {
+        let (mut client_stream, server_stream, _path) = local_stream_pair("abi-gate-legacy");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let handle = spawn_handshake(server_stream, server_event_tx, should_quit.clone());
+
+        client_stream
+            .write_all(&hello_bytes_with_launch_mode(1))
+            .expect("write mx-shaped hello");
+        client_stream.flush().expect("flush");
+
+        let error = read_legacy_welcome_error(&mut client_stream)
+            .expect("a prelude-less client must be rejected");
+        assert!(error.contains("wire-ABI prelude"), "{error}");
+        // The rejection must be readable by the old client, i.e. framed WITHOUT a prelude in
+        // front of it. `read_legacy_welcome_error` above decoded straight from the length prefix,
+        // so reaching this line already proves it.
+        assert!(server_event_rx.try_recv().is_err());
+
+        drop(client_stream);
+        should_quit.store(true, Ordering::Release);
+        handle.join().expect("join").expect("handshake result");
+    }
+
+    /// A peer that announces the same fork, protocol and epoch but a different byte layout is
+    /// rejected on the fingerprint — the case a version range can never see, and the reason the
+    /// window is a table of triples rather than `MIN..=CURRENT`.
+    #[test]
+    fn a_peer_announcing_a_different_layout_is_rejected_on_the_fingerprint() {
+        let (mut client_stream, server_stream, _path) = local_stream_pair("abi-gate-fingerprint");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let handle = spawn_handshake(server_stream, server_event_tx, should_quit.clone());
+
+        let mut prelude = protocol::abi::WirePrelude::local().encode();
+        prelude[20] ^= 0xff; // first byte of the schema fingerprint
+        client_stream.write_all(&prelude).expect("write prelude");
+        client_stream
+            .write_all(&hello_bytes_with_launch_mode(1))
+            .expect("write hello");
+        client_stream.flush().expect("flush");
+
+        // A peer that speaks preludes is answered with one, even on rejection.
+        match protocol::abi::read_peer_handshake_start(&mut client_stream).expect("server prelude")
+        {
+            protocol::abi::PeerHandshakeStart::Prelude(peer) => {
+                assert_eq!(peer, protocol::abi::WirePrelude::local())
+            }
+            other => panic!("expected the server's prelude, got {other:?}"),
+        }
+        let error = read_legacy_welcome_error(&mut client_stream).expect("rejection");
+        assert!(
+            error.contains("schema fingerprint"),
+            "the rejection must name the layout axis; got: {error}"
+        );
+        assert!(server_event_rx.try_recv().is_err());
+
+        drop(client_stream);
+        should_quit.store(true, Ordering::Release);
+        handle.join().expect("join").expect("handshake result");
+    }
+
     #[test]
     fn handshake_negotiates_terminal_ansi_encoding() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-handshake-ansi");
@@ -1196,6 +1426,7 @@ new_tab = "ctrl+notakey"
             handle_client_handshake(server_stream, 42, &server_event_tx, &handshake_quit)
         });
 
+        protocol::abi::write_prelude(&mut client_stream).expect("write prelude");
         protocol::write_message(
             &mut client_stream,
             &ClientMessage::Hello {
@@ -1212,6 +1443,15 @@ new_tab = "ctrl+notakey"
         )
         .expect("write hello");
 
+        let start = protocol::abi::read_peer_handshake_start(&mut client_stream)
+            .expect("read server prelude");
+        match start {
+            protocol::abi::PeerHandshakeStart::Prelude(peer) => assert_eq!(
+                protocol::abi::check_peer_abi(&peer),
+                protocol::abi::AbiCheck::Accepted
+            ),
+            other => panic!("server must answer with its wire-ABI prelude, got {other:?}"),
+        }
         let welcome: ServerMessage =
             protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
         match welcome {
@@ -1274,6 +1514,7 @@ new_tab = "ctrl+notakey"
             handle_client_handshake(server_stream, 42, &server_event_tx, &handshake_quit)
         });
 
+        protocol::abi::write_prelude(&mut client_stream).expect("write prelude");
         protocol::write_message(
             &mut client_stream,
             &ClientMessage::Hello {
@@ -1290,6 +1531,15 @@ new_tab = "ctrl+notakey"
         )
         .expect("write hello");
 
+        let start = protocol::abi::read_peer_handshake_start(&mut client_stream)
+            .expect("read server prelude");
+        match start {
+            protocol::abi::PeerHandshakeStart::Prelude(peer) => assert_eq!(
+                protocol::abi::check_peer_abi(&peer),
+                protocol::abi::AbiCheck::Accepted
+            ),
+            other => panic!("server must answer with its wire-ABI prelude, got {other:?}"),
+        }
         let welcome: ServerMessage =
             protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
         match welcome {

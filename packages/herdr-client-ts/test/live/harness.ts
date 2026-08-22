@@ -21,6 +21,11 @@ import {
   JsonApiClient,
   LineAccumulator,
   ServerMessageReader,
+  WIRE_ABI_PRELUDE_LEN,
+  assertPeerAbiAccepted,
+  decodeWirePrelude,
+  encodeWirePrelude,
+  type WirePrelude,
   type JsonApiConnection,
   type ServerMessage,
   type TerminalMessage,
@@ -297,6 +302,18 @@ export class LiveClientStream {
   private cursor = 0;
   private wake: (() => void) | null = null;
   private failure: Error | null = null;
+  /**
+   * The server's wire-ABI prelude, buffered until complete.
+   *
+   * This harness drives {@link ServerMessageReader} directly rather than
+   * `ServerMessageChannel` (which owns the prelude for app code), so it has to do the gate itself
+   * — and doing it here is worth more than reusing the channel would be: it re-derives the
+   * handshake from the raw socket, which is what makes this a *live* check of the byte order
+   * rather than a check of one class calling another.
+   */
+  private preludePending: Uint8Array | null = new Uint8Array(0);
+  /** What the real server announced. Asserted by the live suite. */
+  peerAbi: WirePrelude | null = null;
 
   private constructor(socket: Socket) {
     this.socket = socket;
@@ -314,7 +331,13 @@ export class LiveClientStream {
   static connect(server: SpawnedServer): Promise<LiveClientStream> {
     return new Promise((resolveStream, rejectStream) => {
       const socket = createConnection({ path: server.clientSocket });
-      socket.once("connect", () => resolveStream(new LiveClientStream(socket)));
+      socket.once("connect", () => {
+        const stream = new LiveClientStream(socket);
+        // Ahead of the `Hello` frame, exactly as `src/protocol/abi.rs` requires: a connection that
+        // skips it is refused before its Hello is decoded.
+        socket.write(encodeWirePrelude());
+        resolveStream(stream);
+      });
       socket.once("error", rejectStream);
     });
   }
@@ -332,7 +355,12 @@ export class LiveClientStream {
     }
   }
 
-  private ingest(chunk: Uint8Array): void {
+  private ingest(rawChunk: Uint8Array): void {
+    const chunk = this.consumePrelude(rawChunk);
+    if (chunk === null || chunk.length === 0) {
+      this.wake?.();
+      return;
+    }
     try {
       this.messages.push(...this.reader.push(chunk));
     } catch (error) {
@@ -343,6 +371,53 @@ export class LiveClientStream {
       this.failure ??= wire;
     }
     this.wake?.();
+  }
+
+  /** Strips the server's prelude off the front of the stream, refusing an unidentified peer. */
+  private consumePrelude(chunk: Uint8Array): Uint8Array | null {
+    const pending = this.preludePending;
+    if (pending === null) {
+      return chunk;
+    }
+    const merged = new Uint8Array(pending.length + chunk.length);
+    merged.set(pending, 0);
+    merged.set(chunk, pending.length);
+    if (merged.length < WIRE_ABI_PRELUDE_LEN) {
+      this.preludePending = merged;
+      return null;
+    }
+    try {
+      const peer = decodeWirePrelude(merged);
+      assertPeerAbiAccepted(peer);
+      this.peerAbi = peer;
+    } catch (error) {
+      this.failure ??= error as Error;
+      this.preludePending = null;
+      return null;
+    }
+    this.preludePending = null;
+    return merged.subarray(WIRE_ABI_PRELUDE_LEN);
+  }
+
+  /** Waits until the server's prelude has arrived and been accepted. */
+  async waitForPeerAbi(timeoutMs: number): Promise<WirePrelude> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (this.peerAbi !== null) {
+        return this.peerAbi;
+      }
+      if (this.failure !== null) {
+        throw new Error(`server wire-ABI prelude never arrived: ${this.failure.message}`);
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`server wire-ABI prelude never arrived within ${timeoutMs}ms`);
+      }
+      await new Promise<void>((resolveWake) => {
+        this.wake = resolveWake;
+        setTimeout(resolveWake, 50);
+      });
+      this.wake = null;
+    }
   }
 
   send(bytes: Uint8Array): void {

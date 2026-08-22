@@ -45,7 +45,7 @@ import { frameHex, fromHex } from "./helpers.js";
 import {
   OBSERVE_TERMINAL_W1_P1,
   TERMINAL_SMALL_FULL,
-  WELCOME_OK_ANSI,
+  WELCOME_OK_ANSI_V21,
 } from "./vectors.js";
 
 // ---------------------------------------------------------------------------
@@ -435,7 +435,7 @@ describe("observe flow over a transport", () => {
       }),
     );
     // Welcome, split across two chunks: the transport promises bytes, never frames.
-    const welcomeFrame = fromHex(frameHex(WELCOME_OK_ANSI));
+    const welcomeFrame = fromHex(frameHex(WELCOME_OK_ANSI_V21));
     wire.emit(welcomeFrame.subarray(0, 3));
     wire.emit(welcomeFrame.subarray(3));
 
@@ -444,7 +444,7 @@ describe("observe flow over a transport", () => {
     assertWelcomeAccepted(welcome, { encoding: RenderEncoding.TerminalAnsi });
 
     channel.send(encodeObserveTerminalFrame("w1:p1"));
-    expect(Array.from(wire.written[1] as Uint8Array).slice(4)).toEqual(
+    expect(Array.from(wire.clientMessages[1] as Uint8Array).slice(4)).toEqual(
       Array.from(fromHex(OBSERVE_TERMINAL_W1_P1)),
     );
 

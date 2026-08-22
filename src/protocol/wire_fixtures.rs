@@ -28,6 +28,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::protocol::abi::{
+    self, WIRE_ABI_EPOCH, WIRE_ABI_FORK, WIRE_ABI_PRELUDE_LEN, WIRE_SCHEMA_FINGERPRINT,
+};
 use crate::protocol::{
     write_message, CellData, ClientKeybindings, ClientLaunchMode, ClientMessage, ClientSurfaceMode,
     CursorState, FrameData, RenderEncoding, ServerMessage, PROTOCOL_VERSION,
@@ -50,8 +53,16 @@ const INLINE_BYTES_LIMIT: usize = 50 * 1024;
 /// How much of an oversized `TerminalFrame.bytes` is still inlined, for eyeballing the preamble.
 const BYTES_PREFIX_LEN: usize = 512;
 
+fn protocol_docs_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/next/protocol")
+}
+
 fn artifact_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/next/protocol/fixtures.json")
+    protocol_docs_dir().join("fixtures.json")
+}
+
+fn abi_history_path() -> PathBuf {
+    protocol_docs_dir().join("abi-history.json")
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -125,6 +136,40 @@ fn fixture_terminal_message() -> ServerMessage {
         .prepare_frame(fixture_frame())
         .expect("a fresh terminal-ansi client always renders its first frame");
     prepared.message().clone()
+}
+
+/// The wire-ABI prelude — the 28 bytes that precede the `Hello` frame in every direction.
+///
+/// Pinned here for the same reason the `Hello` bytes are: a non-Rust client (and this repo's own
+/// integration tests, which have no lib target to link against) has to reproduce them exactly, and
+/// the `schema_fingerprint` field is a sha256 over the production types that nobody can derive by
+/// hand. Generated from `WirePrelude::local().encode()`, so it cannot drift from what the server
+/// actually reads.
+fn wire_abi_prelude_vector() -> Value {
+    let bytes = abi::WirePrelude::local().encode();
+    json!({
+        "name": "wire_abi_prelude",
+        "direction": "both",
+        "message": "WirePrelude",
+        "field_order": ["magic", "fork", "abi_epoch", "protocol_version", "schema_fingerprint"],
+        "fields": {
+            "magic": String::from_utf8_lossy(&abi::WIRE_ABI_MAGIC),
+            "fork": String::from_utf8_lossy(&WIRE_ABI_FORK),
+            "abi_epoch": WIRE_ABI_EPOCH,
+            "protocol_version": PROTOCOL_VERSION,
+            "schema_fingerprint": hex(&WIRE_SCHEMA_FINGERPRINT)
+        },
+        "framed_hex": hex(&bytes),
+        "note": "NOT bincode and NOT length-prefixed: a fixed 28-byte block, magic(4) + fork(8) + \
+                 abi_epoch(u32LE) + protocol_version(u32LE) + schema_fingerprint(8), written \
+                 before the first framed message by BOTH peers. It sits ahead of every bincode \
+                 decode on purpose — the first value the forks disagree on (ClientLaunchMode) is a \
+                 FIELD OF Hello, and the side that decodes Hello is the server, so a fingerprint \
+                 carried in Welcome would arrive after the mis-parse it was meant to prevent. The \
+                 magic reads as u32LE 1380208712, above both frame caps, so it can never collide \
+                 with a legacy peer's length prefix (src/protocol/abi.rs). A peer that sends no \
+                 prelude is rejected, not guessed at."
+    })
 }
 
 fn hello_vector() -> Value {
@@ -368,8 +413,25 @@ fn fixture_document() -> Value {
                      `HERDR_UPDATE_WIRE_FIXTURES=1 just test-one fixtures_are_current`.",
         "protocol_version": PROTOCOL_VERSION,
         "abi": {
-            "fork": "herdr-mx",
-            "note": "tags are fork-local; see mobile/.prd/03-blockers.md B1"
+            "fork": String::from_utf8_lossy(&WIRE_ABI_FORK),
+            "wire_abi_epoch": WIRE_ABI_EPOCH,
+            "schema_fingerprint": hex(&WIRE_SCHEMA_FINGERPRINT),
+            "prelude_len": WIRE_ABI_PRELUDE_LEN,
+            "accepted_peer_abis": abi::accepted_wire_abis()
+                .iter()
+                .map(|accepted| json!({
+                    "protocol_version": accepted.protocol_version,
+                    "wire_abi_epoch": accepted.abi_epoch,
+                    "schema_fingerprint": hex(&accepted.schema_fingerprint)
+                }))
+                .collect::<Vec<_>>(),
+            "note": "Tags are fork-local; see mobile/.prd/03-blockers.md B1. PROTOCOL_VERSION is \
+                     NOT a layout identifier — herdr-mx and upstream both shipped 20 with \
+                     different tags — so the layout identity is (fork, wire_abi_epoch, \
+                     schema_fingerprint), announced in the `wire_abi_prelude` vector below and \
+                     checked before any bincode is decoded. `accepted_peer_abis` is the \
+                     compatibility window (M0-b): an explicit table, not a version range. Its \
+                     history and the decision behind every row is docs/next/protocol/abi-history.json."
         },
         "framing": {
             "layout": "[u32LE payload_len][bincode payload]",
@@ -411,7 +473,8 @@ fn fixture_document() -> Value {
             hello_vector(),
             welcome_vector(),
             terminal_frame_vector(),
-            observe_terminal_vector()
+            observe_terminal_vector(),
+            wire_abi_prelude_vector()
         ],
         "nondeterminism": nondeterminism(),
         "live_cross_check": {
@@ -663,6 +726,201 @@ fn fixtures_decode_back_through_the_rust_codec() {
         frame.bytes.as_slice(),
         "everything after the header is the raw ANSI payload"
     );
+}
+
+// ---------------------------------------------------------------------------
+// M0-e: the repetition policy, as tests rather than prose
+// ---------------------------------------------------------------------------
+
+/// Reads the append-only ABI ledger.
+fn abi_history() -> Value {
+    let path = abi_history_path();
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    serde_json::from_str(&text)
+        .unwrap_or_else(|err| panic!("{} is not valid JSON: {err}", path.display()))
+}
+
+fn abi_history_entries() -> Vec<Value> {
+    abi_history()["entries"]
+        .as_array()
+        .expect("abi-history.json has an `entries` array")
+        .clone()
+}
+
+/// M0-e ①: an existing corpus is preserved, never overwritten.
+///
+/// Only the newest ABI may point at the live `fixtures.json` (which `fixtures_are_current`
+/// regenerates); every earlier one must point at a frozen file whose sha256 is pinned in the
+/// ledger. Regenerating over an archive, or forgetting to archive on an epoch bump, is a red here
+/// — which is the whole point, because the archived bytes are the only later evidence of what a
+/// dropped ABI actually put on the wire.
+#[test]
+fn archived_fixture_corpora_are_immutable() {
+    let entries = abi_history_entries();
+    assert!(!entries.is_empty(), "the ABI ledger must not be empty");
+
+    for (index, entry) in entries.iter().enumerate() {
+        let is_last = index + 1 == entries.len();
+        let fixtures = entry["fixtures"]
+            .as_str()
+            .expect("every ledger entry names a fixtures artifact");
+
+        if is_last {
+            assert_eq!(
+                fixtures, "fixtures.json",
+                "the newest ABI must point at the live corpus, not an archive"
+            );
+            assert!(
+                entry["fixtures_sha256"].is_null(),
+                "the live corpus is pinned by `fixtures_are_current`, not by a sha in the ledger"
+            );
+            continue;
+        }
+
+        assert_ne!(
+            fixtures, "fixtures.json",
+            "entry {index} is superseded but still points at the live corpus; archive it under \
+             docs/next/protocol/fixtures/ before bumping the epoch"
+        );
+        let path = protocol_docs_dir().join(fixtures);
+        let bytes = std::fs::read(&path).unwrap_or_else(|err| {
+            panic!(
+                "archived corpus {} is missing: {err}. An archived ABI's bytes are not \
+                 regenerable — restore it from git rather than deleting the ledger row.",
+                path.display()
+            )
+        });
+        let expected = entry["fixtures_sha256"]
+            .as_str()
+            .expect("an archived corpus must pin its sha256");
+        assert_eq!(
+            sha256_hex(&bytes),
+            expected,
+            "archived corpus {} was modified. STOP: archives are frozen. If you regenerated it, \
+             restore it from git; if the wire changed, that is a NEW epoch and a NEW file.",
+            path.display()
+        );
+    }
+}
+
+/// M0-e ②: a wire change must arrive as a declared ABI event, not as a quiet regeneration.
+///
+/// `wire_schema_fingerprint_is_pinned` (src/protocol/abi.rs) catches the layout move; this catches
+/// the half that a repin alone would skip — the ledger has to name the new epoch, the new
+/// fingerprint and a fresh corpus.
+#[test]
+fn abi_history_records_the_current_abi() {
+    let entries = abi_history_entries();
+    let current = entries.last().expect("the ledger has a newest entry");
+
+    assert_eq!(
+        current["protocol_version"].as_u64(),
+        Some(u64::from(PROTOCOL_VERSION)),
+        "the newest ledger entry must be this build's PROTOCOL_VERSION"
+    );
+    assert_eq!(
+        current["wire_abi_epoch"].as_u64(),
+        Some(u64::from(WIRE_ABI_EPOCH)),
+        "the newest ledger entry must be this build's WIRE_ABI_EPOCH"
+    );
+    assert_eq!(
+        current["schema_fingerprint"].as_str(),
+        Some(hex(&abi::wire_schema_fingerprint()).as_str()),
+        "the newest ledger entry must carry this build's live schema fingerprint. If this is red \
+         you changed the wire: bump WIRE_ABI_EPOCH, repin WIRE_SCHEMA_FINGERPRINT, archive the \
+         outgoing fixtures.json and APPEND a ledger entry."
+    );
+    assert_eq!(
+        current["accepted_by_current_server"].as_bool(),
+        Some(true),
+        "a server that does not accept its own ABI cannot accept anything"
+    );
+}
+
+/// M0-e ③: whether a superseded ABI is still accepted is an explicit, recorded decision.
+///
+/// The ledger and `abi::accepted_wire_abis()` are two statements of the same policy — one for
+/// humans, one the code actually enforces — so they are compared. Dropping an old ABI silently
+/// (removing the code row and leaving the ledger claiming it works, or the reverse) is a red.
+#[test]
+fn abi_history_mirrors_the_accepted_table() {
+    let entries = abi_history_entries();
+
+    for (index, entry) in entries.iter().enumerate() {
+        assert!(
+            entry["accepted_by_current_server"].is_boolean(),
+            "ledger entry {index} does not say whether this server still accepts it; silence is \
+             not a decision"
+        );
+        let decision = entry["decision"].as_str().unwrap_or_default();
+        assert!(
+            decision.len() > 40,
+            "ledger entry {index} must record WHY, not just what"
+        );
+    }
+
+    let declared: Vec<(u64, u64)> = entries
+        .iter()
+        .filter(|entry| entry["accepted_by_current_server"] == Value::Bool(true))
+        .map(|entry| {
+            (
+                entry["protocol_version"].as_u64().expect("protocol_version"),
+                entry["wire_abi_epoch"].as_u64().expect("wire_abi_epoch"),
+            )
+        })
+        .collect();
+    let enforced: Vec<(u64, u64)> = abi::accepted_wire_abis()
+        .iter()
+        .map(|accepted| {
+            (
+                u64::from(accepted.protocol_version),
+                u64::from(accepted.abi_epoch),
+            )
+        })
+        .collect();
+
+    let mut declared_sorted = declared.clone();
+    declared_sorted.sort_unstable();
+    let mut enforced_sorted = enforced.clone();
+    enforced_sorted.sort_unstable();
+    assert_eq!(
+        declared_sorted, enforced_sorted,
+        "docs/next/protocol/abi-history.json claims to accept {declared:?} but \
+         abi::accepted_wire_abis() enforces {enforced:?}. The window is a decision record and a \
+         code table; they are not allowed to disagree."
+    );
+}
+
+/// The prelude vector must be the bytes the server actually reads, not a transcription of them.
+#[test]
+fn prelude_vector_is_the_bytes_the_gate_reads() {
+    let document = fixture_document();
+    let vector = document["vectors"]
+        .as_array()
+        .expect("vectors array")
+        .iter()
+        .find(|vector| vector["name"] == "wire_abi_prelude")
+        .expect("wire_abi_prelude vector")
+        .clone();
+
+    let bytes = decode_hex(vector["framed_hex"].as_str().expect("prelude framed_hex"));
+    assert_eq!(bytes.len(), WIRE_ABI_PRELUDE_LEN);
+
+    // Feed them back through the production reader: the artifact is only useful to a hand-rolled
+    // client if the real gate accepts what it publishes.
+    match abi::read_peer_handshake_start(&mut bytes.as_slice()).expect("prelude parses") {
+        abi::PeerHandshakeStart::Prelude(peer) => {
+            assert_eq!(
+                abi::check_peer_abi(&peer),
+                abi::AbiCheck::Accepted,
+                "the published prelude must be one this build accepts"
+            );
+            assert_eq!(peer.protocol_version, PROTOCOL_VERSION);
+            assert_eq!(peer.abi_epoch, WIRE_ABI_EPOCH);
+        }
+        other => panic!("the published prelude did not parse as one: {other:?}"),
+    }
 }
 
 fn decode_hex(input: &str) -> Vec<u8> {

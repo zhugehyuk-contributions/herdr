@@ -50,11 +50,19 @@ import {
 } from "./messages.js";
 import { utf8Encode } from "./utf8.js";
 import {
+  AbiMismatchError,
   UnsupportedVariantError,
   desynchronizesScreen,
   type LayoutMismatchError,
   type WireError,
 } from "./errors.js";
+import {
+  WIRE_ABI_PRELUDE_LEN,
+  assertPeerAbiAccepted,
+  decodeWirePrelude,
+  encodeWirePrelude,
+  type WirePrelude,
+} from "./abi.js";
 import { ByteCursor } from "./cursor.js";
 import { ClientMessageTag, LENGTH_PREFIX_BYTES } from "./constants.js";
 import { WireLayoutProbe, type WireLayoutProbeOptions } from "./layoutProbe.js";
@@ -747,16 +755,24 @@ export interface ServerMessageChannelOptions {
  * `screenDesynced` (`src/stream.ts`); both layers classify a desync with the same predicate,
  * `desynchronizesScreen` (`src/errors.ts`), so only the *remedy* differs.
  *
- * ## The wire-layout probe (what a matching `PROTOCOL_VERSION` does not buy)
+ * ## Two layers of fork-skew defence, in this order
  *
- * `assertWelcomeAccepted` (`src/messages.ts`) compares versions, and `src/constants.ts:4-9` records
- * that mx and upstream both report 20 while disagreeing on `ServerMessage::Terminal` (13 here, 2
- * upstream) — so the handshake passes against a peer whose every terminal frame this codec then
- * skips. This class is where that becomes detectable: it holds the write end, so it knows when
- * `ObserveTerminal` went out (the probe's premise), and it sees every frame that fails to decode
- * (the probe's evidence). {@link WireLayoutProbe} owns the rule; the verdict arrives once, on
- * `onError`, and as {@link ServerMessageChannel.layoutMismatch}. It is an **inference** — see
- * {@link LayoutMismatchError}.
+ * 1. **The wire-ABI prelude (`src/abi.ts`), and it comes first.** On open this class writes its own
+ *    28-byte prelude and refuses to hand the peer's bytes to {@link FrameReader} until the peer's
+ *    prelude has been read and accepted. A refusal is {@link AbiMismatchError}, delivered once on
+ *    `onError` and readable as {@link ServerMessageChannel.abiMismatch}, and **nothing of the
+ *    peer's stream is ever decoded** — which is the whole difference from what came before.
+ *    Placing it here rather than in the caller is what makes it structural: `Hello` is a caller's
+ *    message, the prelude is the channel's.
+ * 2. **The behavioural probe ({@link WireLayoutProbe}), as a backstop.** `assertWelcomeAccepted`
+ *    (`src/messages.ts`) compares only versions, and `src/constants.ts` records why that was never
+ *    enough (mx and upstream both shipped 20 with `ServerMessage::Terminal` at 13 and 2). The
+ *    prelude closes that hole for peers that *announce* honestly; the probe still watches how the
+ *    peer *behaves*, because a claim and a behaviour can disagree. This class holds the write end,
+ *    so it knows when `ObserveTerminal` went out (the probe's premise) and sees every frame that
+ *    fails to decode (the probe's evidence). Its verdict is an **inference** — see
+ *    {@link LayoutMismatchError} — and against a plain upstream server it should now never be
+ *    reached, because layer 1 refuses that peer first.
  *
  * ## Handler calls are isolated
  *
@@ -787,6 +803,18 @@ export class ServerMessageChannel {
   private fullFrameRequests = 0;
   /** The fork-skew alarm. Armed by `ObserveTerminal`, settled by the first decoded `Terminal`. */
   private readonly probe: WireLayoutProbe;
+  /**
+   * The peer's wire-ABI prelude, buffered until all {@link WIRE_ABI_PRELUDE_LEN} bytes are in.
+   *
+   * `null` once the prelude has been accepted and the stream is pure frames. A bridge chunk can
+   * split anywhere, including inside the prelude, so this is an accumulator rather than a
+   * "first chunk" assumption — the same lesson `FrameReader` already encodes for length prefixes.
+   */
+  private preludePending: Uint8Array | null = new Uint8Array(0);
+  /** Set once the peer's announced ABI was refused; terminal, like a framing failure. */
+  private abiFailure: AbiMismatchError | null = null;
+  /** The peer's announced ABI, once accepted. */
+  private acceptedPeerAbi: WirePrelude | null = null;
   /** Set once the probe has condemned the connection; terminal, exactly like a framing failure. */
   private layoutFailure: LayoutMismatchError | null = null;
   private readonly firstTerminalTimeoutMs: number;
@@ -815,6 +843,15 @@ export class ServerMessageChannel {
         self.notify(handlers.onClose, close);
       },
     });
+    // The wire-ABI prelude goes out here rather than being left to the caller, and that placement
+    // is the point: the gate has to be structural. A caller that forgot it would be rejected by
+    // the server with a message about a prelude it never knew existed, and — worse — a *future*
+    // caller that skipped it against some other peer is exactly the mis-parse `./abi.ts` exists to
+    // prevent. Callers keep sending `encodeHelloFrame(...)` and never learn this happened.
+    const written = self.channel.write(encodeWirePrelude());
+    if (written !== undefined) {
+      await written;
+    }
     return self;
   }
 
@@ -892,7 +929,81 @@ export class ServerMessageChannel {
     return this.lastCallbackError;
   }
 
-  private ingest(chunk: Uint8Array): void {
+  /**
+   * The peer's announced wire ABI, once its prelude has arrived and been accepted.
+   *
+   * Public because "which build is on the other end" is the first question of every wire bug, and
+   * because a caller that wants to display it should not have to re-parse the stream.
+   */
+  get peerAbi(): WirePrelude | undefined {
+    return this.acceptedPeerAbi ?? undefined;
+  }
+
+  /**
+   * The ABI verdict, when the peer announced a layout this codec does not decode — or none.
+   *
+   * The **proven** sibling of {@link ServerMessageChannel.layoutMismatch}: read off the peer's own
+   * prelude rather than inferred from traffic shape, and reached before a single frame is decoded.
+   */
+  get abiMismatch(): AbiMismatchError | undefined {
+    return this.abiFailure ?? undefined;
+  }
+
+  /**
+   * Consumes the peer's prelude off the front of the stream, returning what is left.
+   *
+   * Returns `null` when the prelude is still incomplete (feed me more) or has been refused. The
+   * bytes are held rather than parsed early because a bridge chunk boundary can fall anywhere; a
+   * "the first chunk is the prelude" shortcut is the same bug class `FrameReader` was written to
+   * avoid.
+   */
+  private consumePrelude(chunk: Uint8Array): Uint8Array | null {
+    const pending = this.preludePending;
+    if (pending === null) {
+      return chunk;
+    }
+    const merged = new Uint8Array(pending.length + chunk.length);
+    merged.set(pending, 0);
+    merged.set(chunk, pending.length);
+    if (merged.length < WIRE_ABI_PRELUDE_LEN) {
+      this.preludePending = merged;
+      return null;
+    }
+    try {
+      const peer = decodeWirePrelude(merged);
+      assertPeerAbiAccepted(peer);
+      this.acceptedPeerAbi = peer;
+    } catch (error) {
+      // Terminal, and never a frame: nothing of this peer's stream is interpreted after a refusal,
+      // which is the guarantee that separates this from `WireLayoutProbe` (which only ever fires
+      // after frames have already been read).
+      const abi =
+        error instanceof AbiMismatchError
+          ? error
+          : new AbiMismatchError(undefined, `wire-ABI prelude is unreadable: ${String(error)}`);
+      this.abiFailure = abi;
+      this.preludePending = null;
+      this.cancelFirstTerminalDeadline();
+      this.notify(this.handlers.onError, abi);
+      return null;
+    }
+    this.preludePending = null;
+    return merged.subarray(WIRE_ABI_PRELUDE_LEN);
+  }
+
+  private ingest(rawChunk: Uint8Array): void {
+    if (this.abiFailure !== null) {
+      return;
+    }
+    const consumed = this.consumePrelude(rawChunk);
+    if (consumed === null) {
+      return;
+    }
+    const chunk = consumed;
+    if (chunk.length === 0 && this.preludePending === null) {
+      // A chunk that was nothing but the prelude. Not an error, not a frame.
+      return;
+    }
     if (this.framingFailure !== null || this.layoutFailure !== null || this.closed) {
       // Both terminal, and "terminal" has to mean it. A poisoned `FrameReader` rethrows the *same*
       // error object on every later push, salvage included (`src/framing.ts:53-56`), so without
@@ -983,7 +1094,8 @@ export class ServerMessageChannel {
       this.channel === null ||
       this.closed ||
       this.framingFailure !== null ||
-      this.layoutFailure !== null
+      this.layoutFailure !== null ||
+      this.abiFailure !== null
     ) {
       return;
     }

@@ -2,17 +2,24 @@
  * Wire constants for the herdr client protocol.
  *
  * ⚠️ THESE ORDINALS ARE FORK-LOCAL (herdr-mx). `PROTOCOL_VERSION` is *not* a layout identifier:
- * herdr-mx and upstream/master both report `PROTOCOL_VERSION = 20` while disagreeing on exactly
+ * herdr-mx and upstream/master both reported `PROTOCOL_VERSION = 20` while disagreeing on exactly
  * the tags this codec depends on — `ServerMessage::Terminal` is 13 on mx but 2 upstream, and
  * `ClientLaunchMode::TerminalAttach` is 1 on mx but 2 upstream (`AppDirectGraphics` is inserted in
  * the middle). See `mobile/.prd/03-blockers.md` B1. A version match therefore does NOT prove the
- * peer speaks this layout; talking to an upstream server will silently mis-parse.
+ * peer speaks this layout; talking to an upstream server would silently mis-parse.
+ *
+ * ✅ **That hole is now closed by `./abi.ts`, not by this file.** Both peers announce
+ * `(fork, wire ABI epoch, schema fingerprint)` in a fixed prelude ahead of all bincode, and
+ * `ServerMessageChannel` refuses a peer whose announcement is not in the accepted table. The
+ * version below is still checked (it is the server's own negotiation rule) but it is the second
+ * gate, not the first.
  *
  * Every ordinal in this file is transcribed from the mx tree; keep them all here so a fork bump is
  * a single-file diff.
  *
  * Sources (herdr repo root):
- *   src/protocol/wire.rs:23   PROTOCOL_VERSION = 20
+ *   src/protocol/abi.rs       WIRE_ABI_* + WIRE_SCHEMA_FINGERPRINT (transcribed in ./abi.ts)
+ *   src/protocol/wire.rs:23   PROTOCOL_VERSION = 21
  *   src/protocol/wire.rs:27   MAX_FRAME_SIZE = 2 MiB
  *   src/protocol/wire.rs:32   MAX_GRAPHICS_FRAME_SIZE = 32 MiB
  *   src/protocol/wire.rs:45   LENGTH_PREFIX_BYTES = 4
@@ -25,8 +32,15 @@
  *   src/protocol/wire.rs:771  struct TerminalFrame
  */
 
-/** `src/protocol/wire.rs:23`. Exact equality is required by the server's negotiation (`:1225`). */
-export const PROTOCOL_VERSION = 20;
+/**
+ * `src/protocol/wire.rs` `PROTOCOL_VERSION`. Exact equality is required by the server's
+ * negotiation (`check_client_version`).
+ *
+ * v21: the handshake now opens with the 28-byte wire-ABI prelude (`./abi.ts`,
+ * `src/protocol/abi.rs`). The handshake's byte stream changed, so 20 must not name two different
+ * handshakes — that is the same "one integer, two layouts" defect this file's header describes.
+ */
+export const PROTOCOL_VERSION = 21;
 
 /** Length of the `u32` little-endian frame length prefix (`src/protocol/wire.rs:45`). */
 export const LENGTH_PREFIX_BYTES = 4;

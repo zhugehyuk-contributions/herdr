@@ -15,7 +15,73 @@ static INIT: Once = Once::new();
 static CLEANUP_GUARD: OnceLock<CleanupGuard> = OnceLock::new();
 const WATCHDOG_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const RUNTIME_OWNER_MARKER: &str = ".herdr-test-owner-pid";
-pub const CURRENT_PROTOCOL: u32 = 20;
+pub const CURRENT_PROTOCOL: u32 = 21;
+
+/// Length of the wire-ABI prelude (`src/protocol/abi.rs` `WIRE_ABI_PRELUDE_LEN`).
+pub const WIRE_ABI_PRELUDE_LEN: usize = 28;
+
+/// The 28 prelude bytes every client must send before its `Hello`, read out of the generated
+/// corpus.
+///
+/// Hand-rolling them is not an option: the block ends in a sha256 over the production wire types
+/// (`abi::wire_schema_fingerprint`), which no test can derive by hand — and hard-coding the digest
+/// would put a second, silently-stale copy of the ABI in the test suite. `fixtures.json` is
+/// generated from `WirePrelude::local().encode()` and kept current by `fixtures_are_current`, so
+/// reading it here means these tests speak the same ABI the server enforces, or fail loudly.
+pub fn wire_abi_prelude() -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/next/protocol/fixtures.json");
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let document: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|err| panic!("{} is not valid JSON: {err}", path.display()));
+    let hex = document["vectors"]
+        .as_array()
+        .expect("fixtures.json has a vectors array")
+        .iter()
+        .find(|vector| vector["name"] == "wire_abi_prelude")
+        .and_then(|vector| vector["framed_hex"].as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "{} has no wire_abi_prelude vector; regenerate it with \
+                 HERDR_UPDATE_WIRE_FIXTURES=1",
+                path.display()
+            )
+        })
+        .to_owned();
+    assert!(hex.len().is_multiple_of(2), "prelude hex has an odd length");
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("valid hex"))
+        .collect();
+    assert_eq!(bytes.len(), WIRE_ABI_PRELUDE_LEN);
+    bytes
+}
+
+/// Sends the wire-ABI prelude. Must precede the `Hello` frame on every client connection.
+pub fn send_wire_abi_prelude(stream: &mut UnixStream) -> Result<(), String> {
+    stream
+        .write_all(&wire_abi_prelude())
+        .map_err(|e| format!("write wire-ABI prelude: {e}"))?;
+    stream.flush().map_err(|e| format!("flush prelude: {e}"))
+}
+
+/// Reads the server's prelude and asserts it is the one this build speaks.
+///
+/// Consuming it is not optional: it sits ahead of the `Welcome` frame, so a reader that skipped it
+/// would take the magic for a length prefix.
+pub fn expect_wire_abi_prelude(stream: &mut UnixStream) -> Result<(), String> {
+    let mut buf = [0u8; WIRE_ABI_PRELUDE_LEN];
+    stream
+        .read_exact(&mut buf)
+        .map_err(|e| format!("read server wire-ABI prelude: {e}"))?;
+    if buf.as_slice() != wire_abi_prelude().as_slice() {
+        return Err(format!(
+            "server announced a different wire ABI than this test speaks: {:02x?}",
+            buf
+        ));
+    }
+    Ok(())
+}
 
 pub fn register_spawned_herdr_pid(pid: Option<u32>) {
     let Some(pid) = pid else {
@@ -295,10 +361,12 @@ pub fn client_handshake_with(
             &encode_varint_u32(launch_mode),
         ],
     );
+    send_wire_abi_prelude(stream)?;
     let framed = frame_message(&hello_payload);
     stream.write_all(&framed).map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())?;
 
+    expect_wire_abi_prelude(stream)?;
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
     let len = u32::from_le_bytes(len_buf) as usize;

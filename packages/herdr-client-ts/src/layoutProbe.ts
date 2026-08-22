@@ -62,6 +62,27 @@ export interface WireLayoutProbeOptions {
  *
  * ⚠️ The verdict is an **inference**; see {@link LayoutMismatchError} for exactly what it does and
  * does not establish.
+ *
+ * ## Its role changed when the ABI prelude landed (M0-a)
+ *
+ * This class was written as the strongest signal a client-side codec could produce, and its own
+ * docs said so: *"the real solution is for the server to carry an ABI fingerprint … outside this
+ * package"*. **That solution now exists** — `src/abi.ts`, checked by `ServerMessageChannel` before
+ * a single frame is decoded — so this is no longer the primary detector and must not be read as
+ * one.
+ *
+ * It is kept, deliberately, because the two ask different questions:
+ *
+ * | | question | evidence | when |
+ * |---|---|---|---|
+ * | `AbiMismatchError` (`src/abi.ts`) | what does the peer **claim** to be? | the peer's own prelude | before any decode |
+ * | this probe | how does the peer **behave**? | frames that fail to decode | after `ObserveTerminal` |
+ *
+ * A claim and a behaviour can disagree, and the case where they do is precisely the one the
+ * prelude is weakest at: a build that announces this exact ABI and then emits something else (a
+ * locally patched enum, a proxy rewriting frames, a same-fingerprint collision). Against a plain
+ * upstream server the probe should now never fire, because the prelude refuses that peer first —
+ * if it *does* fire, the announcement was false, and that is worth an error of its own.
  */
 export class WireLayoutProbe {
   private readonly repeats: number;
