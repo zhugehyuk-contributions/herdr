@@ -191,11 +191,17 @@ export class SshHerdrTransport implements HerdrTransport {
        * leave a listener behind, because in both of them ssh2 emits `error` more than once:
        *
        *  - after `ready`, every later failure of the connection (nothing left to reject);
-       *  - after a pre-handshake death, a *second* event — measured, `read ECONNRESET` and then
-       *    `Connection lost before handshake` from the socket's `close` handler
-       *    (`ssh2/lib/client.js:753` via `:815`). This is the shape a phone with no signal produces
-       *    on every dial, so a reconnect loop hits it repeatedly; `test/sshTransportConnect.test.ts`
-       *    reproduces it against real ssh2.
+       *  - after an *established* socket dies pre-handshake, a *second* event — measured,
+       *    `read ECONNRESET` and then `Connection lost before handshake` from the socket's `close`
+       *    handler (`ssh2/lib/client.js:753` via `:815`). This is the shape a phone that loses
+       *    signal mid-dial produces, so a reconnect loop hits it repeatedly;
+       *    `test/sshTransportConnect.test.ts` reproduces it against real ssh2.
+       *
+       * How many events a given death produces is *not* fixed, which is why this absorbs whatever
+       * follows instead of expecting a count: a reset that beats the client's own `connect(2)`
+       * yields two events on macOS but only one on Linux, where the connect itself fails and ssh2
+       * never sets `wasConnected` (`ssh2/lib/client.js:765`), the guard on the second emit at
+       * `:751`. Measured on both, 100 dials each — see the header of that test file.
        *
        * Absorbed is not ignored: the first error still settles the promise, and every one after it
        * is counted and offered to {@link SshHerdrTransportOptions.onSuppressedError}.
