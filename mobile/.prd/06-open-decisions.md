@@ -125,23 +125,213 @@ ssh 라이브러리가 정하고 있었고, 아무도 그걸 읽지 않았다.
 - 재현: `npm run typecheck:ios` (Swift 5, green) / `Package.swift`의 `swiftLanguageMode(.v5)`를
   빼면 red.
 
-## 결정 7 — ssh 프로토콜 구현의 실제 출처 (2026-08-22, 공급망 실측 — **유저 확인 필요**)
+## 결정 7 — ssh 의존성 정확 핀 = **확정** (2026-08-23, 선택지 ② 채택)
 
-문서(이 `.prd` 포함)는 하부가 `apple/swift-nio-ssh`라고 적어왔다. **거짓이다** `[v]`.
+이전 판은 "문서가 하부를 `apple/swift-nio-ssh`라고 적어왔는데 거짓이다"까지 밝히고 선택지 4개를
+열어둔 채 멈춰 있었다. **이번 판이 그것을 닫는다.** 채택 = **②(Citadel과 nio-ssh를 정확 핀으로 고정)**.
+③/④는 아래 §계보에서 근거가 약해졌고, ①은 암호 경로에 부동 홉 둘을 남기는 선택이라 기각한다.
 
-- Citadel 0.12.1 `Package.swift:20` = `https://github.com/Wellz26/swift-nio-ssh.git`,
-  범위 `"0.3.4" ..< "0.4.0"`, 해석 결과 **0.3.6**.
-- 그 저장소: `Joannis/swift-nio-ssh`(Citadel 저자 본인 포크)의 **포크**, 2026-04-02 생성,
-  **같은 날 1회 push 후 커밋 없음**, 스타 0. Citadel PR #127(*"Fix: Add swift-nio dependency for
-  Mac Catalyst builds"*, 2026-04-04 머지)로 들어왔다.
-- 대조: `apple/swift-nio-ssh`는 2026-07-28까지 활발, 스타 515.
-- **왜 중요한가**: 이 앱은 유저의 ssh 개인키를 쥔다. 그 키로 말하는 프로토콜 구현이 (a) 개인 포크에서
-  오고 (b) `0.3.4 ..< 0.4.0` 부동 범위라 새 0.3.x가 자동 채택되며 (c) 우리 쪽 Citadel 핀도
-  `upToNextMinorVersion`이라 **암호 경로에 부동 홉이 둘**이다.
-- 선택지: ①현행 유지(가장 싸다, 위 사실을 알고 받아들임) ②Citadel과 nio-ssh를 **정확 핀**으로
-  고정(부동 홉 제거, 업데이트를 명시적 결정으로) ③`apple/swift-nio-ssh` 직접 사용(결정 5의 대안과
-  같은 비용 — `withExec` 등을 직접 구현) ④Citadel 상류에 apple 저장소 복귀를 제기.
-- **권고: ②를 지금, ③/④는 실기기 검증 이후.** 판단은 유저 몫이라 결정으로 올린다.
+이 결정을 **지금** 하는 이유는 타이밍이다: 이 머신엔 Xcode가 없어(`xcode-select -p` =
+CommandLineTools) iOS 빌드가 불가능하고, 그래서 오늘 정하는 비용이 0이다. 첫 iOS 빌드일에 정하려
+하면 빌드가 깨진 채로 버전 조합을 탐색하게 된다.
+
+### 확정 핀
+
+| 패키지 | 요구사항 | 리비전 |
+|---|---|---|
+| `orlandos-nl/Citadel` (직접) | `exactVersion 0.12.1` | `ae8562f895de06ccb86fdb1cbb65fd99c8976e12` |
+| `Wellz26/swift-nio-ssh` (Citadel의 전이 의존, **루트에서 덮어쓴다**) | `revision` 직접 핀 | `a05e6bbe6b141ee68da3030e00275504c0595d4d` |
+
+리비전 출처 = `modules/herdr-ssh/typecheck/ios/Package.resolved`(커밋돼 있음). 그 파일은 하부 8개
+(swift-nio 2.101.3 · swift-crypto 3.15.1 · BigInt 5.7.0 …)까지 리비전 단위로 이미 적고 있다.
+
+### 왜 0.12.1인가 — 고른 게 아니라 강제됐다
+
+- `withExec`는 **0.12.1에서 처음 들어왔다**: 릴리즈 노트 본문 첫 줄이 *"add `withExec` for 8-bit-safe
+  SSH exec channels by @thepaul in .../pull/123"* (published **2026-04-04**,
+  <https://github.com/orlandos-nl/Citadel/releases>) `[v]`. 0.12.0 이하에는 pty 없는 exec 채널의
+  8비트 안전 경로가 없다 → 계약(§exec 증거)을 만족하는 **하한**이 0.12.1.
+- 그리고 0.12.1이 **최신**이다 — 2026-08-23 확인, 4.5개월간 후속 릴리즈 0건 `[v]`.
+- 하한과 상한이 같은 점 하나다. "최신이 아니라 가장 안정적인 것"이라는 선택 여지가 애초에 없다.
+
+### exec 채널 증거 (README 인용이 아니라 시그니처 + 컴파일)
+
+체크아웃 실물 기준 (`typecheck/ios/.build/checkouts/Citadel`, 0.12.1 태그):
+
+- **시그니처** `Sources/Citadel/TTY/Client/TTY.swift:456`
+  `public func withExec(_ command: String, environment: [SSHChannelRequestEvent.EnvironmentRequest] = [], perform: (_ inbound: TTYOutput, _ outbound: TTYStdinWriter) async throws -> Void) async throws` `[v]`
+- **pty 없음**: `withExec` → `_executeCommandStream(mode: .command(command))` → `SSHChannelRequestEvent.ExecRequest`
+  (`TTY.swift:334`). pty 경로는 `.pty` / `.tty`로 별개 분기(`TTY.swift:266`)다 — 즉 pty 부재가 옵션이
+  아니라 다른 함수다 `[v]`.
+- **stdout/stderr 분리**: `public enum ExecCommandOutput { case stdout(ByteBuffer); case stderr(ByteBuffer) }`
+  (`TTY.swift:47-51`) `[v]`.
+- **exit status**: `case let status as SSHChannelRequestEvent.ExitStatus: onOutput(context.channel, .exit(status.exitStatus))`
+  (`TTY.swift:134-135`) → `public struct CommandFailed: Error { public let exitCode: Int }` (`TTY.swift:173-176`) `[v]`.
+- **리시트**: `npm run typecheck:ios` **2026-08-23 green** — `Build complete! (6.25s)` /
+  `herdr-ssh: HerdrSshSession.swift type-checks against Citadel 0.12.1` `[v]`. 우리 코드가 위 네 가지를
+  전부 실제로 호출하며 컴파일된다(`ios/HerdrSshSession.swift:192-213`). README보다 강한 증거다.
+
+**단, exec 계약에 구멍이 둘 있다 — 라이브러리가 못 주는 것이다:**
+
+1. **`exit-signal`이 없다.** `NativeChannelClose.signal`은 iOS에서 영구히 `null`이다. nio-ssh에는
+   `SSHChannelRequestEvent.ExitSignal`이 존재하는데(`swift-nio-ssh/Sources/NIOSSH/Child Channels/ChildChannelUserEvents.swift:168`)
+   Citadel의 `ExecCommandHandler`가 `ExitStatus`만 매치하고(`TTY.swift:134`) 신호는 버린다 —
+   Citadel 전체에서 `ExitSignal|exitSignal` grep **0건** `[v]`.
+2. **정상 종료의 exit code가 안 온다.** `_executeCommandStream`은 `exitCode != 0`일 때만 `CommandFailed`를
+   던지고 0이면 스트림을 조용히 끝낸다(`TTY.swift:285-291`). `HerdrSshSession.swift:209-210`은
+   `CommandFailed`에서만 exitCode를 읽으므로 **exit 0 → `exitCode: nil`**. Android 경로와 값이 갈릴
+   수 있다(미검증, §확인 못 한 것 4).
+
+### 키 포맷 — **Android와 패리티가 없다** (이번 조사의 최대 발견)
+
+| 키 형태 | Android (sshj 0.40.0 + `loadKeys`) | iOS (Citadel 0.12.1) |
+|---|---|---|
+| ed25519, openssh-key-v1 | ✅ | ✅ |
+| RSA, openssh-key-v1 | ✅ | 파싱은 되나 **인증이 죽는다**(아래) |
+| RSA, 고전 PEM (`ssh-keygen -m PEM`) | ✅ | ❌ **컨테이너 단계에서 거부** |
+| 암호화 키(passphrase) | ✅ | 라이브러리는 지원, **우리 코드가 거부** |
+
+- **고전 PEM 거부의 위치**: `Citadel/Sources/Citadel/OpenSSHKey.swift:307-313` —
+  `init(string key:)`가 `-----BEGIN OPENSSH PRIVATE KEY-----` 접두와 `-----END …-----` 접미를 하드
+  가드하고 아니면 `InvalidOpenSSHKey.invalidOpenSSHBoundary`를 던진다. `Curve25519.Signing.PrivateKey(sshEd25519:)`
+  (`SSHCert.swift:74`)와 `Insecure.RSA.PrivateKey(sshRsa:)`(`SSHCert.swift:108`)가 **둘 다** 이 경로를
+  탄다 `[v]`. **Android에서 `loadKeys`로 고친 그 문제의 정확한 거울상이다** — Android는 고전 PEM만
+  읽었고, iOS는 openssh-key-v1만 읽는다. 이번엔 라이브러리 밖에 다른 프로바이더가 없어 같은 방식의
+  수리가 불가능하다.
+- **RSA는 컨테이너를 통과해도 서명에서 죽는다**: `rsa-sha2` 문자열이 Citadel 0.12.1과 nio-ssh 0.3.6
+  소스 전체에 **0건** `[v]`. 서명 접두는 `ssh-rsa`(SHA-1) 고정 —
+  `Citadel/Sources/Citadel/Algorithms/RSA.swift:141` `public static let signaturePrefix = "ssh-rsa"`.
+  OpenSSH **8.8**(2021-09-26)이 *"disables RSA signatures using the SHA-1 hash algorithm by default"*
+  라고 못박았으므로(<https://www.openssh.org/txt/release-8.8>) **modern sshd 상대로 iOS의 RSA
+  공개키 인증은 실패한다.** RFC 8332 지원은 Citadel PR #131 ← Wellz26 PR #3에 **아직 open**이다.
+- **따라서 iOS는 실질적으로 ed25519 전용이다.** 이건 핀 결정의 부산물이 아니라 **B11급 사용자 대면
+  제약**이므로 온보딩이 `ssh-keygen -t ed25519`를 지시해야 하고, RSA만 가진 유저는 iOS에서 막힌다.
+  → **이 한 줄이 결정 7에서 유일하게 유저 확인이 남는 항목이다** (핀 자체는 가역이라 확인 불요).
+- 암호화 키는 라이브러리 한계가 아니다: Citadel의 두 init 모두 `decryptionKey: Data? = nil`을 받는데
+  (`SSHCert.swift:74`·`:108`) `HerdrSshSession.swift:68-72`가 스스로 거부한다. 우리 선택이므로 언제든
+  되돌릴 수 있다.
+
+### 최소 iOS 버전 = 17.0 (결정 5와 정합)
+
+- Citadel 0.12.1 `Package.swift:8-11` = `platforms: [.macOS(.v14), .iOS(.v17)]`, tvOS 미선언 `[v]`.
+  **main 브랜치도 동일** (2026-08-23 raw 확인) — 0.12.x 계열에서 내려갈 여지가 없다.
+- `withExec`에 붙은 `@available(macOS 15.0, *)`(`TTY.swift:455`)는 macOS에만 거는 제약이고 와일드카드가
+  나머지 플랫폼을 덮으므로 **iOS에는 추가 제약이 아니다**. 타입체크 하네스만 `.macOS(.v15)`가 필요한
+  이유가 이것이다(`typecheck/ios/Package.swift:5`).
+- `ios/HerdrSsh.podspec`은 이미 `:ios => '17.0'`으로 정정돼 있다.
+- ⚠️ `app.json`의 iOS 배포 타깃과의 대조는 **하지 않았다** — 다른 에이전트가 편집 중이라 열지 않았다
+  (§확인 못 한 것 1).
+- 참고: `apple/swift-nio-ssh` 0.15.0은 `.macOS(.v10_15), .iOS(.v13), .watchOS(.v6), .tvOS(.v13)`
+  (2026-08-23 raw 확인) `[v]` — 결정 5가 적은 "직접 쓰면 iOS 13까지 내려간다"는 사실이다.
+
+### `Wellz26/swift-nio-ssh` — 왜 포크이고, 무엇을 고쳤고, 어디에 고정하나
+
+- **왜 포크인가 = 우리 선택이 아니다.** Citadel **0.12.1과 main 둘 다** `Package.swift:20`에서
+  `.package(url: "https://github.com/Wellz26/swift-nio-ssh.git", "0.3.4" ..< "0.4.0")`를 선언한다
+  (main은 2026-08-23 raw 확인 `[v]`). apple 저장소는 Citadel의 의존성 목록에 없다. 우리에게 열린
+  선택은 "apple을 쓸까"가 아니라 **"이 홉을 핀할까"**뿐이다.
+- **무엇을 고쳤나 = 딱 한 줄.** `git show a05e6bb --stat` = `Package.swift | 1 +`,
+  `1 file changed, 1 insertion(+)` — NIOSSH 타깃에 `.product(name: "NIO", package: "swift-nio")` 추가.
+  커밋 메시지 *"fix: add NIO product dependency to NIOSSH target for Mac Catalyst compatibility"*,
+  2026-04-02 `[v]`. Citadel PR #127로 상류에 들어왔다.
+- **계보 정정**: 이전 판은 이를 "`Joannis/swift-nio-ssh`의 포크"라고 적었고 그건 맞다 —
+  GitHub API `parent.full_name` = `source.full_name` = **`Joannis/swift-nio-ssh`**(Citadel 저자 본인
+  저장소, default branch `citadel2`), created **2026-04-02**, pushed **2026-04-02**, ★0 `[v]`.
+  다만 강조점이 바뀐다: **코드 본체는 Citadel 저자 계보이고, 이 개인 포크가 얹은 것은 위 한 줄뿐**이다.
+  "개인 포크에서 온 암호 구현"이라는 표현은 과장이었다.
+  (Joannis 쪽은 오히려 더 정체돼 있다 — 마지막 push **2025-09-16** `[v]`.)
+- **버전 번호가 거짓말을 한다** `[v]` — 이 결정을 *리비전* 핀으로 미는 결정적 근거:
+  | 태그 | 커밋 | 날짜 |
+  |---|---|---|
+  | `0.3.4` | `b93961a` | 2025-07-14 |
+  | `0.3.5` | `791437a` | 2025-09-15 |
+  | `0.4.0` | `c997b6b` | 2025-09-16 |
+  | `0.3.6` | `a05e6bb` | **2026-04-02** |
+  `c997b6b`(=`0.4.0`)는 `a05e6bb`(=`0.3.6`)의 **부모**다. 즉 **`0.3.6`이 `0.4.0`보다 새 내용**이며,
+  Citadel의 `..< "0.4.0"` 범위 안에 들어가려고 상위 내용을 낮은 번호로 재태깅한 것이다.
+  → **이 저장소에서 범위 제약은 의미가 없다. 정직한 핀은 리비전뿐이다.**
+  (herdr가 프로토콜에서 이미 배운 것과 같은 교훈 — 버전 정수는 레이아웃/내용 식별자로서 죽는다.)
+- **포크는 죽었지만 상류다**: 2026-04-02 이후 push 0. 그런데 open PR 3건이 걸려 있고
+  (#1 keyboard-interactive · **#2 닫힌 자식 채널의 window-adjust `preconditionFailure` 크래시 픽스** ·
+  #3 RFC 8332 기반작업), **Citadel의 open PR #130·#131이 각각 그 PR들에 의존한다고 본문에 명시**한다 `[v]`.
+  → 선택지 **④(apple 복귀 제기)는 실효성이 낮다** — Citadel 로드맵 자체가 이 포크 위에 서 있다.
+  → 그리고 #2는 우리 시나리오(채널을 반복해 여닫는 모바일 transport)와 정확히 겹치는 **프로세스
+  종료급 크래시**다. 핀한다는 것은 그 크래시도 함께 고정한다는 뜻이며, 실기기 단계의 관찰 대상이다.
+
+### 핀을 어디에 어떻게 기록하는가 — SwiftPM으로 실측했다 (Xcode 불필요)
+
+지금 부동 홉은 둘이다: ① `mobile/plugins/with-herdr-ssh-spm.js`의 `kind: 'upToNextMinorVersion'`
+(= `0.12.1 ..< 0.13.0`) ② Citadel → nio-ssh의 `0.3.4 ..< 0.4.0`. ②는 남의 매니페스트라 편집할 수 없다.
+**루트에서 덮어쓸 수 있는지를 순수 SwiftPM으로 확인했다 (2026-08-23, Xcode 없음)** `[v]`:
+
+| 실험 | 루트 선언 | 결과 |
+|---|---|---|
+| `/tmp/spmpin` | Citadel `exact: "0.12.1"` + Wellz26 `exact: "0.3.6"` | `swift package resolve` **exit 0**, resolved = `revision a05e6bb…` / `version 0.3.6` |
+| `/tmp/spmpin2` | Citadel `exact` + Wellz26 `revision: "a05e6bb…"` | **exit 0**, resolved state = **revision만, version 필드 없음**(가장 단단) |
+
+부수 확인: 두 실험 모두 **어느 타깃도 nio-ssh를 직접 링크하지 않았는데** 루트 의존성으로 정상
+해석됐다 → Xcode 쪽에서도 `XCSwiftPackageProductDependency` 없이 `XCRemoteSwiftPackageReference`만
+추가하면 되리라는 근거(단 pbxproj 경로 자체는 미검증, §확인 못 한 것 2).
+
+**첫 `expo prebuild` 때 할 것 — `mobile/plugins/with-herdr-ssh-spm.js`의 `PACKAGES`를 이 형태로:**
+
+```js
+const PACKAGES = [
+  { name: 'Citadel',
+    url: 'https://github.com/orlandos-nl/Citadel.git',
+    requirement: { kind: 'exactVersion', version: '0.12.1' },
+    products: ['Citadel'] },
+  // Citadel이 `0.3.4 ..< 0.4.0`으로 부동시키는 전이 홉을 루트에서 리비전 고정한다.
+  // 이 저장소는 0.4.0보다 0.3.6이 새 내용이라 범위·버전 제약이 무의미하다(결정 7 참조).
+  // products는 비운다 — NIOSSH는 Citadel이 링크한다.
+  { name: 'swift-nio-ssh',
+    url: 'https://github.com/Wellz26/swift-nio-ssh.git',
+    requirement: { kind: 'revision', revision: 'a05e6bbe6b141ee68da3030e00275504c0595d4d' },
+    products: [] }
+]
+```
+
+현 코드는 `requirement`를 `{ kind, minimumVersion }`로 **조립**하므로, `requirement`를 통째로 받아
+그대로 쓰도록 두 줄 고치는 편집이 따라온다(`objects['XCRemoteSwiftPackageReference'][referenceId].requirement = pkg.requirement`).
+그리고 그 파일 상단의 `upToNextMinorVersion` 정당화 주석 블록은 **이 결정이 대체하므로 삭제 대상**이다.
+
+**벨트 하나 더 (권고, 미검증)**: `modules/herdr-ssh/typecheck/ios/Package.resolved`가 이미 10개 핀 전부를
+리비전 단위로 담고 커밋돼 있다. prebuild 후 이 파일을 생성된 iOS 프로젝트의
+`ios/<Name>.xcworkspace/xcshareddata/swiftpm/Package.resolved`(또는 `.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/`)로
+복사하면 Citadel 하부 8개까지 고정된다. 경로와 Xcode 수용 여부는 prebuild 산출물을 본 뒤 확정한다.
+
+### orca는 무엇을 썼나 — **아무것도 안 썼다**
+
+닫힌 전제("모르면 orca의 결정을 따른다")는 **여기서 발동하지 않는다**. `08-orca-port-map.md` N1이
+그대로 적고 있다: *"orca 전체에 ssh 코드가 없다"*. orca의 전송은 RN이 기본 제공하는 WebSocket이고
+(`05-orca-transport.md` 서두), 인증은 relay + pairing + E2EE다 — 포트맵에서 **61파일 9,046줄이 drop**
+판정을 받은 바로 그 덩어리이며 "ssh가 대체한다"가 그 판정의 사유다. 따를 선례가 없으므로 **다르게
+가는 것에 대한 해명 의무 자체가 성립하지 않는다.**
+
+포트맵 N1이 괄호로 든 "iOS libssh2/NMSSH"는 orca의 선택이 아니라 **계획 문서의 추정**이었고, 두 후보는
+이미 기각됐다 — `ios/HerdrSsh.podspec` 헤더 실측: CocoaPods trunk의 ssh 클라이언트는 NMSSH(마지막
+릴리즈 2.3.1, **2018-07-29**)와 서드파티 libssh2 pod(1.4.3, **2014-05-19**)뿐이고 둘 다 2019년 이전
+암호 스택을 벤더링한다 — 유저의 ssh 키를 쥔 앱에서.
+
+### 확인 못 한 것
+
+1. **`mobile/app.json`의 iOS 배포 타깃이 17.0 이상인지.** 다른 에이전트가 편집 중이라 열지 않았다.
+   확인 방법 = prebuild 전에 `app.json`의 `ios.deploymentTarget` 또는 `expo-build-properties` 설정을
+   podspec의 `:ios => '17.0'`과 대조. 불일치면 첫 prebuild에서 깨진다(결정 5가 이미 겪은 등급의 결함).
+2. **pbxproj 직렬화가 Xcode에 받아들여지는지.** `xcode@3.0.1`에는 `XCRemoteSwiftPackageReference`
+   모델이 없어 이 플러그인은 writer의 일반성에 기대고 있다(플러그인 헤더가 스스로 "모듈에서 가장
+   취약한 파일"이라고 적었다). `kind = exactVersion; version = …;` / `kind = revision; revision = …;`의
+   실제 수용 여부는 **Xcode 없이는 확인 불가** — 이 머신은 CommandLineTools뿐이고 시뮬레이터 0개다.
+   확인하려면 Xcode가 깔린 머신에서 `expo prebuild --platform ios` 1회.
+3. **`Package.resolved`를 어느 경로에 놓아야 Xcode가 읽는지.** CocoaPods 워크스페이스가 끼는 구성에서
+   실측한 적 없다. 확인 = 2번과 같은 1회 prebuild.
+4. **exit 0 / exit-signal의 실제 Android 대비 값 차이.** iOS 경로는 컴파일만 됐고 **한 번도 실행된 적이
+   없다**. 확인 = 실기기 1회 + Android와 같은 브리지에 같은 명령.
+5. **Android가 RSA를 실제로 `rsa-sha2`로 서명하는지.** `typecheck/keyformats/run.sh`는 **파싱만**
+   증명하며 하네스 주석이 스스로 그렇게 적었다("소켓을 열지 않는다"). 즉 위 표의 Android RSA ✅는
+   "키가 로드된다"까지다. 확인 = 실서버 대상 RSA 인증 1회(Android 잔존 항목과 동일).
+6. **Wellz26 저장소의 태그 불변성.** `exactVersion`은 태그→커밋 결속을 신뢰하는데 이 저장소는 ★0
+   개인 계정이고 이미 재태깅 이력이 있다(0.3.6 vs 0.4.0). **리비전 핀을 권고한 이유가 이것이다.**
 
 ## 실기기 검증 결과 — Android (2026-08-22, 에뮬레이터 실측)
 
