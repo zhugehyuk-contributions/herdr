@@ -656,3 +656,57 @@ expo-notifications 에러의 원인은 `aps-environment` 미설정이 **아니�
 **RN Fabric이 iOS에선 접근성 트리에 텍스트를 올린다.** XCUITest `debugDescription`으로 화면 전체를
 텍스트로 읽었다. Android `uiautomator`가 텍스트 노드 0개인 것과 **정반대**다.
 → iOS QA는 비전이 아니라 **텍스트 판독이 정본**이 될 수 있다.
+
+## S. D2의 다음 균열 — exec 승인에 상한이 없었다 (2026-08-23, 커밋 `b411ef04`)
+
+`25e54ae8`가 iOS `attach()`를 **채널이 쓸 수 있을 때까지 기다리게** 만든 것은 옳은 수리였고, 그 수리가
+문을 하나 열었다. PRINCIPLES §4("첫 수리를 내보내기 전에 다음 균열을 찾아라")를 D2에 적용한 결과다.
+
+| 층 | exec 승인 대기가 묶이나 |
+|---|---|
+| Android | **묶인다** — `HerdrSshSession.kt:100-101`이 `client.timeout = connectTimeoutMs`(20s), `session.exec`가 그 아래 future를 기다린다 |
+| iOS | **안 묶인다** — Citadel은 채널 *개설*만 15초로 재고(`TTY.swift:311-313`) `ExecRequest(wantReply:true)` 응답엔 타이머가 없다 |
+| TS | 안 묶였다 — `ssh-transport.ts`의 `openChannel`이 무기한 await |
+
+증상: 원격이 TCP는 받아주고 exec에 영영 답하지 않으면 **iOS 다이얼이 영구히 매달린다.** 화면엔 아무것도 없다.
+D2 이전엔 즉시 반환이라 매달릴 것이 없었으므로 **이 위험은 D2가 도달 가능하게 만든 것**이다.
+
+### 수리 위치가 네이티브가 아닌 이유
+
+TS 이음매(`awaitExecAck`)에 뒀다 — ①한 곳이 두 플랫폼을 덮는다(Swift·Kotlin 두 벌은 갈라진다)
+②**vitest로 증명된다**(네이티브 하네스는 못 한다). 예산은 새 키가 아니라 `ssh.connectTimeoutMs` —
+Android exec이 이미 정확히 그 값 아래 도는 것이 그 선택의 근거다.
+
+### 통지를 빼는 데 한 라운드가 더 걸렸다 — 그리고 그게 실질이었다
+
+첫 구현은 데드라인에서 `finish({error})`를 불러 `handlers.onClose`도 보냈다. 게이트는 전부 green이었다.
+**무해해 보이지만 아니다**:
+
+```
+데드라인 → onClose → PaneObserver.onClose (generation 가드 통과)
+                     → streamDown() → attachSeq+1, ladder.arm()   ← attempt 1회
+        → reject  → catch → fail()   ← fail()에는 generation 가드가 없다 (`pane-observer.ts:479-482`)
+                     → streamDown() 두 번째                        ← attempt 2회째
+```
+
+타이머는 하나다(`reconnect-policy.ts:107`의 `schedule()`이 `cancel()`을 먼저 부른다). 그러나
+`this.attempt`가 **두 번 전진**한다 — L3의 캡과 트리클이 둘 다 이 카운터를 읽는다.
+`pane-observer.ts:393-397`의 주석이 정확히 이 사고를 경고하고 있었다.
+
+**기존 경로엔 이 문제가 없다는 것이 결정적 판별이었다**: pre-ack 클로즈(`test/ssh-transport.test.ts:150`이
+고정한 모양)에서는 `openChannel`이 **resolve**하고 `:291`의 `generation !== this.attachSeq` 가드가
+두 번째 패스를 잡는다. **rejection만 그 가드를 우회한다.** 즉 "기존과 같은 모양"이 아니라 새 조합이다.
+
+→ `NativeChannel.discard()` — `closed`(늦게 온 native를 `bind`가 닫게 하는 플래그)와 live 셋 제거는
+유지하되 **통지는 안 한다.** 호출자는 채널 객체를 받은 적조차 없으므로 rejection이 유일한 신호다.
+
+### 잔여 (고치지 않음)
+
+1. **`redialable-transport.ts:87-94`가 이 rejection을 그대로 위로 던진다.** 재다이얼 정책이 이 **새 실패
+   모드**를 어떻게 취급하는지 **아무도 읽지 않았다.** 데드라인 만료가 재다이얼을 유발해야 하는지
+   (연결은 살아있고 exec만 안 오는 상태다) 아니면 채널 단위 재시도여야 하는지가 미결.
+2. **네이티브 요청 자체는 여전히 매달린다.** TS가 포기해도 Citadel의 `ExecRequest`는 계속 대기하고,
+   늦게 오면 `bind`가 닫는다. 즉 리소스는 회수되지만 **대기는 취소되지 않는다.**
+3. **`ssh-transport.ts`가 oxlint `max-lines` 상한(300)에 정확히 붙어 있다.** 다음 사람이 여기 3줄을
+   더하면 lint가 터진다. `.oxlintrc.json` override로 넘기지 말고 분할을 고려하라 —
+   이 파일은 이미 transport·채널·명령 실행 세 가지를 들고 있다.
