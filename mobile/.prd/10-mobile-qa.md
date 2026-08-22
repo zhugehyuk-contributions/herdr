@@ -123,6 +123,42 @@ adb exec-out screencap -p > /tmp/app.png     # 그리고 이미지를 직접 본
 
 ---
 
+## 라이브 랩 재구축 (실측 절차, 2026-08-23)
+
+QA 사이에 랩이 죽어 있다(sshd·tmux 종료, `app.json` 원복). 매번 다시 세워야 한다:
+
+1. throwaway ed25519 키 2쌍 생성 (호스트키 + 유저키). **유저의 실제 키 금지.**
+2. `/usr/sbin/sshd -f /tmp/<lab>/sshd_config` — 에뮬레이터에서 `10.0.2.2:<port>`로 보인다
+3. `tmux -L <lab> new-session -x 240 -y 52` 안에서 herdr 클라이언트 기동
+   > ⚠️ **`HERDR_ENV`·`HERDR_SESSION` 등 herdr env를 반드시 unset하라.** 안 하면
+   > *"nested herdr is disabled"*로 즉사한다. (같은 계열 함정이 Rust 게이트에도 있다 — `.prd/01`)
+4. `app.json`의 `extra.herdrRemotes`에 랩 원격 주입. **Metro 재시작 불필요** — 매니페스트를 요청 시
+   재읽는다(실측 확인).
+
+## WebView 조작 — CDP
+
+`uiautomator`가 앱 화면을 못 읽으므로 터미널 내부를 다루려면 CDP를 쓴다.
+
+- **소켓 이름이 문서 기본값과 다르다**: `chrome_devtools_remote`가 **아니라**
+  `webview_devtools_remote_<pid>` 형태다. 찾는 법:
+  `adb shell cat /proc/net/unix | grep devtools` → `adb forward tcp:9222 localabstract:<그 이름>`
+- **핀치 주입 좌표 함정**: 축소 상태에서 `#terminal-surface`의 히트 박스는 **뷰포트 상단 약 196 CSS px뿐**이다.
+  그 아래를 찍으면 이벤트는 전송되지만 리스너 없는 `#terminal-container`에 맞아 **조용히 무시된다.**
+- 도달 확인은 document capture 카운터(touchstart/move/end)로.
+
+## 기계적 판정자 — 눈보다 강하다
+
+"온전해 보임"은 판정이 아니다. 터미널 상태는 다음 두 값으로 **수치 판정**할 수 있다:
+
+| 무엇을 보나 | 어디서 |
+|---|---|
+| 그리드 붕괴 여부 | `.xterm`의 `offsetWidth`/`offsetHeight` — 서버 지오메트리가 안 바뀌면 불변이어야 한다 |
+| 줌 유지 여부 | `#terminal-surface`의 `style.transform` — 프레임 도착 전후로 같아야 한다 |
+
+2026-08-23 (e) 재판정이 이 두 값으로 `1630×777` 불변과 `scale(2)` 유지를 증명했다.
+
+---
+
 ## Mock / Live 판별 — 이걸 틀리면 QA 전체가 무효다
 
 앱은 원격이 하나도 설정되지 않으면 **픽스처를 렌더한다**(커밋 `2a2c8a3b`: 미설정 → fixture,
@@ -154,6 +190,11 @@ adb exec-out screencap -p > /tmp/app.png     # 그리고 이미지를 직접 본
 2026-08-23 실측: M2 (c)의 30분 관측 도중 `845f0f22`가 `mobile/src/transport/*`에 착륙했고, 앱이 Metro 위에서
 돌고 있었으므로 **Fast Refresh가 관측 구간에 일부 적용됐다.** 그 판정((c)(d)(b))은 무관한 파일이라 살았지만,
 운이 좋았던 것이지 절차가 막은 게 아니다.
+
+> **이 규칙에는 대가가 있다.** 2026-08-23 (e) 재판정에서 QA 에이전트는 동결 규칙 때문에 부모 커밋을
+> 체크아웃하지 않았고, 따라서 **수리 전 빌드에서 FAIL을 재현하지 못했다.** "고쳐졌다"는 판정이
+> "현재 빌드에서 재현 안 됨 + 번들에서 수정 마커 검출"에 근거하며 대조군이 없다.
+> 대조가 필요하면 **동결 창 밖에서 별도 세션**으로 하고, 창 안에서 체크아웃하지 마라.
 
 → QA 에이전트가 관측을 시작하면 **그 창이 닫힐 때까지 대상 트리에 커밋하지 마라.** 디스패처가 병렬로
 구현 에이전트를 굴리고 있으면 QA 시작 전에 그 사실을 QA 에이전트에게 알리고, 겹치면 QA를 뒤로 미룬다.
