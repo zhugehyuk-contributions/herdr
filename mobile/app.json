@@ -74,6 +74,12 @@
       "./plugins/with-herdr-ssh-spm.js",
       "expo-splash-screen",
       [
+        "expo-notifications",
+        {
+          "defaultChannel": "blocked"
+        }
+      ],
+      [
         "expo-build-properties",
         {
           "ios": {
