@@ -316,6 +316,82 @@ describe('obligation 9 — a write racing a close must not throw', () => {
   })
 })
 
+describe('the exec request has a deadline', () => {
+  // `HerdrSshSession.swift`'s ready latch now waits for the `ExecRequest` reply and Citadel puts no
+  // timer on that reply, so without this deadline a remote that accepts the connection and then
+  // says nothing hangs the dial forever — on a phone, a screen that never finishes loading.
+  it('rejects when the exec is never acknowledged, saying which channel and why', async () => {
+    const { native, transport } = await connect({ ssh: { ...SSH, connectTimeoutMs: 5 } })
+    const seen = recorder()
+    // A gate that never settles: the sshd took the connection and answered nothing.
+    native.only().openGate = new Promise<void>(() => {})
+    await expect(transport.openChannel(HerdrChannelKind.ApiRequest, seen.handlers)).rejects.toThrow(
+      /exec request for the api-request channel was not acknowledged within 5ms/
+    )
+    expect(transport.channelCount).toBe(0)
+  })
+
+  it('reports the deadline once — as a rejection, never as an onClose', async () => {
+    const { native, transport } = await connect({ ssh: { ...SSH, connectTimeoutMs: 5 } })
+    const seen = recorder()
+    native.only().openGate = new Promise<void>(() => {})
+    await expect(transport.openChannel(HerdrChannelKind.ApiRequest, seen.handlers)).rejects.toThrow(
+      /not acknowledged/
+    )
+    // The caller never received a channel, so a close event about one would be a second signal for
+    // one failure — and the consumer that matters counts them. `PaneObserver` guards its `onClose`
+    // by generation (`src/session/pane-observer.ts`) but its `fail()` path does not, so close +
+    // rejection advances the reconnect ladder's attempt counter twice for a single timeout.
+    expect(seen.closes).toHaveLength(0)
+    expect(seen.chunks).toHaveLength(0)
+  })
+
+  it('closes a channel that lands after the deadline instead of installing it', async () => {
+    const { native, transport } = await connect({ ssh: { ...SSH, connectTimeoutMs: 5 } })
+    const seen = recorder()
+    let acknowledge: () => void = () => {}
+    native.only().openGate = new Promise<void>((resolve) => {
+      acknowledge = resolve
+    })
+    await expect(
+      transport.openChannel(HerdrChannelKind.ClientStream, seen.handlers)
+    ).rejects.toThrow(/not acknowledged/)
+
+    // The exec is acknowledged a moment too late. Nothing is listening on this side any more, so
+    // the native channel is closed rather than leaked — a TS deadline cannot cancel the native
+    // request, it can only refuse to keep the result.
+    acknowledge()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(native.only().last().closeCalls).toBe(1)
+
+    // And it is out of the live set: `transport.close()` terminates every channel it still holds,
+    // so a handler that hears nothing here is a handler whose channel was already dropped.
+    transport.close()
+    expect(seen.closes).toHaveLength(0)
+  })
+
+  it('leaves no timer armed once the outcome is known, whichever way it went', async () => {
+    vi.useFakeTimers()
+    try {
+      const { native, transport } = await connect()
+      await transport.openChannel(HerdrChannelKind.ApiStream, recorder().handlers)
+      expect(transport.channelCount).toBe(1)
+      // One exec is one channel (blocker B8); a 20s handle left behind per API call would be a leak
+      // proportional to traffic.
+      expect(vi.getTimerCount()).toBe(0)
+
+      native.only().openFailure = new Error('exec request refused')
+      await expect(
+        transport.openChannel(HerdrChannelKind.ApiRequest, recorder().handlers)
+      ).rejects.toThrow('exec request refused')
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('teardown and host keys', () => {
   it('gives every live channel exactly one termination when the transport closes', async () => {
     const { transport } = await connect()

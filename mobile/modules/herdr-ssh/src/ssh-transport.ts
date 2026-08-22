@@ -133,16 +133,38 @@ export class NativeChannel implements HerdrChannel {
     }
   }
 
-  /** Delivers `onClose` at most once, whatever the source. */
-  finish(close: HerdrChannelClose): void {
+  /**
+   * Abandons a channel the caller never received, without telling anyone it closed.
+   *
+   * The one user is the exec-ack deadline in `awaitExecAck`, and the missing notification is the
+   * point rather than an omission: `openChannel` rejects there, so the caller holds no channel
+   * object and its `onClose` would be a *second* signal for one failure. Downstream that is not
+   * cosmetic — `PaneObserver` guards its `onClose` by generation (`src/session/pane-observer.ts`)
+   * but its `fail()` path does not, so a close followed by a rejection books two failures against
+   * one generation and advances the reconnect ladder's attempt counter twice.
+   *
+   * What it keeps is everything except the notification: `closed` is what makes `bind` close a
+   * native channel that lands late, and what routes stray data and writes into the after-close
+   * counters; `onFinished` is what keeps a dead channel out of the live set (obligation: one exec
+   * per API call — blocker B8 — so a retained entry leaks per request).
+   */
+  discard(): void {
     if (this.closed) {
       return
     }
     this.closed = true
-    // Dropped from the transport's live set first: a channel that has been reported closed must not
-    // be reported again by `NativeSshHerdrTransport.close()`, and holding it would leak one entry
-    // per API request (`HerdrChannelKind.ApiRequest` is one exec per call — blocker B8).
+    // Dropped from the transport's live set: a channel that is over must not be reported again by
+    // `NativeSshHerdrTransport.close()`, and holding it would leak one entry per API request
+    // (`HerdrChannelKind.ApiRequest` is one exec per call — blocker B8).
     this.onFinished(this)
+  }
+
+  /** Delivers `onClose` at most once, whatever the source — the live set is dropped first. */
+  finish(close: HerdrChannelClose): void {
+    if (this.closed) {
+      return
+    }
+    this.discard()
     this.handlers.onClose(close)
   }
 
@@ -230,22 +252,81 @@ export class NativeSshHerdrTransport implements HerdrTransport, RemoteCommandRun
     const command = remoteBridgeCommand(kind, this.options)
     const channel = new NativeChannel(kind, handlers, (done) => this.live.delete(done))
     this.live.add(channel)
-    let native: NativeSshChannel
     try {
       // Obligation 4: the handlers cross the bridge *with* the exec request, so bytes the remote
       // emits the instant the command starts have somewhere to land.
-      native = await this.connection.openChannel(
-        command,
-        channel.onNativeData,
-        channel.onNativeClose
+      await this.awaitExecAck(
+        kind,
+        channel,
+        this.connection.openChannel(command, channel.onNativeData, channel.onNativeClose)
       )
     } catch (error) {
       this.live.delete(channel)
       throw error
     }
-    channel.bind(native)
     this.channelsOpened += 1
     return channel
+  }
+
+  /**
+   * Waits for the exec request to be acknowledged, and refuses to wait forever.
+   *
+   * Neither native side bounds this on its own in the same way, which is why the deadline is here
+   * rather than in Swift and Kotlin: sshj ties `session.exec` to the connect timeout
+   * (`android/.../HerdrSshSession.kt`), while Citadel times out opening the *channel* but not the
+   * `ExecRequest(wantReply: true)` reply — and the iOS session now waits for that reply before
+   * `attach()` returns, so a remote that accepts the TCP connection and then never answers the exec
+   * hangs the dial with nothing on screen. One deadline at this seam covers both platforms and is
+   * provable in vitest, where a native harness is not.
+   *
+   * The budget is `ssh.connectTimeoutMs` on purpose, not a new config key: Android's exec already
+   * runs under exactly that value, so reusing it keeps the two platforms on one budget instead of
+   * two that drift.
+   *
+   * A TypeScript timeout cannot cancel the native request, so the late arrival is handled rather
+   * than wished away: `finish` marks the channel closed (and drops it from `live`) before anything
+   * else, and `bind` closes a native channel that lands for an already-closed one — the same rule
+   * `app-connections.ts` applies to a connection that lands after the caller gave up.
+   */
+  private awaitExecAck(
+    kind: HerdrChannelKind,
+    channel: NativeChannel,
+    opening: Promise<NativeSshChannel>
+  ): Promise<NativeSshChannel> {
+    const timeoutMs = this.options.ssh.connectTimeoutMs
+    return new Promise<NativeSshChannel>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        // Discarded, not finished: the rejection below is the *only* signal this failure gets,
+        // because the caller never received a channel to hear an `onClose` about. `discard` still
+        // sets the closed flag `bind` reads, so a native channel that lands later is closed.
+        // Dropping it from the live set is `discard`'s job; the `catch` in `openChannel` repeats
+        // that delete for the native-rejection path, where nothing else has done it.
+        channel.discard()
+        reject(
+          new Error(
+            `ssh exec request for the ${kind} channel was not acknowledged within ` +
+              `${timeoutMs}ms: the connection is up but the remote never answered the exec`
+          )
+        )
+      }, timeoutMs)
+      // Cleared the instant the outcome is known, on both paths. One exec is one channel (blocker
+      // B8), so a timer left armed per channel is a live 20s handle for every API call this makes.
+      opening.then(
+        (native) => {
+          clearTimeout(timer)
+          // Binds before this promise settles, so the successful path is unchanged; after the
+          // deadline this is the late arrival, and `bind` closes it instead of installing it.
+          channel.bind(native)
+          resolve(native)
+        },
+        (error: unknown) => {
+          clearTimeout(timer)
+          // Passed through as it came: the native rejection is the diagnosis. A rejection that
+          // arrives after the deadline is dropped by the already-settled promise.
+          reject(error)
+        }
+      )
+    })
   }
 
   /**

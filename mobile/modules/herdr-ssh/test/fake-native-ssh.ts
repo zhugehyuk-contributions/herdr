@@ -88,6 +88,11 @@ export class FakeNativeConnection implements NativeSshConnection {
   onOpen: ((channel: FakeNativeChannel) => void) | null = null
   /** When set, `openChannel` rejects with it. */
   openFailure: Error | null = null
+  /**
+   * When set, `openChannel` waits on this before resolving — a remote that took the connection and
+   * has not acknowledged the exec yet. A test that never settles it is a sshd that never answers.
+   */
+  openGate: Promise<void> | null = null
 
   openChannel(
     command: string,
@@ -102,7 +107,7 @@ export class FakeNativeConnection implements NativeSshConnection {
     this.onOpen?.(channel)
     // A microtask, so no caller can accidentally depend on a synchronous open. A real exec is a
     // round trip to the server.
-    return Promise.resolve().then(() => channel)
+    return (this.openGate ?? Promise.resolve()).then(() => channel)
   }
 
   disconnect(): void {
