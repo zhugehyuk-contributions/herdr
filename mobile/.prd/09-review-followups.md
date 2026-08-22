@@ -72,6 +72,15 @@
 | **S2** | `manual_label`을 pane 핸들로 쓰고 있다 | 스키마상 이 필드는 pane의 **수동 개명**이다. 4단계 mock이 거기에 herdr 표기(`1-1`)를 넣었고 5단계가 그대로 소비했다 | `[확정]` · 낮음 — 실서버에선 개명 안 된 pane이 `pane_id`로 폴백한다(테스트 고정). **6단계 실배선 때 확인 필요** |
 | **S3** | `oxfmt --check`가 무신호다 | 설정 파일 부재로 기본값 동작(`No config found, using defaults`) → `src`+`app`만 돌려도 **116/116 전부** format issue. `.prd/assets/mockup.html`에선 파싱 에러 exit 2 | `[확정]` — **`cargo fmt --check` 무신호(01-spec)의 2호기.** 손대면 안 된다: 재포맷은 **byte-identical 75개를 전부 깨뜨려 이식 불변식을 파괴**한다 |
 
+## B4. M5 구현 중 드러난 계획 오류 (2026-08-22)
+
+| # | 항목 | 실측 | 등급 |
+|---|---|---|---|
+| **P1** | **`04-milestones.md` M5의 인용 3개가 전부 틀렸다** | `events.rs:75`는 **`Subscription`** variant(enum은 `:18`에서 시작), `:222`/`:253`은 `EventKind`/`dot_name`이다. **어느 것도 페이로드가 아니다.** 실제 페이로드는 **`EventData::PaneAgentStatusChanged`, `src/api/schema/events.rs:543-556`** — `pane_id`/`workspace_id`가 **필수**다(`Option`인 건 `:76-83`의 **구독 필터**쪽) | `[확정]` — 문서 정정 필요 |
+| **P2** | **계획이 놓친 재발화**: `pane.agent_status_changed`는 **presentation만 바뀌어도** 발화한다 (`src/app/api.rs:609-611`이 `previous_agent_status != agent_status \|\| previous_presentation != presentation`) | 한 번의 blocked 에피소드가 **여러 레코드**를 큐에 넣는다. 훅이 아니라 센더 쪽 coalesce 창으로 처리 | `[확정]` |
+| **P3** | **계획이 놓친 유실 경로**: 훅 런타임에 타임아웃·재시도·DLQ가 없다는 건 맞으나, `runtime.rs:12`가 **in-flight 32개 상한**을 두고 초과분을 **버린다**(`:239`의 `let _ = self.start_plugin_command(...)`) | 훅 경로가 B9의 링 축출은 우회하지만 **자기 고유의 drop cliff**가 있다. 버스트에서 유실 가능 — 완화는 훅을 수 ms로 유지하는 것뿐 | `[확정]` |
+| **P4** | 계획의 나머지 `[i]`는 **전부 사실**로 확인됨 | 훅이 `event_hub.push`보다 먼저(`api.rs:782-784`) · `HERDR_PLUGIN_EVENT_JSON` 이름 정확(단 봉투가 **snake_case**이지 dot name이 아니다) · `Done`이 `seen` 비트라 디바이스 의존(`api_helpers.rs:104-107`, **라이브 재현**: 같은 pane·같은 명령인데 포커스 있으면 `idle`, 없으면 `done`) · `plugin link`가 **서버 재시작 불필요**(`runtime.rs:221`이 매 hookable 이벤트마다 `refresh_installed_plugins()`) | `[확정]` |
+
 ## C. 확정됐으나 이번 범위 밖 (다음 유닛)
 
 | # | 항목 | 위치 | 등급 |
