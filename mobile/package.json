@@ -10,6 +10,7 @@
     "postinstall": "node scripts/build-terminal-webview-engine.mjs",
     "mock-server": "tsx scripts/mock-server.ts",
     "test": "vitest run",
+    "test:live": "vitest run --config vitest.live.config.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
     "lint": "oxlint",
     "format": "oxfmt --write .",
@@ -64,10 +65,10 @@
     "vitest": "4.1.9"
   },
   "pnpm": {
-    "//": "orca declares this as `allowBuilds` in its pnpm-workspace.yaml; mobile/ is its own install root here, so it lives in package.json instead. esbuild's install script picks the platform binary — without it `postinstall` (the xterm WebView engine build) cannot run.",
+    "//": "orca declares this as `allowBuilds` in its pnpm-workspace.yaml; mobile/ is its own install root here, so it lives in package.json instead. esbuild's install script picks the platform binary \u2014 without it `postinstall` (the xterm WebView engine build) cannot run.",
     "onlyBuiltDependencies": [
       "esbuild"
     ]
   },
-  "//deps": "Versions are pinned exactly to what orca's pnpm-lock.yaml resolved at 4fd93ead, not to its caret ranges: mobile/.prd/08-orca-port-map.md §2.1 grades package.json `copy` because \"의존성 목록이 곧 검증된 버전 조합\", and floating the ranges immediately broke it — react-native-webview 13.17.0 declares `class WebView<P = undefined>`, so `WebViewProps & P` collapses to `never` and every prop in TerminalWebView.tsx fails to typecheck. Dropped from orca's list, each because the feature is `drop` in the port map: zustand (unused in orca too, 0 files), tweetnacl + @noble/hashes + expo-crypto (E2EE), expo-camera + expo-image-picker + expo-image-manipulator + expo-document-picker (pairing QR, photo attach), @orca/expo-two-way-audio (voice), mermaid + lowlight (PR sidebar), ws (relay WebSocket), react-dom + react-native-web (web target), buffer + expo-file-system (no consumer ported yet), @types/react-native (deprecated shim; RN ships its own types), @types/ws, expo-module-scripts. orca's `patchedDependencies` (react-native@0.83.9 IME `isComposing`) is also not carried: it serves terminal live input, which is M3, and a patch we cannot regenerate is a liability now. Added, not from orca: @types/node (range, not a pin, to match the sibling packages/herdr-client-ts) — orca never type-checks its tests, so it never needed it; tsconfig.test.json here does, and the ported tests read source with node:fs."
+  "//deps": "Versions are pinned exactly to what orca's pnpm-lock.yaml resolved at 4fd93ead, not to its caret ranges: mobile/.prd/08-orca-port-map.md \u00a72.1 grades package.json `copy` because \"\uc758\uc874\uc131 \ubaa9\ub85d\uc774 \uace7 \uac80\uc99d\ub41c \ubc84\uc804 \uc870\ud569\", and floating the ranges immediately broke it \u2014 react-native-webview 13.17.0 declares `class WebView<P = undefined>`, so `WebViewProps & P` collapses to `never` and every prop in TerminalWebView.tsx fails to typecheck. Dropped from orca's list, each because the feature is `drop` in the port map: zustand (unused in orca too, 0 files), tweetnacl + @noble/hashes + expo-crypto (E2EE), expo-camera + expo-image-picker + expo-image-manipulator + expo-document-picker (pairing QR, photo attach), @orca/expo-two-way-audio (voice), mermaid + lowlight (PR sidebar), ws (relay WebSocket), react-dom + react-native-web (web target), buffer + expo-file-system (no consumer ported yet), @types/react-native (deprecated shim; RN ships its own types), @types/ws, expo-module-scripts. orca's `patchedDependencies` (react-native@0.83.9 IME `isComposing`) is also not carried: it serves terminal live input, which is M3, and a patch we cannot regenerate is a liability now. Added, not from orca: @types/node (range, not a pin, to match the sibling packages/herdr-client-ts) \u2014 orca never type-checks its tests, so it never needed it; tsconfig.test.json here does, and the ported tests read source with node:fs."
 }

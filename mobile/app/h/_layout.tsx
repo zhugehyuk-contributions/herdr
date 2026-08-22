@@ -20,7 +20,7 @@
 // marked below so it goes back exactly where orca has it.
 // Screens: orca lists nine; `tasks`, `source-control`, `review`, `pr`, `agent-history` and
 // `accounts` are all `drop` (§2.2 — no `git.*`/`files.*`/tasks in herdr's JSON API), so what remains
-// is the workspace list and the pane viewer (the latter is stage 7 and not created yet).
+// is the workspace list and the pane viewer.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { View, StyleSheet, PanResponder } from 'react-native'
 import { Stack, useGlobalSearchParams, usePathname } from 'expo-router'
@@ -62,6 +62,7 @@ function RemoteStack({ animation }: { animation: 'none' | 'default' }) {
       }}
     >
       <Stack.Screen name="[remoteId]/index" options={{ title: 'Remote' }} />
+      <Stack.Screen name="[remoteId]/pane/[paneId]" options={{ title: 'Pane' }} />
     </Stack>
   )
 }
