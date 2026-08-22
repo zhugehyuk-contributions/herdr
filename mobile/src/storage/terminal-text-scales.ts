@@ -8,6 +8,8 @@
 // builder free of a storage dependency at this stage.
 
 // Fixed presets rather than a continuous slider: keeps the settings picker simple and bounds the
-// value to ones the zoom logic handles; pinch-to-zoom in the terminal snaps to these same presets.
-// Sub-1 steps shrink below fit-to-width (more columns visible with side margins).
+// value to ones the zoom logic handles. This is the *text size* only — the terminal's pinch-zoom is
+// a separate, continuous magnifier that never changes the grid, because the grid is the observed
+// pane's (`src/terminal/terminal-webview-html.ts`, `src/session/observer-geometry.ts`); the largest
+// preset here is what bounds how far that magnifier may go.
 export const TERMINAL_TEXT_SCALES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const

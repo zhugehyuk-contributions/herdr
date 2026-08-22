@@ -54,9 +54,20 @@ describe('terminal WebView reflow', () => {
 
   it('does not locally resize hidden WebViews to a one-column grid', () => {
     expect(htmlSource).toContain('var MIN_FIT_COLS = 20;')
-    expect(htmlSource).toContain('if (cols < MIN_FIT_COLS) return;')
+    expect(htmlSource).toContain('if (cols < MIN_FIT_COLS) {')
     expect(htmlSource).toContain("flog('measure-skip-small-width'")
     expect(htmlSource).toContain("notify({ type: 'measure-result', cols: null, rows: null });")
+    // The second viewport-derived resize is now gone rather than guarded: applyTextScale used to
+    // re-grid to floor(innerWidth / cellW) on pinch-end, which on an *observed* pane fought the
+    // columns the server keeps rendering (see ./terminal-webview-pinch-zoom.test.ts). A grid it
+    // never computes cannot collapse — hidden WebView, tiny viewport or otherwise.
+    const textScaleStart = htmlSource.indexOf('  function applyTextScale(scale)')
+    const textScaleEnd = htmlSource.indexOf('\n  var panX', textScaleStart)
+    expect(textScaleStart).toBeGreaterThanOrEqual(0)
+    expect(textScaleEnd).toBeGreaterThan(textScaleStart)
+    const applyTextScaleBody = htmlSource.slice(textScaleStart, textScaleEnd)
+    expect(applyTextScaleBody).not.toContain('term.resize')
+    expect(applyTextScaleBody).not.toContain('window.innerWidth')
   })
 
   // Why: the raw-source assertions above pass even if the reflow module is

@@ -238,30 +238,42 @@ window.onerror = function(msg) {
   // fatal/non-fatal decision so a transient reflow cannot blank a live terminal.
   var everReady = false;
   var currentScale = 1;
-  // Why: userScale is transient pinch zoom (CSS) for smooth feedback DURING a
-  // gesture only; it resets to 1 on release. The persistent "text size" is the
-  // real xterm fontSize (currentTextScale × BASE_FONT_PX), so changing it
-  // reflows the grid: a bigger cell means fewer columns fit, and RN re-measures
-  // and resizes the PTY (terminal.updateViewport) so the shell rewraps to the
-  // new width. A finished pinch snaps to the nearest preset and reports it to RN.
+  // Why: the grid belongs to the server. herdr observes a pane without resizing anything
+  // (.prd/02-architecture.md §2.3) and asks for the *pane's* own cols/rows
+  // (src/session/observer-geometry.ts), so a 213-column pane arrives whole and every later frame
+  // is drawn for those same 213 columns. currentScale is the fit that puts all of them on the
+  // phone; userScale is the reader's magnifier on top of it, and it is **persistent** — it
+  // survives the pinch, the frames that follow, and every re-fit. Only a new grid or an explicit
+  // reset-zoom drops it (resetZoom). orca resized the desktop PTY to the phone instead, so there
+  // a pinch could become real columns; herdr may not — M2 (c), 데스크톱 레이아웃 무변화.
   var userScale = 1;
   var BASE_FONT_PX = 13;
   var MIN_FONT_PX = 6;
   var MIN_FIT_COLS = 20;
   var currentTextScale = 1;
   var TEXT_SCALE_PRESETS = ${JSON.stringify([...TERMINAL_TEXT_SCALES])};
-  var MIN_TEXT_SCALE = TEXT_SCALE_PRESETS[0];
   var MAX_TEXT_SCALE = TEXT_SCALE_PRESETS[TEXT_SCALE_PRESETS.length - 1];
-  function snapToTextScalePreset(value) {
-    var best = TEXT_SCALE_PRESETS[0], bestDelta = Infinity;
-    for (var i = 0; i < TEXT_SCALE_PRESETS.length; i++) {
-      var delta = Math.abs(TEXT_SCALE_PRESETS[i] - value);
-      if (delta < bestDelta) { bestDelta = delta; best = TEXT_SCALE_PRESETS[i]; }
-    }
-    return best;
-  }
   function fontPxForScale(scale) {
     return Math.max(MIN_FONT_PX, Math.round(BASE_FONT_PX * scale));
+  }
+  // Why these bounds: the floor is fit (1) — below it the whole grid is already on screen, so
+  // shrinking further only costs legibility and there is nothing to pan to. The ceiling is the
+  // largest text the presets describe (MAX_TEXT_SCALE x BASE_FONT_PX apparent), enough to take a
+  // 213-column pane from ~5 device px per glyph at fit to a readable size, grid untouched.
+  function maxUserScale() {
+    var apparentBasePx = fontPxForScale(currentTextScale) * currentScale;
+    if (!(apparentBasePx > 0)) return 1;
+    return Math.max(1, (BASE_FONT_PX * MAX_TEXT_SCALE) / apparentBasePx);
+  }
+  function clampUserScale(value) {
+    if (!isFinite(value)) return 1;
+    return Math.max(1, Math.min(maxUserScale(), value));
+  }
+  // The one path that means "start over": a different grid, or the reader asking for fit back.
+  function resetZoom() {
+    userScale = 1;
+    panX = 0;
+    panY = 0;
   }
   function isIOSWebView() {
     if (/iP(ad|hone|od)/.test(navigator.userAgent)) return true;
@@ -271,11 +283,15 @@ window.onerror = function(msg) {
   // fall to a non-monospace face; lead with the ui-monospace generic to avoid that.
   var TERMINAL_FONT_FALLBACKS = '"Menlo", "Monaco", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Liberation Mono", "Symbols Nerd Font Mono", monospace';
   var terminalFontFamily = (isIOSWebView() ? 'ui-monospace, ' : '"SF Mono", ') + TERMINAL_FONT_FALLBACKS;
-  // Why: change the real font size, then resize the grid to fit the viewport at
-  // the new cell metrics so the text shows at its true size immediately. RN's
-  // refit (measure → updateViewport) then makes the server reflow the PTY to the
-  // same column count so the shell rewraps. cell metrics update on the frame
-  // after fontSize changes, so the resize/fit is deferred one rAF.
+  // Why: this changes the rasterisation size only, never the grid. orca re-gridded here to
+  // floor(innerWidth / cellW), correct *there* because RN answered by resizing the desktop PTY to
+  // that same width (measure -> updateViewport). herdr deleted that second half on purpose, so
+  // re-gridding here only leaves the client narrower than every frame the server keeps sending —
+  // a 213-column pane cut to ~38 and shredded until remount (2026-08-23 M2 QA, (e) FAIL).
+  // What the resize was really for survives: it made the new size visible instead of being
+  // cancelled by the old fit, and the re-fit below does that — cell metrics move with fontSize, so
+  // commitFitScale recomputes the fit for the *same* cols with the magnifier riding on top. Those
+  // metrics only settle on the frame after fontSize changes, so the fit is still deferred one rAF.
   function applyTextScale(scale) {
     currentTextScale = scale;
     if (!term) return;
@@ -284,15 +300,7 @@ window.onerror = function(msg) {
     term.options.fontSize = px;
     requestAnimationFrame(function() {
       if (!term) return;
-      var cellW = getCellWidth();
-      var cellH = getCellHeight();
-      if (cellW > 0 && cellH > 0) {
-        var cols = Math.floor(window.innerWidth / cellW);
-        if (cols < MIN_FIT_COLS) return;
-        var rows = Math.max(8, Math.floor(window.innerHeight / cellH));
-        term.resize(cols, rows);
-        emitKeyboardAvoidanceMetrics();
-      }
+      emitKeyboardAvoidanceMetrics();
       applyFitScale('text-scale');
     });
   }
@@ -355,11 +363,27 @@ window.onerror = function(msg) {
   //      applyFitScale will keep trying until one is positive.
   function computeFitScale() {
     if (!term) return 1;
-    var cellW = getCellWidth();
-    var termWidth = cellW > 0 ? cellW * term.cols : (term.element ? term.element.scrollWidth : 0);
+    var termWidth = getContentWidth();
     if (termWidth <= 0) return 1;
     var vpWidth = window.innerWidth;
     return Math.min(1, vpWidth / termWidth);
+  }
+
+  // Why the grid and not the DOM: cellW x cols is xterm's own layout width (strategy 1 above) and
+  // stays right when the widest painted row is short — scrollWidth would then clamp the pan before
+  // the right-hand columns the cursor lives in. It stays the pre-renderer fallback.
+  function getContentWidth() {
+    if (!term) return 0;
+    var cellW = getCellWidth();
+    if (cellW > 0 && term.cols > 0) return cellW * term.cols;
+    return term.element ? term.element.scrollWidth : 0;
+  }
+
+  function getContentHeight() {
+    if (!term) return 0;
+    var cellH = getCellHeight();
+    if (cellH > 0 && term.rows > 0) return cellH * term.rows;
+    return term.element ? term.element.scrollHeight : 0;
   }
 
   function getTotalScale() { return currentScale * userScale; }
@@ -412,8 +436,8 @@ ${TERMINAL_WEBVIEW_THEME_JS}
   function clampPan() {
     if (!term || !term.element) return;
     var ts = getTotalScale();
-    var cw = term.element.scrollWidth * ts;
-    var ch = term.element.scrollHeight * ts;
+    var cw = getContentWidth() * ts;
+    var ch = getContentHeight() * ts;
     var vpW = window.innerWidth;
     var vpH = window.innerHeight;
     if (cw > vpW) {
@@ -491,10 +515,12 @@ ${TERMINAL_WEBVIEW_THEME_JS}
     // sub-pixels) snap to 1 to avoid imperceptible shrinkage that prevents
     // a second applyFitScale from observing a "no-op needed" state.
     if (currentScale >= 0.95) currentScale = 1;
-    userScale = 1;
-    panX = 0;
-    panY = 0;
+    // Why not reset here: a re-fit is a new *base* (font size, keyboard, a wider line), not a new
+    // screen. Re-clamp the magnifier and pan against it instead of discarding where the reader was
+    // looking — a zoom that died on the next frame fails M2 (e) as surely as the re-grid did.
+    userScale = clampUserScale(userScale);
     smoothScrollOffsetY = 0;
+    clampPan();
     updateTransform();
     adjustRowsForViewport();
 
@@ -703,6 +729,8 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
     initRows = rows || 24;
     firstDataPending = true;
     smoothScrollOffsetY = 0;
+    // A fresh terminal is a fresh screen: the old zoom and pan addressed a grid that is gone.
+    resetZoom();
     wheelAccumDeltaY = 0;
     mouseModeScanTail = '';
     trackedMouseTrackingMode = 'none';
@@ -809,6 +837,9 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
     initRows = rows || initRows;
     term.resize(cols || term.cols, rows || term.rows);
     emitKeyboardAvoidanceMetrics();
+    // The server handed over a different grid (the desktop layout changed under the observer), so
+    // the reader's pan no longer points at anything. Back to fit.
+    resetZoom();
     applyFitScale('resize-msg');
     notify({ type: 'ready', cols: cols, rows: rows });
   }
@@ -940,9 +971,7 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
       // Why: ignore RN echoing back the value a pinch just set (msg.fontScale ===
       // currentTextScale) so the post-pinch state isn't reset; only apply changes.
       if (typeof msg.fontScale === 'number' && msg.fontScale > 0 && msg.fontScale !== currentTextScale) {
-        userScale = 1;
-        panX = 0;
-        panY = 0;
+        resetZoom();
         applyTextScale(msg.fontScale);
       }
     } else if (msg.type === 'resize') {
@@ -974,6 +1003,7 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
     } else if (msg.type === 'measure') {
       measureFitDimensions(msg.containerHeight);
     } else if (msg.type === 'reset-zoom') {
+      resetZoom();
       applyFitScale('reset-zoom-msg');
     } else if (msg.type === 'set-theme') {
       applyTerminalTheme(msg.terminalTheme);
@@ -1726,12 +1756,7 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
         var my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
 
         var ratio = dist / ts.pinchDist;
-        // Why: userScale is a CSS multiplier on the current font size; bound it so
-        // the resulting apparent size (currentTextScale × userScale) stays within
-        // the preset range, since release snaps to one of those presets.
-        var loScale = MIN_TEXT_SCALE / currentTextScale;
-        var hiScale = MAX_TEXT_SCALE / currentTextScale;
-        userScale = Math.max(loScale, Math.min(hiScale, ts.pinchScale * ratio));
+        userScale = clampUserScale(ts.pinchScale * ratio);
 
         var total = getTotalScale();
         panX = mx - ts.pinchSurfX * total;
@@ -1748,7 +1773,7 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
         // scroll so scrollback stays reachable at any text size; calling the
         // never-defined contentWiderThanViewport() here threw and killed all
         // single-finger scrolling, scrollback included.
-        if (term.element && term.element.scrollWidth * getTotalScale() > window.innerWidth + 1) {
+        if (getContentWidth() * getTotalScale() > window.innerWidth + 1) {
           panX += x - ts.lastX;
           clampPan();
           updateTransform();
@@ -1784,18 +1809,13 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
 
       if (ts.isPinching && e.touches.length < 2) {
         ts.isPinching = false;
-        // Why: a finished pinch snaps to the nearest preset and becomes the new
-        // font size (reflowing the grid), so pinch-to-zoom IS the in-terminal way
-        // to set the text size. The CSS pinch zoom (userScale) is reset; the real
-        // size change reflows columns and RN persists + resizes the PTY to match.
-        var target = snapToTextScalePreset(currentTextScale * userScale);
-        var changed = target !== currentTextScale;
-        userScale = 1;
-        panX = 0; panY = 0;
-        applyTextScale(target);
+        // Why nothing else happens: the magnification the fingers left behind IS the answer and it
+        // stays until the reader changes it. It becomes neither a font size nor an RN message,
+        // because on an observed pane it is a property of this view alone — the grid is the
+        // server's (M2 (c)), and the text-size preference arrives separately as set-font-scale.
+        userScale = clampUserScale(userScale);
+        clampPan();
         updateTransform();
-        notify({ type: 'font-scale-changed', fontScale: target });
-        if (changed) notify({ type: 'haptic', kind: 'selection' });
         if (e.touches.length === 1) {
           ts.lastX = e.touches[0].clientX;
           ts.lastY = e.touches[0].clientY;
