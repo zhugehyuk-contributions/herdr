@@ -123,6 +123,23 @@ adb exec-out screencap -p > /tmp/app.png     # 그리고 이미지를 직접 본
 
 ---
 
+## ⚠️ 새 QA 워크트리에는 생성물이 없다 (2026-08-23 실측)
+
+QA 전용 워크트리(§자기 인증 금지의 durable fix)를 쓰면 **gitignore된 생성물이 전부 빠져 있다.**
+M3 QA가 두 번 밟았다:
+
+1. **`mobile/android/`가 없다** — Expo prebuild 산출물이라 gitignore. `npx expo prebuild -p android`
+   후에야 `:app:assembleDebug`가 가능하다.
+2. **`mobile/src/terminal/terminal-webview-engine.generated.ts`가 없다** — `postinstall`이 만드는
+   gitignored 생성물. 없으면 **Metro 500 → 앱 크래시**. `node scripts/build-terminal-webview-engine.mjs`.
+3. **랩 herdr을 워크트리에서 빌드해야 한다** — `~/.local/bin/herdr`(0.8.0-mx)는 `PROTOCOL_VERSION 21` /
+   `WIRE_ABI_EPOCH 3` **이전**이라 앱이 못 붙는다. `ZIG=/opt/homebrew/opt/zig@0.15/bin/zig cargo build --bin herdr`.
+
+그리고 **Metro는 반드시 자기 워크트리에서, 다른 포트로** 띄운다(M3 QA는 8082). 안 그러면 격리의 의미가
+사라진다 — 다른 트리의 코드를 QA하게 된다. `adb reverse` 없이 `10.0.2.2:<포트>` 직결이면 혼선 불가능.
+
+---
+
 ## 라이브 랩 재구축 (실측 절차, 2026-08-23)
 
 QA 사이에 랩이 죽어 있다(sshd·tmux 종료, `app.json` 원복). 매번 다시 세워야 한다:
