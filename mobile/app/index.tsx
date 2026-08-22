@@ -59,7 +59,13 @@ export default function AgentsHomeScreen() {
         {staleness ? <Text style={styles.stale}>{staleness}</Text> : null}
       </View>
       {status === 'loading' ? <Text style={styles.meta}>Loading…</Text> : null}
-      {status === 'error' ? <Text style={styles.meta}>{error ?? 'Load failed'}</Text> : null}
+      {/* The whole screen when a load fails — nothing else renders, since `snapshot` is empty on
+          `error` (`../src/api/snapshot-context.tsx`). So it is the top of the ramp and not `meta`'s
+          `dim`: on a screen with one line of text, that line is the emphasis. The message is the
+          loader's own — for a failed dial it names the remotes that could not be reached
+          (`../src/api/herdr-data-provider.tsx`), which is what makes an error more use than the
+          fixture it replaced. */}
+      {status === 'error' ? <Text style={styles.error}>{error ?? 'Load failed'}</Text> : null}
       {status === 'ready' ? (
         <Text style={styles.summary}>{`${blocked} blocked · ${working} working`}</Text>
       ) : null}
@@ -97,6 +103,7 @@ const styles = StyleSheet.create({
   logo: { color: mono.fg, fontSize: 20, fontWeight: '700' },
   crumb: { color: mono.dim, fontSize: 13, marginLeft: 6 },
   meta: { color: mono.dim, fontSize: 12, paddingHorizontal: 16 },
+  error: { color: mono.fg, fontSize: 13, lineHeight: 18, paddingHorizontal: 16, paddingTop: 8 },
   // One rung brighter than the `meta` beside it: brightness is the only emphasis axis this palette
   // has (mockup.html:863, `../src/theme/monotone.ts`) and a stale fleet is the one thing in this
   // header that is not routine. Still grayscale — the severity is in the word, never in a hue

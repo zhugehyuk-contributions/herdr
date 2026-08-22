@@ -14,6 +14,7 @@ vi.mock('react-native', () => ({
 }))
 
 const { HerdrDataProvider } = await import('./herdr-data-provider')
+type RemoteDialOutcome = import('./herdr-data-provider').RemoteDialOutcome
 const { HerdrClientsProvider } = await import('../transport/herdr-clients-context')
 const { useHerdrSnapshot } = await import('./snapshot-context')
 
@@ -65,12 +66,15 @@ function liveConnection(): HerdrRemoteConnection {
 
 let renderer: ReactTestRenderer | null = null
 
-async function mount(connections: readonly HerdrRemoteConnection[]): Promise<ReactTestRenderer> {
+async function mount(
+  connections: readonly HerdrRemoteConnection[],
+  dial?: RemoteDialOutcome
+): Promise<ReactTestRenderer> {
   let created: ReactTestRenderer | null = null
   await act(async () => {
     created = create(
       <HerdrClientsProvider connections={connections}>
-        <HerdrDataProvider>
+        <HerdrDataProvider dial={dial}>
           <Probe />
         </HerdrDataProvider>
       </HerdrClientsProvider>
@@ -120,5 +124,69 @@ describe('herdr data provider', () => {
     const target = await mount([dead])
     expect(texts(target)[0]).toBe('error:ssh: connect failed')
     expect(texts(target)[1]).toBe('')
+  })
+})
+
+/**
+ * The four dial states the fallback decision turns on. They exist because two of them used to be
+ * one: `connections: []` meant both "nothing configured" (fixture, correct) and "nothing answered"
+ * (fixture, a lie — `./herdr-data-provider.tsx`'s header). The end-to-end proof that a failed dial
+ * shows no fixture agents is `../app-shell/failed-dial-mount.test.tsx`; this is the decision table.
+ */
+describe('herdr data provider — what the dial said', () => {
+  const settled = (over: Partial<RemoteDialOutcome> = {}): RemoteDialOutcome => ({
+    settled: true,
+    failures: [],
+    nativeModuleMissing: false,
+    ...over
+  })
+
+  it('keeps the fixture when the dial settled with nothing configured', async () => {
+    const target = await mount([], settled())
+    expect(texts(target)[0]).toBe('ready:')
+    expect(texts(target)[1]).toContain('fable-m5max')
+  })
+
+  it('reports the failed remotes instead of the fixture when every dial failed', async () => {
+    const target = await mount(
+      [],
+      settled({ failures: ['lab: Permission denied', 'iq: timed out'] })
+    )
+    expect(texts(target)[0]).toBe(
+      'error:No configured remote could be reached — lab: Permission denied · iq: timed out'
+    )
+    expect(texts(target)[1]).toBe('')
+  })
+
+  it('distinguishes a build with no native module from a remote that refused the key', async () => {
+    // Both arrive with the same `failures` — `dialRemote` throws per remote either way
+    // (`modules/herdr-ssh/src/app-connections.ts`) — so only `nativeModuleMissing` can separate
+    // "this build cannot dial anything" from "this key was rejected", and they need different fixes.
+    const target = await mount(
+      [],
+      settled({
+        failures: ['lab: no HerdrSsh native module in this build'],
+        nativeModuleMissing: true
+      })
+    )
+    expect(texts(target)[0]).toBe(
+      'error:No ssh module in this build — a configured remote cannot be dialled from Expo Go. Use a dev build.'
+    )
+  })
+
+  it('stays on loading while the dial is still in flight, rather than showing the fixture', async () => {
+    const target = await mount([], { settled: false, failures: [], nativeModuleMissing: false })
+    expect(texts(target)[0]).toBe('loading:')
+    expect(texts(target)[1]).toBe('')
+  })
+
+  it('goes live on a partial dial — one remote that answered is a real answer', async () => {
+    const target = await mount([liveConnection()], settled({ failures: ['dead-1: timed out'] }))
+    expect(texts(target)[0]).toBe('ready:')
+    expect(texts(target)[1]).toBe('a-real-box')
+    // The remote that failed is simply absent from the fleet; making it an error would throw away
+    // the box that did answer. That residual is `./live/live-snapshot-loader.ts`'s partial-failure
+    // rule one level up, and is called out in the review notes rather than papered over here.
+    expect(texts(target)[1]).not.toContain('dead-1')
   })
 })

@@ -41,7 +41,13 @@ export default function NodeListScreen() {
         {staleness ? <Text style={styles.stale}>{staleness}</Text> : null}
       </View>
       {status === 'loading' ? <Text style={styles.meta}>Loading…</Text> : null}
-      {status === 'error' ? <Text style={styles.meta}>{error ?? 'Load failed'}</Text> : null}
+      {/* The whole screen when a load fails — nothing else renders, since `snapshot` is empty on
+          `error` (`../src/api/snapshot-context.tsx`). So it is the top of the ramp and not `meta`'s
+          `dim`: on a screen with one line of text, that line is the emphasis. The message is the
+          loader's own — for a failed dial it names the remotes that could not be reached
+          (`../src/api/herdr-data-provider.tsx`), which is what makes an error more use than the
+          fixture it replaced. */}
+      {status === 'error' ? <Text style={styles.error}>{error ?? 'Load failed'}</Text> : null}
       <ScrollView style={styles.body}>
         {snapshot.remotes.map((remote) => {
           const entry = byRemote.get(remote.id)
@@ -89,6 +95,9 @@ const styles = StyleSheet.create({
   rowHead: { flexDirection: 'row', alignItems: 'center' },
   name: { color: mono.fg, fontSize: 15 },
   meta: { color: mono.dim, fontSize: 12 },
+  // Padded, unlike `meta`: that one is a row subtitle inside the already-inset body, so an error
+  // borrowing it rendered flush against the screen edge, out of line with everything else.
+  error: { color: mono.fg, fontSize: 13, lineHeight: 18, paddingHorizontal: 16, paddingTop: 8 },
   // Brighter than `meta` on purpose, and grayscale — see the same style in `./index.tsx`.
   stale: { color: mono.fgSoft, fontSize: 12 },
   chevron: { color: mono.dim2, fontSize: 13 },

@@ -56,11 +56,16 @@ export default function RootLayout() {
   // hook is the whole junction: it reads `app.json`'s `expo.extra.herdrRemotes`, dials each one over
   // the native module, and wraps the results as `HerdrRemoteConnection`s.
   //
-  // Still `[]` in every build that has no configured remote and in every build with no native module
-  // — Expo Go, and the test environment two suites here mount this file in — so the fallback to the
-  // mock fixture is unchanged rather than removed. No settings UI exists yet; the list is a
-  // build-time value on purpose (see `modules/herdr-ssh/src/remote-config.ts`).
-  const connections = useHerdrSshConnections()
+  // Still empty in every build that has no configured remote, so the fallback to the mock fixture is
+  // unchanged rather than removed. No settings UI exists yet; the list is a build-time value on
+  // purpose (see `modules/herdr-ssh/src/remote-config.ts`).
+  //
+  // The *whole* dial goes down, not just its connections: "no remote configured" and "every
+  // configured remote failed" both produce an empty list, and only `dial.failures` /
+  // `dial.nativeModuleMissing` / `dial.settled` can tell `HerdrDataProvider` which one it is looking
+  // at — without them a broken key renders the fixture and says nothing.
+  const dial = useHerdrSshConnections()
+  const connections = dial.connections
 
   // M4. One supervisor per connection: the L1 watchdog, the L3 forever-backoff, the L6 ladder and
   // the L7 revive, mounted where every screen can reach them by remote id. Empty in — and only in —
@@ -76,10 +81,11 @@ export default function RootLayout() {
 
   return (
     // Which loader runs is `HerdrDataProvider`'s single decision (live when a remote is reachable,
-    // the stage-4 fixture otherwise); nothing below here knows the difference, which is the point of
-    // the seam (port map §5, "이 시점 전까지 mock으로 UI가 이미 완성돼 있어야 한다").
+    // an error when configured remotes all failed, the stage-4 fixture only when none was
+    // configured); nothing below here knows the difference, which is the point of the seam (port map
+    // §5, "이 시점 전까지 mock으로 UI가 이미 완성돼 있어야 한다").
     <HerdrClientsProvider connections={connections} supervisors={supervisors}>
-      <HerdrDataProvider>
+      <HerdrDataProvider dial={dial}>
         <ForegroundSnapshotPolling />
         <View style={styles.root} onLayout={onNavigatorLayout}>
           <StatusBar style="light" />

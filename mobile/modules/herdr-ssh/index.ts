@@ -6,7 +6,8 @@
 export {
   useHerdrSshConnections,
   openConfiguredSshConnections,
-  type DialedRemotes
+  type DialedRemotes,
+  type SshDialState
 } from './src/app-connections'
 export {
   NativeSshHerdrTransport,

@@ -16,6 +16,7 @@
     "src/theme/monotone-discipline.test.tsx",
     "src/app-shell/route-shell-mount.test.tsx",
     "src/app-shell/agents-home-mount.test.tsx",
+    "src/app-shell/failed-dial-mount.test.tsx",
     "src/agents/agent-display.test.ts",
     "src/agents/fleet-agents.test.ts",
     "src/panes/pane-tree.test.ts",

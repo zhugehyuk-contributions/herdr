@@ -99,6 +99,7 @@ vi.mock('react-native', () => {
 })
 
 const { default: RootLayout } = await import('../../app/_layout')
+const { openConfiguredSshConnections } = await import('../../modules/herdr-ssh')
 const { default: AgentsHomeScreen } = await import('../../app/index')
 const { default: RemoteGroupLayout } = await import('../../app/h/_layout')
 const { default: RemoteRoute } = await import('../../app/h/[remoteId]/index')
@@ -113,6 +114,15 @@ async function mountShell(): Promise<ReactTestRenderer> {
   let created: ReactTestRenderer | null = null
   await act(async () => {
     created = create(createElement(RootLayout))
+  })
+  // The dial does **not** settle inside the act above — measured: it is still `dialling` after that
+  // await, and settles one dynamic `import('expo-constants')` later. Since a dial that has not
+  // settled holds the screens at `Loading…` (`src/api/herdr-data-provider.tsx`), the shell has to be
+  // let finish, and awaiting the *same* call is what puts the hook's state update inside `act`
+  // instead of after the assertions. Nothing here is stubbed: this is the real hook reporting the
+  // real "no remote configured" result, which is what makes the mock assertions below mean anything.
+  await act(async () => {
+    await openConfiguredSshConnections()
   })
   if (!created) {
     throw new Error('RootLayout did not render')

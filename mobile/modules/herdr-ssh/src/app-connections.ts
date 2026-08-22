@@ -8,8 +8,7 @@
 //
 // ⚠️ Both expo imports below are dynamic, for the reason `native-module.ts` explains: a static
 // import would make `app/_layout.tsx` unloadable in the test environment and break two existing
-// suites. The hook is also written so that the no-remotes case performs **no state update** — the
-// mount tests render this component and must not be handed an out-of-`act` render.
+// suites.
 import { useEffect, useState } from 'react'
 import { createTransportConnection } from '../../../src/transport/herdr-connection'
 import type { HerdrRemoteConnection } from '../../../src/transport/herdr-connection'
@@ -123,14 +122,43 @@ function errorMessage(reason: unknown): string {
 }
 
 /**
- * The connections `app/_layout.tsx` hands to `HerdrClientsProvider`.
+ * What the app tree knows about the dial: the result **and** whether it has happened yet.
  *
- * Empty until the dial finishes, and empty forever when nothing is configured — which is exactly
- * the state the app has today, so `HerdrDataProvider` keeps falling back to the mock fixture and no
- * screen learns that anything changed.
+ * Why the whole outcome rather than just the connections, which is all this hook used to return:
+ * `src/api/herdr-data-provider.tsx` has to tell *no remote is configured* — where the fixture is
+ * the deliberate answer (port map §5, "이 시점 전까지 mock으로 UI가 이미 완성돼 있어야 한다") — from
+ * *every configured remote failed*, where the fixture is a lie: four invented nodes and forty
+ * invented agents on a phone whose whole job is to say whether a real agent is blocked. Both states
+ * carry `connections: []`, so the connection list alone cannot answer the question, and the part
+ * that could answer it was discarded here.
  */
-export function useHerdrSshConnections(): readonly HerdrRemoteConnection[] {
-  const [connections, setConnections] = useState<readonly HerdrRemoteConnection[]>(NO_CONNECTIONS)
+export interface SshDialState {
+  /** The remotes that answered. */
+  connections: readonly HerdrRemoteConnection[]
+  /** `id: reason` per configured remote that did not answer. Empty when none was configured. */
+  failures: readonly string[]
+  /** No `HerdrSsh` in this build (Expo Go, or a bundle predating the module) — not an auth failure. */
+  nativeModuleMissing: boolean
+  /** False until the dial settles, because "still dialling" is not "nothing was configured". */
+  settled: boolean
+}
+
+/** The state before the first dial resolves. Frozen: it is shared by every mount. */
+const DIALLING: SshDialState = Object.freeze({
+  connections: NO_CONNECTIONS,
+  failures: Object.freeze([]) as readonly string[],
+  nativeModuleMissing: false,
+  settled: false
+})
+
+/**
+ * The dial `app/_layout.tsx` runs once at mount and hands to the providers below it.
+ *
+ * `settled: false` until it resolves, and settled-with-everything-failed afterwards — the two
+ * states the caller needs to keep apart.
+ */
+export function useHerdrSshConnections(): SshDialState {
+  const [dial, setDial] = useState<SshDialState>(DIALLING)
 
   useEffect(() => {
     let live = true
@@ -141,11 +169,17 @@ export function useHerdrSshConnections(): readonly HerdrRemoteConnection[] {
         closeAll(opened)
         return
       }
-      // No state update when there is nothing to show: the mount suites render this component and
-      // a setState after the render they awaited would be an out-of-`act` update.
-      if (dialed.connections.length > 0) {
-        setConnections(dialed.connections)
-      }
+      // This now updates state in *every* case, the no-remotes one included. It used to update only
+      // when a connection existed, to keep the suites that mount `app/_layout.tsx` free of an
+      // out-of-`act` render — and that silence is exactly what collapsed "nothing configured" into
+      // "nothing answered". The suites flush the dial inside `act` instead
+      // (`src/app-shell/route-shell-mount.test.tsx`, `agents-home-mount.test.tsx`: `mountShell`).
+      setDial({
+        connections: dialed.connections,
+        failures: dialed.failures,
+        nativeModuleMissing: dialed.nativeModuleMissing,
+        settled: true
+      })
     })
     return () => {
       live = false
@@ -153,7 +187,7 @@ export function useHerdrSshConnections(): readonly HerdrRemoteConnection[] {
     }
   }, [])
 
-  return connections
+  return dial
 }
 
 function closeAll(transports: readonly { close(): void | Promise<void> }[]): void {
