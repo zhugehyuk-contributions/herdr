@@ -46,6 +46,17 @@ export interface SshHerdrTransportOptions extends RemoteBridgeCommandOptions {
   ssh: ConnectConfig;
   /** How long `openChannel` waits for the remote exec to be accepted. Default 20s. */
   execTimeoutMs?: number;
+  /**
+   * An `ssh2` `error` event that had nowhere to go — see {@link SshHerdrTransport.connect}, which
+   * absorbs every `error` after the one that settled the connect promise.
+   *
+   * Omitting it is fine: the events are still counted
+   * ({@link SshHerdrTransport.suppressedErrorCount}). It exists because on the *rejected* path
+   * there is no transport object to read that counter off — `connect` rejects and the instance is
+   * dropped — so a caller that dials into a dead network in a loop (the app's reconnect trickle)
+   * has this handler as its only way to see the events at all.
+   */
+  onSuppressedError?: ((error: Error) => void) | undefined;
 }
 
 export { DEFAULT_SESSION_NAME };
@@ -119,6 +130,8 @@ export class SshHerdrTransport implements HerdrTransport {
   private connections = 0;
   private channelsOpened = 0;
   private ended = false;
+  private suppressed = 0;
+  private lastSuppressed: Error | undefined;
 
   private constructor(client: Client, options: SshHerdrTransportOptions) {
     this.client = client;
@@ -135,20 +148,64 @@ export class SshHerdrTransport implements HerdrTransport {
     return this.channelsOpened;
   }
 
+  /**
+   * `ssh2` `error` events absorbed because nothing was left to report them to — a repeat emit for a
+   * connection whose first error already settled {@link SshHerdrTransport.connect}, or any error
+   * after the handshake, which has no request to fail.
+   *
+   * Always present, handler or not, for the same reason {@link SshHerdrTransport.connectionCount}
+   * is: "the ssh link is quietly rotten" needs to be readable without a subscription. Note the one
+   * case it cannot cover — a *rejected* connect hands the caller no transport, so those events are
+   * only visible through {@link SshHerdrTransportOptions.onSuppressedError}.
+   */
+  get suppressedErrorCount(): number {
+    return this.suppressed;
+  }
+
+  /** The most recent absorbed error, for a caller that polls the counter above. */
+  get lastSuppressedError(): Error | undefined {
+    return this.lastSuppressed;
+  }
+
   static connect(options: SshHerdrTransportOptions): Promise<SshHerdrTransport> {
     return new Promise((resolveTransport, rejectTransport) => {
       const client = new Client();
       const transport = new SshHerdrTransport(client, options);
+      /**
+       * An `error` event on an emitter with no `error` listener is rethrown by `EventEmitter`, i.e.
+       * it takes the process down. Both exits from the ready/error race below therefore have to
+       * leave a listener behind, because in both of them ssh2 emits `error` more than once:
+       *
+       *  - after `ready`, every later failure of the connection (nothing left to reject);
+       *  - after a pre-handshake death, a *second* event — measured, `read ECONNRESET` and then
+       *    `Connection lost before handshake` from the socket's `close` handler
+       *    (`ssh2/lib/client.js:753` via `:815`). This is the shape a phone with no signal produces
+       *    on every dial, so a reconnect loop hits it repeatedly; `test/sshTransportConnect.test.ts`
+       *    reproduces it against real ssh2.
+       *
+       * Absorbed is not ignored: the first error still settles the promise, and every one after it
+       * is counted and offered to {@link SshHerdrTransportOptions.onSuppressedError}.
+       */
+      const absorb = (error: Error): void => {
+        transport.suppressed += 1;
+        transport.lastSuppressed = error;
+        try {
+          options.onSuppressedError?.(error);
+        } catch {
+          // A handler that throws is isolated here rather than allowed to propagate: this call is
+          // inside an 'error' listener, so an escaping exception would recreate the exact crash the
+          // listener exists to prevent. The counter above already recorded the event.
+        }
+      };
       const onEarlyError = (error: Error): void => {
         client.removeListener("ready", onReady);
+        client.on("error", absorb);
         rejectTransport(error);
       };
       const onReady = (): void => {
         client.removeListener("error", onEarlyError);
         transport.connections += 1;
-        // Post-handshake errors have no request to reject; surface them instead of crashing the
-        // process on an unhandled 'error' event. Individual channels get their own close events.
-        client.on("error", () => {});
+        client.on("error", absorb);
         resolveTransport(transport);
       };
       client.once("ready", onReady);

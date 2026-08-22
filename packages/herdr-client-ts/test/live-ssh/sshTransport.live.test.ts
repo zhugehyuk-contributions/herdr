@@ -282,10 +282,17 @@ describe.skipIf(skipReason !== null)("live: herdr over an ssh transport", () => 
    */
   it("carried every channel on a single ssh connection", () => {
     process.stdout.write(
-      `[ssh] final connections=${transport.connectionCount} channels=${transport.channelCount}\n`,
+      `[ssh] final connections=${transport.connectionCount} channels=${transport.channelCount} ` +
+        `suppressedErrors=${transport.suppressedErrorCount} ` +
+        `lastSuppressed=${transport.lastSuppressedError?.message ?? "none"}\n`,
     );
     expect(transport.channelCount).toBeGreaterThanOrEqual(6);
     expect(transport.connectionCount).toBe(1);
+    // The post-handshake half of the guard in `SshHerdrTransport.connect`: it absorbs `error`
+    // events so they cannot crash the process, and this is the assertion that keeps "absorbed"
+    // from meaning "invisible" — a healthy session that quietly emitted connection errors would
+    // otherwise look identical to one that did not.
+    expect(transport.suppressedErrorCount).toBe(0);
   });
 
   it("names the right remote command for each channel kind", () => {
