@@ -3926,6 +3926,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -4107,6 +4108,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -4297,6 +4299,7 @@ mod tests {
                     agents: vec![
                         AgentSummary {
                             agent_id: "agent-1".into(),
+                            pane_id: "agent-1".into(),
                             workspace_id: "ws-1".into(),
                             label: "claude".into(),
                             status: "idle".into(),
@@ -4307,6 +4310,7 @@ mod tests {
                         },
                         AgentSummary {
                             agent_id: "agent-2".into(),
+                            pane_id: "agent-2".into(),
                             workspace_id: "ws-2".into(),
                             label: "codex".into(),
                             status: "idle".into(),
@@ -4406,6 +4410,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "main-agent".into(),
+                        pane_id: "main-agent".into(),
                         workspace_id: "main-herdr".into(),
                         label: "claude".into(),
                         status: "working".into(),
@@ -4431,6 +4436,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "codex".into(),
                         status: "idle".into(),
@@ -5651,6 +5657,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -5719,6 +5726,7 @@ mod tests {
                     agents: vec![
                         AgentSummary {
                             agent_id: "agent-a".into(),
+                            pane_id: "agent-a".into(),
                             workspace_id: "main-herdr".into(),
                             label: "alpha".into(),
                             status: "idle".into(),
@@ -5729,6 +5737,7 @@ mod tests {
                         },
                         AgentSummary {
                             agent_id: "agent-b".into(),
+                            pane_id: "agent-b".into(),
                             workspace_id: "main-herdr".into(),
                             label: "beta".into(),
                             status: "idle".into(),
@@ -5794,6 +5803,7 @@ mod tests {
                     agents: vec![
                         AgentSummary {
                             agent_id: "agent-a".into(),
+                            pane_id: "agent-a".into(),
                             workspace_id: "main-herdr".into(),
                             label: "alpha".into(),
                             status: "idle".into(),
@@ -5804,6 +5814,7 @@ mod tests {
                         },
                         AgentSummary {
                             agent_id: "agent-b".into(),
+                            pane_id: "agent-b".into(),
                             workspace_id: "main-herdr".into(),
                             label: "beta".into(),
                             status: "idle".into(),
@@ -6026,6 +6037,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -6466,6 +6478,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: agent_status.into(),
@@ -7371,6 +7384,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -7406,6 +7420,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "term-1".into(),
+                        pane_id: "term-1".into(),
                         workspace_id: "ws-1".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -7454,6 +7469,7 @@ mod tests {
                     agents: vec![
                         AgentSummary {
                             agent_id: "a1".into(),
+                            pane_id: "a1".into(),
                             workspace_id: "ws-1".into(),
                             label: "claude".into(),
                             status: "idle".into(),
@@ -7464,6 +7480,7 @@ mod tests {
                         },
                         AgentSummary {
                             agent_id: "a2".into(),
+                            pane_id: "a2".into(),
                             workspace_id: "ws-1".into(),
                             label: "codex".into(),
                             status: "idle".into(),
@@ -7527,6 +7544,7 @@ mod tests {
                     ],
                     agents: vec![AgentSummary {
                         agent_id: "agent-1".into(),
+                        pane_id: "agent-1".into(),
                         workspace_id: "main-herdr".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -7968,6 +7986,7 @@ mod tests {
             for a in 0..agents_per {
                 agents.push(AgentSummary {
                     agent_id: format!("{prefix}-agent-{w}-{a}"),
+                    pane_id: format!("{prefix}-pane-{w}-{a}"),
                     workspace_id: workspace_id.clone(),
                     label: if a % 2 == 0 {
                         "claude".into()
