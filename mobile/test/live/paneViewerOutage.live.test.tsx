@@ -80,6 +80,8 @@ import type { RemoteDefinition } from '../../src/api/herdr-api-types'
 const COLS = 100
 const ROWS = 30
 const MARKER = 'OUTAGEVIEWER'
+/** What a dial rejects with once the supervisor has aborted its signal. */
+const CANCELLED_DIAL = 'the dial was cancelled by the supervisor'
 
 vi.mock('expo-router', () => ({
   useLocalSearchParams: () => ({}),
@@ -219,17 +221,52 @@ describe.skipIf(reason !== null)('live: the pane viewer under a real outage', ()
   }
 
   /**
-   * The link factory the app would have if `HerdrRemoteConnection` could redial: **every generation
-   * opens a whole new ssh connection through the cutter.** That is what makes the outage real rather
-   * than a killed exec channel — the supervisor's `dial` must survive a refused TCP connect, and
-   * `src/transport/observe-stream-link.ts` (which reuses one transport) structurally cannot be
-   * pointed at that case. Same `ConnectionSupervisor`, same `SupervisedRemote`, same UI.
+   * A link factory that opens **a whole new ssh connection per generation, through the cutter.**
+   *
+   * Still its own factory rather than `createObserveStreamLink`, and now for a narrower reason than
+   * before. It used to be the *only* thing that could redial ssh at all; production can do that now
+   * (`src/transport/redialable-transport.ts`, decided in `src/transport/observe-stream-link.ts`).
+   * What this keeps is that here a redial is **unconditional and per dial**, which is what lets the
+   * receipt count TCP connects at the proxy and assert L7 — "the tap produced a new ssh dial" — as
+   * a number. The production criteria are deliberately *not* unconditional, so a receipt written on
+   * top of them would be measuring the pacing rule, not the recovery.
+   *
+   * What it no longer keeps is a private notion of supersession. `dial`'s second argument is the
+   * supervisor's cancellation signal (`src/transport/connection-supervisor.ts`), and `retire` below
+   * is the same shape `observe-stream-link.ts`'s is — that convergence is the point of the
+   * contract: two factories, one rule about who may still act, instead of a token comparison here
+   * and a `DialRecord` there.
    */
   const sshRedialLink: SupervisorLinkFactory = (hooks) => {
     let activeToken: object | null = null
 
-    const dial = async (signalHandshaking: () => void): Promise<SupervisedLink> => {
+    const dial = async (
+      signalHandshaking: () => void,
+      signal: AbortSignal
+    ): Promise<SupervisedLink> => {
       const token = {}
+      let retired = false
+      let failed: ((error: Error) => void) | null = null
+      /** Reassigned as each resource appears, so `retire` drops exactly what exists by then. */
+      let release: (() => void) | null = null
+
+      /** This generation gives up its channel, its ssh connection and its right to report. */
+      const retire = (reason: string): void => {
+        if (retired) {
+          return
+        }
+        retired = true
+        if (activeToken === token) {
+          activeToken = null
+        }
+        release?.()
+        failed?.(new Error(reason))
+      }
+
+      // Both abandonments now arrive the same way: `terminate()` from the supervisor's teardown,
+      // and this for the ones it has no handle for — a stale dial (L5), a fatal latch, `close()`.
+      signal.addEventListener('abort', () => retire(CANCELLED_DIAL), { once: true })
+
       dials += 1
       const transport = await SshHerdrTransport.connect({
         ssh: {
@@ -250,14 +287,33 @@ describe.skipIf(reason !== null)('live: the pane viewer under a real outage', ()
           suppressedDialErrors += 1
         }
       })
+      const drop = (channel: ServerMessageChannel | null) => () => {
+        try {
+          channel?.close()
+        } catch {
+          // already gone
+        }
+        transport.close()
+        openTransports = openTransports.filter((entry) => entry !== transport)
+      }
       openTransports.push(transport)
+      release = drop(null)
+      if (retired) {
+        // Cancelled while the TCP connect was in flight — the case with no owner at all before the
+        // signal existed: the supervisor holds only a promise, so this connection and its sshd
+        // session would have stayed up with nobody able to close either.
+        release()
+        throw new Error(CANCELLED_DIAL)
+      }
 
       let welcomed: (() => void) | null = null
-      let failed: ((error: Error) => void) | null = null
       const handshake = new Promise<void>((resolve, reject) => {
         welcomed = resolve
         failed = reject
       })
+      // A cancellation can reject this before `await handshake` is reached; the no-op handler keeps
+      // that window from being graded an unhandled rejection.
+      void handshake.catch(() => {})
 
       const channel = await ServerMessageChannel.open(transport, {
         onMessage: (message) => {
@@ -287,6 +343,11 @@ describe.skipIf(reason !== null)('live: the pane viewer under a real outage', ()
           }
         }
       })
+      release = drop(channel)
+      if (retired) {
+        release()
+        throw new Error(CANCELLED_DIAL)
+      }
       signalHandshaking()
       await channel.send(
         encodeHelloFrame({
@@ -297,6 +358,9 @@ describe.skipIf(reason !== null)('live: the pane viewer under a real outage', ()
         })
       )
       await handshake
+      if (retired) {
+        throw new Error(CANCELLED_DIAL)
+      }
       activeToken = token
 
       return {
@@ -304,18 +368,7 @@ describe.skipIf(reason !== null)('live: the pane viewer under a real outage', ()
           void Promise.resolve(channel.send(encodePingFrame(nonce))).catch(() => {})
           return true
         },
-        terminate: () => {
-          if (activeToken === token) {
-            activeToken = null
-          }
-          try {
-            channel.close()
-          } catch {
-            // already gone
-          }
-          transport.close()
-          openTransports = openTransports.filter((entry) => entry !== transport)
-        }
+        terminate: () => retire('the link was terminated')
       }
     }
 

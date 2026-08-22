@@ -81,8 +81,20 @@ export type ConnectionSupervisorOptions = {
    * dial became a handshake, which is the state L5 treats as "still a dial" — an ssh connection
    * that authenticated but whose remote `herdr` never answered is exactly 05's mapping of orca's
    * handshake timeout ("ssh는 붙었는데 원격 herdr이 말을 안 함").
+   *
+   * `signal` is aborted the moment this supervisor stops caring about the dial — a supersession
+   * (L5, L7), a death, or `close()`. It exists because the supervisor's *own* handle on an
+   * unresolved dial is a promise and nothing else (see {@link notifyForeground}): whatever that
+   * promise opened underneath — an exec channel, an ssh connection, a remote `herdr` process (B8)
+   * — is invisible from here, so abandoning it silently leaks all three. Before this, every link
+   * factory had to notice supersession for itself and they did it differently
+   * (`./observe-stream-link.ts`'s `DialRecord` vs `test/live/paneViewerOutage.live.test.tsx`'s
+   * token), which is one implementation per factory of the rule this parameter states once.
+   *
+   * A factory that ignores it still compiles and still works exactly as it did; what it loses is
+   * the cancellation.
    */
-  dial: (signalHandshaking: () => void) => Promise<SupervisedLink>
+  dial: (signalHandshaking: () => void, signal: AbortSignal) => Promise<SupervisedLink>
   /**
    * Re-establishes one stored subscription on the *current* link. Resolves `true` when the observe
    * request went out. X1: the supervisor decides *that* a replay is owed; only the caller knows how
@@ -127,6 +139,8 @@ export class ConnectionSupervisor {
   private nonce = 0
   /** Bumped whenever the link object is replaced. X4's "the handle you hold may be stale". */
   private generation = 0
+  /** The live generation's cancellation. Aborted by {@link teardownLink}, i.e. by every exit. */
+  private dialAbort: AbortController | null = null
 
   constructor(options: ConnectionSupervisorOptions) {
     this.options = options
@@ -286,16 +300,20 @@ export class ConnectionSupervisor {
     if (this.intentionallyClosed) {
       return
     }
+    // Aborts the generation this one replaces, before a single byte of the new dial goes out —
+    // `teardownLink` is where every abandonment funnels, so supersession needs no separate line.
     this.teardownLink()
     this.dialStartedAt = this.now()
     this.setState('connecting')
     const generation = this.generation
+    const abort = new AbortController()
+    this.dialAbort = abort
     void this.options
       .dial(() => {
         if (generation === this.generation && this.state === 'connecting') {
           this.setState('handshaking')
         }
-      })
+      }, abort.signal)
       .then(
         (link) => {
           if (generation !== this.generation || this.intentionallyClosed) {
@@ -400,6 +418,13 @@ export class ConnectionSupervisor {
   }
 
   private teardownLink(): void {
+    if (this.dialAbort !== null) {
+      const abort = this.dialAbort
+      // Cleared first: a listener that reacts synchronously must not see a controller this
+      // supervisor still considers current.
+      this.dialAbort = null
+      abort.abort()
+    }
     if (this.identity) {
       this.watchdog.stop(this.identity)
       this.identity = null

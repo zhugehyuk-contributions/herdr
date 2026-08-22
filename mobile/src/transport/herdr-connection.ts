@@ -43,6 +43,25 @@ export type HerdrRemoteConnection = {
     handlers: ServerMessageChannelHandlers,
     options?: ServerMessageChannelOptions
   ) => Promise<ServerMessageChannel>
+  /**
+   * Replaces the transport underneath this connection — the ssh dial, one level down.
+   *
+   * The **only** addition to the deliberate omission above, and it is not connection state: it is
+   * the missing *verb*. Both faces of this object multiplex onto one transport somebody else
+   * opened, so when that transport dies every `api` request and every `openTerminalStream` on this
+   * connection fails identically and forever. `./connection-supervisor.ts` keeps asking — L3's
+   * whole point is that it never stops — and each ask is another exec against a corpse. Recovering
+   * it needs a dialer, and this is the narrowest possible shape of one: no policy, no state, no
+   * timer, just "open another one and point me at it". *When* to call it is L3's business and is
+   * decided in `./observe-stream-link.ts`.
+   *
+   * Absent wherever the transport is a value that cannot be redialled — every unit test's fake, and
+   * the Node harness. A caller that finds it missing behaves exactly as it did before it existed.
+   *
+   * The signal is the supervisor's (`ConnectionSupervisorOptions.dial`), so a dial the supervisor
+   * walked away from does not leave a connect in flight.
+   */
+  redialTransport?: (signal: AbortSignal) => Promise<void>
 }
 
 export type TransportConnectionOptions = {

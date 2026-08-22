@@ -54,6 +54,26 @@ const SUPERSEDED_MESSAGE = 'the dial was superseded by a newer one'
 /** Retirement's reason when the peer answered and the answer was refused. Never rejects a dial. */
 const HANDSHAKE_REFUSED_MESSAGE = 'the handshake was refused'
 
+/** What a dial's rejection says when the supervisor aborted its signal. */
+const DIAL_CANCELLED_MESSAGE = 'the dial was cancelled by the supervisor'
+
+/**
+ * Consecutive dials that must fail before the **ssh connection itself** is replaced.
+ *
+ * The only number in this file, and it is a ratio rather than a delay: *when* to dial is L3's
+ * (`./reconnect-policy.ts`), and this says how many of L3's dials go to the cheap repair before the
+ * expensive one is tried. The ssh connection is therefore re-opened at most once per three rungs of
+ * the ladder, at whatever pace the ladder is running — every ~3.5s early, every ~4.5 minutes once
+ * it has settled into the 90s trickle. Nothing here needs a timer of its own, and adding one would
+ * be the second scheduler orca's #10119 is about.
+ *
+ * Three, because the cheap repair's success cases are short: a `remote-client-bridge` that exited,
+ * a remote `herdr` that was restarted, an exec that lost a race with one. Those come back within a
+ * rung or two. Past three the evidence is no longer "the bridge is flapping" — it is that nothing
+ * this connection carries completes, and the connection is what every attempt had in common.
+ */
+export const SSH_REDIAL_AFTER_FAILED_DIALS = 3
+
 /**
  * One dial's private state. The unit of isolation this file is built around.
  *
@@ -86,6 +106,14 @@ type DialRecord = {
    * and L6's ladder both key off (`./connection-supervisor.ts`).
    */
   retired: boolean
+  /**
+   * This dial's `Welcome` was accepted. Distinct from {@link DialRecord.active}, which `renounce`
+   * clears: what the redial rule needs is not "is this generation live" but "did this generation
+   * ever prove the ssh connection works", and a live link dying is not evidence against it.
+   */
+  welcomed: boolean
+  /** Already booked as a failed dial. One dial contributes at most one, whichever death finds it. */
+  counted: boolean
   /** Rejects this dial's `await handshake`, so retiring it settles the promise instead of parking it. */
   fail: ((error: Error) => void) | null
 }
@@ -100,14 +128,26 @@ export type ObserveStreamLinkOptions = {
 /**
  * Builds `dial`/`replay` against one already-dialled {@link HerdrRemoteConnection}.
  *
- * ⚠️ **What this can and cannot recover from.** Every generation opens a *new exec channel on the
- * same ssh connection*, because `HerdrRemoteConnection` exposes no redial — it is a wrapper over a
- * transport somebody else opened (`./herdr-connection.ts`). So this recovers a dead bridge, a killed
- * remote `herdr`, a stalled stream; it cannot recover a dead ssh connection, which needs a dialer
- * one level down (`modules/herdr-ssh/src/app-connections.ts` holds the only object that could
- * supply one). That is stated here rather than discovered on a phone, and it is why the live receipt
- * supplies its own factory: a supervisor whose `dial` really redials ssh proves the state machine
- * end to end, and this one proves the app is wired to it.
+ * ⚠️ **The two deaths, and why one dial covers both.** A generation normally opens a *new exec
+ * channel on the same ssh connection*, which recovers a dead bridge, a killed remote `herdr` and a
+ * stalled stream, and costs one round trip. It cannot recover a dead ssh connection — every exec on
+ * one of those fails identically forever, and L3 reproduces that failure every few seconds. This
+ * file used to say so and stop there; what closes it is `HerdrRemoteConnection.redialTransport`
+ * (`./herdr-connection.ts`), supplied by whoever dialled — `modules/herdr-ssh/src/app-connections.ts`
+ * on a phone, `test/live/` over `SshHerdrTransport`, absent in every unit fake.
+ *
+ * So the question this file answers is no longer "can it", it is **"when"**, and the answer is
+ * evidence-first because the two repairs differ by three orders of magnitude in cost (one round
+ * trip vs. a TCP handshake, a key exchange, a signature and a new remote `herdr` process — B8):
+ *
+ *   · **the connection refused to open an exec channel** — the ssh session is gone as a fact, not a
+ *     suspicion. Redial on the next dial.
+ *   · **{@link SSH_REDIAL_AFTER_FAILED_DIALS} consecutive dials never reached `Welcome`** — the
+ *     connection may still *accept* channels (a half-open TCP after a Wi-Fi↔LTE switch does, until
+ *     something times out) while nothing on it completes. Redial, then go back to the cheap repair.
+ *
+ * Both counters reset on a `Welcome`, so a connection that works is never suspected, and neither
+ * branch has a clock: L3's ladder is what paces them.
  */
 export function createObserveStreamLink(options: ObserveStreamLinkOptions): SupervisorLinkFactory {
   const { connection } = options
@@ -124,9 +164,33 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
     let latest: DialRecord | null = null
     /** The generation that completed the handshake — the one `replay` writes on (X1). */
     let live: DialRecord | null = null
+    /** Dials that never reached `Welcome`, since the last one that did. Zeroed by a `Welcome`. */
+    let failedDials = 0
+    /** {@link failedDials}'s value when the ssh connection was last replaced. The rate limiter. */
+    let redialledAtFailure = 0
+    /** The connection refused to open an exec channel: the ssh session is gone, not suspected. */
+    let execOpenRefused = false
+
+    /**
+     * Books one failed dial, at most once per generation.
+     *
+     * Placed on the retirement path rather than on the throw path because of *when* the number is
+     * read: the decision below runs in the prologue of the next dial, synchronously, and a dial's
+     * own rejection reaches its `catch` a microtask later than that. L5's abandonment — the phone
+     * suspended mid-handshake, which is the case where the ssh connection is most likely to be the
+     * problem — is exactly the shape that would arrive too late to count.
+     */
+    const noteDialFailed = (record: DialRecord): void => {
+      if (record.welcomed || record.counted) {
+        return
+      }
+      record.counted = true
+      failedDials += 1
+    }
 
     /** Takes a generation's rights away and hands back whatever channel it still owns. */
     const renounce = (record: DialRecord): ServerMessageChannel | null => {
+      noteDialFailed(record)
       const channel = record.channel
       record.retired = true
       record.active = false
@@ -163,8 +227,44 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
       record.fail?.(new Error(reason))
     }
 
-    const dial = async (signalHandshaking: () => void): Promise<SupervisedLink> => {
-      const record: DialRecord = { channel: null, active: false, retired: false, fail: null }
+    /**
+     * Replaces the ssh connection when — and only when — it is the suspect. See the file header.
+     *
+     * Both counters are advanced *before* the dial rather than after it, so a redial that itself
+     * fails does not immediately license another one: the rejection travels up as a failed dial and
+     * L3 backs off, which is the pacing the whole design leans on.
+     */
+    const redialSshIfOwed = async (signal: AbortSignal | undefined): Promise<void> => {
+      const redial = connection.redialTransport
+      const reason = execOpenRefused
+        ? 'the connection refused an exec channel'
+        : `${failedDials} dial(s) since the last Welcome`
+      const owed =
+        execOpenRefused || failedDials - redialledAtFailure >= SSH_REDIAL_AFTER_FAILED_DIALS
+      if (redial === undefined || !owed) {
+        return
+      }
+      redialledAtFailure = failedDials
+      execOpenRefused = false
+      options.onLog?.(`redialling ssh — ${reason}`)
+      // An absent signal means a caller that is not the supervisor (a receipt driving the factory
+      // directly); a controller nobody aborts is the honest stand-in for "this dial is never
+      // cancelled" and keeps the redial contract single-shaped.
+      await redial(signal ?? new AbortController().signal)
+    }
+
+    const dial = async (
+      signalHandshaking: () => void,
+      signal?: AbortSignal
+    ): Promise<SupervisedLink> => {
+      const record: DialRecord = {
+        channel: null,
+        active: false,
+        retired: false,
+        welcomed: false,
+        counted: false,
+        fail: null
+      }
       // Before the first `await`, so a close delivered on the way up already has a claimant, and so
       // the generation this one replaces stops being able to speak the moment it is replaced.
       const superseded = latest
@@ -183,76 +283,109 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
       // handshake` below still sees the rejection.
       void handshake.catch(() => {})
 
-      const opened = await connection.openTerminalStream({
-        onMessage: (message) => {
-          if (record.retired) {
-            // Not this generation's link any more. Counting these frames as liveness would credit
-            // the live connection for bytes a dead one produced, which is exactly the evidence L1
-            // exists to require.
-            return
-          }
-          hooks.noteInbound()
-          if (message.type !== 'welcome') {
-            return
-          }
-          try {
-            // The same check `PaneObserver` makes, for the same reason: the server answers with the
-            // encoding it *actually* chose, and a protocol mismatch has to surface as a failed dial
-            // rather than as a link the supervisor believes is healthy.
-            assertWelcomeAccepted(message, { encoding: RenderEncoding.TerminalAnsi })
-          } catch (error: unknown) {
-            record.fail?.(error instanceof Error ? error : new Error(String(error)))
-            return
-          }
-          welcomed?.()
-        },
-        // L1's answer arrives here, not in `onMessage`: `ServerMessage::Pong` is variant 10 and this
-        // codec decodes only `Welcome` and `Terminal`. A frame that reached the variant dispatcher
-        // already cleared the length prefix and the frame boundary, which is exactly the evidence
-        // the watchdog asks for (`./client-ping.ts`).
-        onUndecodable: () => {
-          if (record.retired) {
-            return
-          }
-          hooks.noteInbound()
-        },
-        onError: (error) => {
-          if (record.retired) {
-            return
-          }
-          record.fail?.(error)
-        },
-        onClose: (close) => {
-          if (record.retired) {
-            // A superseded generation dying late: either L5 abandoned this dial and redialled
-            // (`./connection-supervisor.ts` `notifyForeground`), or `terminate`/`retire` above
-            // already handed the supervisor a synthesized close. Reporting now would book a second
-            // failure against the generation that replaced it, and the attempt counter is what
-            // L3's cap and L6's ladder both key off.
-            return
-          }
-          // The peer closed it, so there is nothing left for anyone to close — renounce and drop
-          // the handle rather than routing it through `retire`.
-          renounce(record)
-          // The close goes to the supervisor as the *struct*, before the dial is settled and
-          // whether or not the handshake ever completed. `classifyChannelFailure`
-          // (`./channel-failure.ts:142-181`) reads `stderr`/`exitCode`/`error` off a
-          // `HerdrChannelClose` to decide `fatal`, and a pre-`Welcome` close is exactly where the
-          // fatal evidence lives — ssh writes `Permission denied (publickey)` to stderr and the
-          // channel then dies with a generic `error`. Rejecting the dial with a rendered string was
-          // the only escape route, and the supervisor's dial-rejection path re-wraps that string as
-          // `{ error }`, so a refused key graded `transport` and L3 retried it forever.
-          hooks.reportClosed(close)
-          // A close before `Welcome` must also settle the dial, or the supervisor sits in
-          // `handshaking` with no timer — which is L5's park wearing a different hat. It rejects
-          // with a `ChannelCloseError` rather than a bare `Error` so this is a second complete
-          // route for the same evidence and not a fallback that quietly loses half of it: a promise
-          // can only reject with an error, and the supervisor's rejection path would otherwise
-          // rebuild the close from the message alone (`./connection-supervisor.ts`), where
-          // `exitCode` no longer exists as a field for the `missing-binary` verdict to read.
-          record.fail?.(new ChannelCloseError(describeClose(DIAL_CLOSE_PREFIX, close), close))
-        }
+      // The supervisor's cancellation contract (`./connection-supervisor.ts`). It names the same
+      // deaths `latest` already covers *plus* the ones this file cannot see — `close()`, a fatal
+      // latch, L7's Retry — and every one of them means the same thing here, so one `retire`
+      // serves all of them. Registered after `record.fail` exists so the abort settles the dial
+      // instead of leaving it pending, and `{ once: true }` because a signal aborts once.
+      if (signal?.aborted === true) {
+        retire(record, DIAL_CANCELLED_MESSAGE)
+        throw new Error(DIAL_CANCELLED_MESSAGE)
+      }
+      signal?.addEventListener('abort', () => retire(record, DIAL_CANCELLED_MESSAGE), {
+        once: true
       })
+
+      // Before the exec channel, because it decides *which connection* the exec channel is opened
+      // on. A no-op on a healthy connection, and on every caller that supplied no dialer.
+      await redialSshIfOwed(signal)
+
+      let opened: ServerMessageChannel
+      try {
+        opened = await connection.openTerminalStream({
+          onMessage: (message) => {
+            if (record.retired) {
+              // Not this generation's link any more. Counting these frames as liveness would credit
+              // the live connection for bytes a dead one produced, which is exactly the evidence L1
+              // exists to require.
+              return
+            }
+            hooks.noteInbound()
+            if (message.type !== 'welcome') {
+              return
+            }
+            try {
+              // The same check `PaneObserver` makes, for the same reason: the server answers with the
+              // encoding it *actually* chose, and a protocol mismatch has to surface as a failed dial
+              // rather than as a link the supervisor believes is healthy.
+              assertWelcomeAccepted(message, { encoding: RenderEncoding.TerminalAnsi })
+            } catch (error: unknown) {
+              record.fail?.(error instanceof Error ? error : new Error(String(error)))
+              return
+            }
+            welcomed?.()
+          },
+          // L1's answer arrives here, not in `onMessage`: `ServerMessage::Pong` is variant 10 and this
+          // codec decodes only `Welcome` and `Terminal`. A frame that reached the variant dispatcher
+          // already cleared the length prefix and the frame boundary, which is exactly the evidence
+          // the watchdog asks for (`./client-ping.ts`).
+          onUndecodable: () => {
+            if (record.retired) {
+              return
+            }
+            hooks.noteInbound()
+          },
+          onError: (error) => {
+            if (record.retired) {
+              return
+            }
+            record.fail?.(error)
+          },
+          onClose: (close) => {
+            if (record.retired) {
+              // A superseded generation dying late: either L5 abandoned this dial and redialled
+              // (`./connection-supervisor.ts` `notifyForeground`), or `terminate`/`retire` above
+              // already handed the supervisor a synthesized close. Reporting now would book a second
+              // failure against the generation that replaced it, and the attempt counter is what
+              // L3's cap and L6's ladder both key off.
+              return
+            }
+            // The peer closed it, so there is nothing left for anyone to close — renounce and drop
+            // the handle rather than routing it through `retire`.
+            renounce(record)
+            // The close goes to the supervisor as the *struct*, before the dial is settled and
+            // whether or not the handshake ever completed. `classifyChannelFailure`
+            // (`./channel-failure.ts:142-181`) reads `stderr`/`exitCode`/`error` off a
+            // `HerdrChannelClose` to decide `fatal`, and a pre-`Welcome` close is exactly where the
+            // fatal evidence lives — ssh writes `Permission denied (publickey)` to stderr and the
+            // channel then dies with a generic `error`. Rejecting the dial with a rendered string was
+            // the only escape route, and the supervisor's dial-rejection path re-wraps that string as
+            // `{ error }`, so a refused key graded `transport` and L3 retried it forever.
+            hooks.reportClosed(close)
+            // A close before `Welcome` must also settle the dial, or the supervisor sits in
+            // `handshaking` with no timer — which is L5's park wearing a different hat. It rejects
+            // with a `ChannelCloseError` rather than a bare `Error` so this is a second complete
+            // route for the same evidence and not a fallback that quietly loses half of it: a promise
+            // can only reject with an error, and the supervisor's rejection path would otherwise
+            // rebuild the close from the message alone (`./connection-supervisor.ts`), where
+            // `exitCode` no longer exists as a field for the `missing-binary` verdict to read.
+            record.fail?.(new ChannelCloseError(describeClose(DIAL_CLOSE_PREFIX, close), close))
+          }
+        })
+      } catch (error: unknown) {
+        // The whole of the first redial criterion, and it is a fact rather than an inference: the
+        // transport could not multiplex an exec channel onto its ssh connection, which is the one
+        // thing a *live* session always can (`packages/herdr-client-ts/src/transport.ts`,
+        // obligation 5). `NativeSshHerdrTransport.openChannel` rejects here after sshj/libssh2 has
+        // already given up on the session, and `RedialableTransport` rejects here once the
+        // connection has been closed. Neither improves by being asked again on the same connection.
+        //
+        // The flag is read by the *next* dial rather than acted on now, deliberately: this dial has
+        // already failed, L3 owns the interval before the next one, and repairing inside a dial
+        // would put a second retry loop inside the one that exists.
+        execOpenRefused = true
+        throw error
+      }
       if (record.retired) {
         // Superseded while the exec channel was still opening. This is the only line that can close
         // it: `record.channel` was still null when `retire` ran, and the caller never sees a
@@ -300,7 +433,15 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
         throw new Error(SUPERSEDED_MESSAGE)
       }
       record.active = true
+      record.welcomed = true
       live = record
+      // The connection just carried an exec request, a wire-ABI prelude, a `Hello` and a `Welcome`.
+      // Nothing that happens to a *bridge* after this is evidence against it, so the suspicion
+      // starts again from zero — a link that flaps once an hour must never accumulate its way into
+      // re-dialling ssh.
+      failedDials = 0
+      redialledAtFailure = 0
+      execOpenRefused = false
       options.onLog?.(`health link up (${cols}x${rows})`)
 
       return {

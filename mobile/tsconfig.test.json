@@ -38,6 +38,8 @@
     "src/transport/protocol-compat.test.ts",
     "src/transport/client-ping.test.ts",
     "src/transport/connection-supervisor.test.ts",
+    "src/transport/redialable-transport.test.ts",
+    "src/transport/ssh-redial.test.ts",
     "src/transport/rpc-delivery-ambiguity.test.ts",
     "src/transport/revival-nudge.test.ts",
     "modules/herdr-ssh/test/ssh-transport.test.ts",

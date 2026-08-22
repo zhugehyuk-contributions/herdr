@@ -10,7 +10,10 @@
 // import would make `app/_layout.tsx` unloadable in the test environment and break two existing
 // suites.
 import { useEffect, useState } from 'react'
-import { createTransportConnection } from '../../../src/transport/herdr-connection'
+import {
+  createRedialableConnection,
+  type RedialableTransport
+} from '../../../src/transport/redialable-transport'
 import type { HerdrRemoteConnection } from '../../../src/transport/herdr-connection'
 import type { RemoteDefinition } from '../../../src/api/herdr-api-types'
 import { loadNativeHerdrSsh } from './native-module'
@@ -29,6 +32,10 @@ export interface DialedRemotes {
    * `src/transport/herdr-connection.ts`'s deliberate omission, since ref-counting and reconnection
    * are a whole state machine scheduled for stage 8. Until it lands, whoever dialled is the only
    * one who can hang up, so the handles come back with the connections.
+   *
+   * Each is now a `RedialableTransport` rather than the ssh connection itself, so closing it closes
+   * whichever connection is current — a hang-up that happens after a redial must not leave the
+   * *replacement* connection open with nobody holding it.
    */
   transports: readonly { close(): void | Promise<void> }[]
   /** `id: reason` for every host that was configured but could not be reached. */
@@ -61,11 +68,22 @@ function remoteDefinition(config: HerdrSshRemoteConfig): RemoteDefinition {
   return definition
 }
 
-/** Dials one host. Its own function so one unreachable remote cannot take the others down. */
+/**
+ * Dials one host. Its own function so one unreachable remote cannot take the others down.
+ *
+ * What comes back is a connection that can be dialled **again** — this file is the "dialer one level
+ * down" `src/transport/observe-stream-link.ts` used to say it did not have, and the whole of the
+ * supply is the closure below. The same `options` object is reused verbatim on every redial: the
+ * remote's identity, its key and its host-key policy are the configuration, and re-deriving them
+ * per dial is how two dials to "the same host" end up not being the same host.
+ *
+ * Nothing here decides *when*. That is L3's pacing and `observe-stream-link.ts`'s criteria; this
+ * only makes the verb exist.
+ */
 async function dialRemote(
   native: Awaited<ReturnType<typeof loadNativeHerdrSsh>>,
   config: HerdrSshRemoteConfig
-): Promise<{ connection: HerdrRemoteConnection; transport: NativeSshHerdrTransport }> {
+): Promise<{ connection: HerdrRemoteConnection; transport: RedialableTransport }> {
   if (native === null) {
     throw new Error('no HerdrSsh native module in this build')
   }
@@ -85,8 +103,13 @@ async function dialRemote(
     ...(config.session === undefined ? {} : { session: config.session }),
     ...(config.env === undefined ? {} : { env: config.env })
   }
-  const transport = await NativeSshHerdrTransport.connect(native, options)
-  return { connection: createTransportConnection(remoteDefinition(config), transport), transport }
+  // The signal is not forwarded and that is not an oversight: `NativeSshHerdrTransport.connect`
+  // bottoms out in sshj/libssh2 through a native bridge that has no cancellation, only
+  // `connectTimeoutMs` (`./remote-config.ts`, 20s by default). `RedialableTransport` honours it at
+  // the seam instead — a connection that lands after the caller gave up is closed, not installed.
+  const open = (): Promise<NativeSshHerdrTransport> =>
+    NativeSshHerdrTransport.connect(native, options)
+  return createRedialableConnection(remoteDefinition(config), await open(), open)
 }
 
 /**
@@ -103,7 +126,7 @@ export async function openConfiguredSshConnections(): Promise<DialedRemotes> {
   const native = await loadNativeHerdrSsh()
   const settled = await Promise.allSettled(configs.map((config) => dialRemote(native, config)))
   const connections: HerdrRemoteConnection[] = []
-  const transports: NativeSshHerdrTransport[] = []
+  const transports: RedialableTransport[] = []
   const failures: string[] = []
   for (const [index, result] of settled.entries()) {
     if (result.status === 'fulfilled') {
