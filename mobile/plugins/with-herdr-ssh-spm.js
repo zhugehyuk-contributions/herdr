@@ -27,9 +27,19 @@
 const { withXcodeProject } = require('expo/config-plugins')
 
 /**
- * Pinned exactly, not by range. A floating ssh dependency in a mobile release is a crypto stack
- * that changes without anyone deciding to change it; `upToNextMinorVersion` is the widest rule that
- * still keeps the major/minor pair a human chose.
+ * Pinned to a minor range, NOT to an exact version: the requirement emitted below is
+ * `upToNextMinorVersion` from 0.12.1, i.e. `0.12.1 ..< 0.13.0`, so Citadel patch releases are
+ * picked up without a decision here. That is deliberate — patch releases of an ssh stack are
+ * usually the security fixes you want — but it is a range, and the rationale cuts both ways: a
+ * floating ssh dependency in a mobile release is a crypto stack that changes without anyone
+ * deciding to change it. `upToNextMinorVersion` is the widest rule that still keeps the
+ * major/minor pair a human chose; if this app ever needs a reproducible crypto stack per release,
+ * switch `kind` to `exactVersion` and take the update cost explicitly.
+ *
+ * (Corrected 2026-08-22: this comment previously opened with "Pinned exactly, not by range",
+ * which contradicted the `kind` two dozen lines below. Verified live the same day: Citadel 0.12.1
+ * and swift-nio-ssh 0.15.0 tags both exist; sshj 0.40.0, eddsa 0.3.0 and slf4j-nop 2.0.16 all
+ * resolve on Maven Central. None of this module has been compiled — see ios/HerdrSsh.podspec.)
  */
 const PACKAGES = [
   {
