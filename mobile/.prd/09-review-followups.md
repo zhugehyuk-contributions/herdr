@@ -131,6 +131,41 @@ printWidth:100, trailingComma:"none"}`까지 맞추면 216 → **65개**로 떨�
 
 ---
 
+## F. Rust 테스트 게이트 — 실패 7건 중 6건은 테스트 결함이었다 (2026-08-22)
+
+`cargo nextest run --all-features --retries 2 --no-fail-fast`를 이 브랜치에서 돌리면
+**3890건 중 7건 실패**한다. 머지 전 베이스라인(3604건)에서도 **이름까지 동일한 7건**이 실패했으므로
+M-1 업스트림 머지가 만든 신규 실패는 **0건**이다 `[v]`.
+
+**6건의 근본 원인은 앰비언트 환경 유출이다.** 개발 셸이 herdr 세션 안에 있으면 `HERDR_SESSION`이
+테스트 프로세스로 상속되고, `main_server_remote_targets()`가 그 값을 메인 서버의 자기 타깃으로
+읽는다(`src/app/api/remotes.rs:106-117` → `session::active_name()` → `src/session.rs:96-101`).
+그래서 `remote.add`에 `local:dev`를 넣는 테스트가 `duplicate_remote_target`으로 거절되고,
+`add["result"]["remote"]["id"].as_str().unwrap()`이 `None`에서 패닉한다(`remotes.rs:273`).
+**이 세션의 셸이 정확히 `HERDR_SESSION=dev`였다** — 즉 테스트가 자기를 돌리는 사람의 세션 이름에
+따라 결과가 갈린다. CI(세션 밖)에서는 green이므로 아무도 못 본다.
+
+판별 실측 `[v]`:
+
+| 실행 | 결과 |
+|---|---|
+| `HERDR_SESSION=dev` 상속, 전량 | 3883 passed / **7 failed** |
+| herdr env 6종 제거, 전량 | 3889 passed / **1 failed** |
+| 같은 단위 테스트 단독, env 있음 / 없음 | FAIL / **PASS** |
+
+**수리 방향**: 테스트가 앰비언트 env에 의존하지 않도록 `test_app()`이 `HERDR_SESSION`을 명시적으로
+비우거나, `main_server_remote_targets()`를 주입 가능하게 만든다. 지금은 **테스트 결함**이지
+제품 결함이 아니다 — 실사용에서는 자기 세션을 원격으로 다시 등록하는 것을 막는 의도된 동작이다.
+
+**잔존 1건 — `live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session`**은 성격이 다르다.
+머지 전 베이스라인에서 **1.761초에 PASS**했는데, 지금은 `agent.get`이 끝내 result를 못 받아
+데드라인에서 죽는다(`tests/live_handoff.rs:1306`). 앰비언트 env **있는** 전량 실행에서는 통과하고,
+env 없는 전량·바이너리 단위·단독 실행에서는 3/3 실패한다 → **순서/환경 의존**이며 단일 원인을
+아직 못 집었다. 모바일 커밋은 Rust를 한 줄도 건드리지 않으므로 이 브랜치 작업의 산물은 아니다.
+**분류 미완 — 다음 사람이 여기서 시작한다.**
+
+---
+
 ---
 
 **규율**: 이 목록은 *n번째 문서화*가 아니라 **추적 큐**다. 항목을 닫을 때는 여기서 지우고 커밋 메시지에 근거를 남긴다.
