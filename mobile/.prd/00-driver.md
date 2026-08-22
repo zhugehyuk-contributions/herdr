@@ -78,6 +78,21 @@ orca의 나머지 절반(PTY 리사이즈)이 부재한다는 것도 증명됐�
 
 ---
 
+## ⛔ 유저 게이트 — 에이전트가 못 넘는 것 (2026-08-23 실측)
+
+이 둘은 판단이 아니라 **계정 액션**이다. Xcode 설치가 그랬듯 여기서 멈춘다.
+
+| 게이트 | 무엇이 막히나 | 실측 근거 |
+|---|---|---|
+| **코드사이닝 아이덴티티** (0개) | **iOS M2b 판정 불가.** 엔타이틀먼트가 비어 키체인이 안 돌고 `expo-secure-store`가 아예 실행되지 않는다. iOS는 그 코드가 *실제로 필요한 유일한 플랫폼*인데(Android는 앱 삭제 시 secure-store가 원래 사라진다) 그 시험을 못 한다 | `.prd/09` §R. 재서명 우회 2회 실패(`containerization was prevented`) — 3회째 금지 |
+| **Expo 계정 + EAS projectId** | **M5 푸시의 동작 경로 전체.** `getExpoPushTokenAsync`가 projectId 없이는 `ERR_NOTIFICATIONS_NO_EXPERIENCE_ID`로 던진다 | `npx expo whoami` = `Not logged in` · `eas.json` 부재 · `~/.expo/state.json`의 `auth` 없음 · 코드 경로 `use-blocked-push.ts:210-233` |
+
+**M5의 절반은 이 게이트 없이도 닫힌다** — 푸시가 안 오는 것이 *보이게* 만드는 쪽(`app/settings.tsx`의
+`NotificationsSection`이 `no-token`을 읽을 수 있는 문장으로 표시). 그게 이 기능에서 조용한 실패를
+막는 유일한 표면이므로, 게이트 전에 QA할 값어치가 있는 것은 그 degraded 경로다.
+
+---
+
 ## 다음 행동
 
 순서는 "막힌 것을 먼저 알리고, 안 막힌 것을 끝까지"다.
