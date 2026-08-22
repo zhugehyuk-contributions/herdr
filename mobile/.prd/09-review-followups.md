@@ -266,6 +266,39 @@ assertion that is false on Linux`로, 이 영역엔 Linux 특이 파손 전력�
 
 ---
 
+## K. 전송 계층 중복 3건 — 1건은 증거유실 버그 (2026-08-22, 동료 세션 제보 + dispatcher 검증)
+
+세 건 모두 `file:line`으로 직접 확인했다 `[v]`. 이 브랜치가 만든 것이 아니라 M4 전송 작업에 이미 있던 것이다.
+
+**K1 (correctness, 최우선) — `mobile/src/transport/observe-stream-link.ts:184` `closeSummary`가
+인증 증거를 정확히 그때 버린다.**
+공유 `describeClose`(`packages/herdr-client-ts/src/transport.ts:1231`)는 exit·signal·error·stderr를
+모두 렌더하는데, 로컬 사본은 `if (close.error) return close.error.message`로 **조기 반환**해 나머지를
+버린다. 그리고 원본 close는 `:108`의 `activeToken === token`일 때만 `hooks.reportClosed(close)`로
+전달되는데 `activeToken`은 `:132`에서야 설정된다(초기값 `:70` = null) → **Welcome 이전 close에서는
+원본이 아예 전달되지 않고** 손실된 문자열만 남는다.
+결과: `{error: Error('channel closed'), stderr: 'Permission denied (publickey)'}`가
+`'channel closed'`로 납작해져 일반 transport 실패로 분류되고 **영원히 재시도한다** — latch해야 할
+인증 실패인데. 이 세션 내내 다룬 "실패가 성공/일시장애처럼 보이는" 부류의 전송판이다.
+→ 공유 `describeClose`를 쓰고, pre-Welcome close도 원본을 분류기까지 보낸다.
+
+**K2 (wire 불변식) — `mobile/src/transport/client-ping.ts:30,33` 이 Ping/Pong 태그를 하드코딩한다.**
+`CLIENT_MESSAGE_PING_TAG = 10` / `SERVER_MESSAGE_PONG_TAG = 10` + 로컬 `encodePing`이
+공유 홈(`constants.ts`의 `ClientMessageTag`/`SERVER_MESSAGE_VARIANT_NAMES`, `messages.ts`의 인코더)
+**밖**에 있다. `constants.ts`의 "wire 변경은 이 파일 한 곳" 불변식 위반이다. ABI epoch/레이아웃이
+움직여 Ping/Pong 태그가 이동하면 패키지와 서버는 갱신되는데 이 파일은 **여전히 컴파일되고 로컬
+테스트도 green**이다 → 워치독이 엉뚱한 variant를 보내거나 무관한 tag 10을 Pong으로 인식해
+멀쩡한 링크를 흔들거나 죽은 링크를 가린다. 우리는 방금 `WIRE_ABI_EPOCH`를 3으로 올린 참이다.
+→ 태그와 `encodePing`을 `@herdr/client-ts`로 옮긴다.
+
+**K3 (중복, 저위험) — `mobile/src/transport/channel-failure.ts:122` `describe`는 스스로 사본임을
+주석에 밝히고 있다.** 분류 분기 `:99/:108/:115/:118`이 전부 이걸 쓴다. 공유 쪽에 redaction이나
+필드가 추가되면 두 번 고쳐야 하고, 안 고치면 같은 close에 대해 분류기와 코덱의 진단이 갈린다.
+→ `describeClose('closed', close)` 호출로 대체. **주의**: 공유 함수는 `prefix (parts)` 형태이고
+로컬은 `parts`만 반환하므로 렌더 문자열이 바뀐다 — 이걸 단언하는 테스트를 함께 갱신해야 한다.
+
+---
+
 ---
 
 **규율**: 이 목록은 *n번째 문서화*가 아니라 **추적 큐**다. 항목을 닫을 때는 여기서 지우고 커밋 메시지에 근거를 남긴다.
