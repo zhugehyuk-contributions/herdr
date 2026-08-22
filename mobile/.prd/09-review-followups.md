@@ -157,12 +157,29 @@ M-1 업스트림 머지가 만든 신규 실패는 **0건**이다 `[v]`.
 비우거나, `main_server_remote_targets()`를 주입 가능하게 만든다. 지금은 **테스트 결함**이지
 제품 결함이 아니다 — 실사용에서는 자기 세션을 원격으로 다시 등록하는 것을 막는 의도된 동작이다.
 
-**잔존 1건 — `live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session`**은 성격이 다르다.
-머지 전 베이스라인에서 **1.761초에 PASS**했는데, 지금은 `agent.get`이 끝내 result를 못 받아
-데드라인에서 죽는다(`tests/live_handoff.rs:1306`). 앰비언트 env **있는** 전량 실행에서는 통과하고,
-env 없는 전량·바이너리 단위·단독 실행에서는 3/3 실패한다 → **순서/환경 의존**이며 단일 원인을
-아직 못 집었다. 모바일 커밋은 Rust를 한 줄도 건드리지 않으므로 이 브랜치 작업의 산물은 아니다.
-**분류 미완 — 다음 사람이 여기서 시작한다.**
+**잔존 1건 — `live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session` (분류 완료, 미수리)**
+
+머지 전 베이스라인에서 **1.761초 PASS**, 지금은 데드라인 초과. 실패 지점과 응답을 실측했다 `[v]`:
+`tests/live_handoff.rs:1306`에서 `agent.get{target:"w1:p1"}`이 5초 내내
+`{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"}}`를 돌려준다.
+
+경로를 열어 확인한 것:
+- 테스트는 `HERDR_AGENT=pi`를 export하고 `exec /bin/sleep 30`하는 가짜 스크립트를 pane에 보낸다.
+  **스크립트는 실제로 돈다** — 그 앞의 `wait_for_file(&started_marker, 5s)`가 통과한다.
+- `pi`는 **유효한 에이전트 라벨이다** — `src/detect/manifests/pi.toml` 존재,
+  `src/detect/mod.rs:190` `"pi" => Some(Agent::Pi)`. 라벨 검증 실패가 아니다.
+- 환경 힌트 경로는 `src/platform/mod.rs:323-331` `parse_agent_env_hint` → `parse_agent_label`.
+  이 파일의 머지 diff(+26/-6)는 클립보드·capability·`open_url` 시그니처뿐으로 **탐지와 무관**하다.
+- 실제로 바뀐 것은 탐지 본체다: 머지가 `src/detect/mod.rs` **+161**, `src/pane.rs` **+380**을
+  건드렸고 매니페스트 5종 수정 + `qwen.toml` 추가가 함께 왔다.
+
+**심각도 한정**: 같은 바이너리의 **20건 중 19건이 통과한다** → 에이전트 탐지가 통째로 깨진 게 아니라
+이 테스트의 특정 경로(비관리 에이전트 이름을 저장된 세션에 바인딩)만 회귀했다. 앱이 쓰는 `agent.list`는
+`pane.report_agent`만으로 동작하는 것을 격리 서버에서 실측했으므로 모바일 경로와는 별개다.
+
+**이건 herdr 코어 문제이지 모바일 작업의 산물이 아니다** — 모바일 커밋은 Rust를 한 줄도 건드리지 않는다.
+**mx 머지가 착륙하기 전에 닫아야 할 1순위**이며, 수리는 `src/detect/mod.rs`/`src/pane.rs`의
+머지 diff에서 시작한다. 여기서는 수리하지 않는다(범위 밖, 별도 단위).
 
 ---
 
@@ -186,9 +203,78 @@ env 없는 전량·바이너리 단위·단독 실행에서는 3/3 실패한다 
 `expected 'working' to be 'blocked'`, 즉 기기 증상과 같은 문구로 실패). 기기 실측: 앱을 켜둔 채
 22:03:12에 서버를 `ZQ7-POLL-LIVE`+`working`으로 변경 → **22:03:27 화면 반영**(15초). 재시작 없음.
 
-**잔여 1건 — `refreshError`를 읽는 화면이 아직 없다.** 10분째 실패 중인 링크와 건강한 링크가 화면에서
-동일하게 보인다(스냅샷이 조용히 늙을 뿐). M2 (a)는 링크가 살아 있는 동안에만 만족된다. 다음은
-"마지막 갱신 시각/실패" 힌트를 화면에 노출하는 것 — UI 작업이라 이 단위에서 분리했다.
+**잔여였던 `refreshError` 미노출은 닫혔다 (2026-08-22).** 두 목록 화면(`app/index.tsx`,
+`app/nodes.tsx`) 헤더가 `snapshotStalenessLabel({updatedAt, refreshError})`을 렌더한다. 규칙 셋:
+①정상이면 **아무것도 안 그린다**(`ConnectionStatusLine`이 "Connected"를 거부하는 것과 같은 이유)
+②`refreshError` 없이 오래된 `updatedAt`도 침묵 — 백그라운드에선 폴러가 멈추므로 나이만으로는
+"아무도 안 물어봤다"일 뿐이다 ③15초 미만 침묵 + 초는 5초 그리드(라벨은 실패한 폴마다만 갱신되므로
+`stale 43s`는 없는 해상도를 주장하는 것). 새 타이머 없음 — 실패 폴이 이미 4초마다 상태를 쓴다.
+
+**기기 실측 `[v]`**: 랩 ssh 세션을 22:25:35에 끊고 22:26:28 캡처 → 헤더가 **`stale 60s`**, 행 데이터는
+마지막 정상값 유지. 그 전 시도에서 라벨이 안 뜬 것은 버그가 아니라 `sshd -D` 마스터만 죽여
+**이미 맺힌 연결의 자식 세션이 살아 있었기** 때문이다(계보 `30825 → 30879 → remote-client-bridge`
+확인 후 그 체인만 종료). 유닛 13건, RED-on-revert 8건 dispatcher 독립 재현.
+
+---
+
+## H. 머지 전 반드시 처리 — 이 브랜치의 #68 해법이 유저의 mx 해법과 충돌한다 (2026-08-22)
+
+`origin/mx`가 움직였다. 이 브랜치는 **16커밋 뒤**다(`git rev-list --count feat/mobile-client..origin/mx`
+= 16). 그중 하나가 정면으로 부딪힌다.
+
+- **우리 브랜치** `02e82f51 ci: run the check workflow on mx pushes (#68)` — ci.yml에 `mx`를 추가하고
+  `just ci` → **`just ci-mx`**로 바꿨다. `ci-mx`는 `lint-no-fmt`를 쓰는, 즉 **`cargo fmt --check`를
+  건너뛰는** 포크 전용 레시피다. justfile의 근거는 "이 포크는 트리를 rustfmt-clean으로 유지하지 않는다".
+- **유저의 mx** `808b5ca7 style: rustfmt the tree under the pinned toolchain` (08-22 01:15) — 커밋
+  메시지: *"`cargo fmt --check` was already failing on mx for 10 files / 12 locations ... so
+  `just lint` and `just check` could not pass on the default branch."* 즉 **우회 대신 트리를 고쳤다.**
+- 결과: `origin/mx`의 justfile에는 `lint-no-fmt`도 `ci-mx`도 **없다** `[v]`. 우리 브랜치에만 있다.
+
+**우리 브랜치를 그대로 머지하면 유저가 방금 없앤 우회를 되살리고**, 게다가 이 브랜치는
+`cargo fmt --check`에서 **48곳**이 어긋난다(실측, `rustup run 1.96.1 cargo fmt --check` exit 1).
+그중 다수는 upstream v0.8.2 머지가 들여온 것이고 `src/protocol/abi.rs`·`wire_fixtures.rs`처럼
+이 작업이 만든 파일도 포함된다.
+
+**머지 전 순서 (권고)**:
+1. `origin/mx`(16커밋)를 이 브랜치로 머지한다 — 그러면 rustfmt된 트리가 베이스가 된다.
+2. `cargo fmt`를 돌려 남은 48곳을 정리한다.
+3. `lint-no-fmt` / `ci-mx`를 **삭제**하고 ci.yml을 `just ci`로 되돌리되 `branches:`의 `mx`는 유지한다
+   — #68(여전히 OPEN)의 해법은 그대로 살고, 우회만 사라진다.
+4. 그 뒤 trinity 리뷰 → push.
+
+**주의**: 16커밋은 `src/detect/`·`src/pane.rs`를 건드리지 않는다 `[v]` → 섹션 F의 잔존 테스트 실패는
+이 머지로 해결되지 않는다. 별개로 남는다.
+
+---
+
+## I. RSA 키 경로 판별 완료 + 재발 방지 게이트 (2026-08-22)
+
+`.prd/06`이 "RSA는 미판별"로 남겨둔 것을 **기기 없이 닫았다** — 실제 sshj 0.40.0에 실키를 먹여
+측정했다. 새 게이트 `npm run typecheck:keyformats`가 이 표를 매번 재생산한다 `[v]`:
+
+| 키 (ssh-keygen 생성) | 모듈이 보는 detect | `loadKeys` (현행) | `OpenSSHKeyFile` (구 코드) |
+|---|---|---|---|
+| ed25519, openssh-key-v1 | `OpenSSHv1` | OK `ssh-ed25519` | **FAIL** |
+| **RSA, openssh-key-v1** (7.8+ 기본) | `OpenSSHv1` | OK `ssh-rsa` | **FAIL** |
+| RSA, 고전 PEM (`-m PEM`) | `PKCS8` | OK `ssh-rsa` | OK `ssh-rsa` |
+| ed25519 + passphrase | `OpenSSHv1` | OK `ssh-ed25519` | **FAIL** |
+
+**결론: 구 버그는 ed25519 전용이 아니었다.** 현대 기본 포맷의 RSA도 똑같이 실패했으므로, 기기에서
+RSA 시도가 같은 오류를 낸 것은 오염이 아니라 **정상적인 같은 결함**이었다. 구 코드가 통한 것은
+4종 중 고전 PEM 하나뿐이다.
+
+**앞선 내 측정 1건 정정**: 고전 PEM RSA의 detect를 `OpenSSH`로 적었으나 **모듈이 타는 경로에서는
+`PKCS8`**이다 — `loadKeys(key, null, finder)`가 null 공개키를 `separatePubKey=false`로 넘기기 때문이고,
+`.pub`을 곁들인 프로브는 `OpenSSH`를 보고한다. 버그·수정에는 영향 없고 게이트는 모듈이 실제로 보는
+값을 단언한다.
+
+게이트는 **코드를 복사하지 않는다** — `HerdrSshSession.kt`의 키 로드 블록을 awk로 추출한다(기존
+하네스가 `HerdrSshConnectConfig`를 다루는 방식). 추출 끝 앵커를 `loadKeys`가 아니라 `authPublickey`로
+둔 것이 요점: 수정된 형태에 앵커를 걸면 **버그 형태에서 컴파일조차 안 되어** 게이트가 자기가 지키는
+버그를 표현하지 못한다. 구 형태를 되살려 3행 FAIL + exit 1을 dispatcher가 독립 재현했다.
+
+또 APK 실측: `com/hierynomus/asn1`(고전 PEM 파싱 필수)과 `OpenSSHKeyFile`·`OpenSSHKeyV1KeyFile`·
+`PKCS8KeyFile`이 모두 들어 있다 → 기기에서 네 포맷 모두의 의존이 갖춰져 있다.
 
 ---
 
