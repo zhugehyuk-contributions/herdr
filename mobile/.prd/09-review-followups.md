@@ -853,3 +853,53 @@ RN 컨테이너 배경과도 구별되지 않는다. `innerStaticTexts=0` 역시
 3. **240열 pane은 폰에서 scale 0.21 = 겉보기 2.7 CSS px다.** 렌더는 되지만 읽을 수 없다. M2 (e)의 진짜
    문제는 "안 그린다"가 아니라 이것이고, 그건 다른 수리다.
 
+
+## W. M4 Android QA — FAIL, 그리고 내가 "잔여"로 넘긴 것이 수용 기준이었다 (2026-08-23, 별도 에이전트, `qa-android-m4` @ `25e54ae8`)
+
+```
+M4 VERDICT: FAIL
+  기내모드 ×10:        PASS — 10/10 자동복구 (2~138초, 앱 PID 22453 불변, 강제종료·리로드 0회)
+  Wi-Fi↔셀룰러 ×10:    판정 불가 — 에뮬레이터 한계 (FAIL 아님)
+  30분 백그라운드:      PASS — 30분 31초, 복귀 13초, 백그라운드 중 다이얼 0회
+  강제종료로만 낫는 상태: 1건 (재현 2/2)  ← FAIL 사유
+§Q 재부착: PASS (2·3·4초, transform·그리드 3/3 불변)
+```
+
+### 디스패처의 브리프가 틀렸다
+
+나는 §L1의 잔여("마운트 시 실패한 원격은 앱 수명 내내 죽어 있다")를 **"재확인만 하면 된다"** 고 넘겼다.
+판정자가 그것이 `.prd/04:175-177`의 **"강제종료로만 낫는 상태 0건"을 직접 위반**한다고 판정했다. 맞다.
+**잔여로 분류하는 것과 수용 기준을 위반하는 것은 다른 일이고, 내가 그 둘을 뭉갰다.**
+
+| | 재현 1 | 재현 2 |
+|---|---|---|
+| 원격 도달 가능해진 뒤 관측 | ~380초 | 221초 |
+| 앱의 TCP 다이얼 시도 | **0회** | **0회** |
+
+sshd 로그 대조로 "서버가 막은 것"이 배제됐다 — dead window의 `Connection from`은 QA의 프로브 1개뿐.
+탈출구 4종(포그라운드 복귀 / 탭 전환 / pull-to-refresh / settings 왕복) 전부 0 다이얼,
+`am force-stop` + 재실행만 10초에 복구.
+
+**근인** (`app-connections.ts:246-291`): 다이얼이 `useEffect(..., [revision])` 마운트 1회고, `revision`은
+키스토어 쓰기 카운터다. 실패한 원격은 `connections`에 안 들어가므로 `useSupervisedRemotes(connections)`가
+감싸지 않고 → **L1 워치독도 L3 사다리도 리바이벌도 없다.** `createRedialableConnection(…, await open(), open)`
+(`:151`)의 `await open()`이 던지면 그 원격은 아무것도 만들어지지 않는다 —
+**재다이얼 기제(`845f0f22`)가 첫 다이얼 성공을 전제로 한다**는 것이 갈림점이다.
+
+### PASS 쪽에서 확증된 것
+
+- **§Q 수리(`d60afe9f`)의 미묘한 지점이 기기에서 확증됐다**: bridge PID를 죽여도 재부착이 2~4초,
+  `transform: translate(0px, -597.906px) scale(2)`가 3/3 불변. `reset()`이었다면 `init` → `resetZoom()`으로
+  `scale(0.310776)`이 됐어야 한다. **`resync()`가 `opened`/`cols`/`rows`를 유지한다**는 설계가 실측으로 닫혔다.
+- 30분 백그라운드 중 **다이얼 0회** — `PaneReattachLadder.due()`의 `isForeground` 게이트 실증.
+  **이후의 어떤 수리도 이걸 깨면 안 된다.**
+- 기내모드 최장 복구 138초 = `TRICKLE_RECONNECT_DELAY_MS 90_000` 럼. 사다리 설계 안.
+
+### 부수 발견 2건 (M4 기준 밖)
+
+1. **에러 배너가 sticky — 화면이 거짓말을 한다.** 재부착 성공 후에도 헤더가 마지막 에러를 계속 표시한다:
+   기내모드 사이클 후 `transport is closed`가 ~20분, 백그라운드 복귀 후 `IllegalStateException: Not connected`가
+   **실시간 프레임이 흐르는 중에도** 지속(`s18c.png`에 `BANNER-CHECK-LIVE`가 렌더되는 동시에).
+   **유저를 강제종료로 모는 바로 그 표면이다** — 위 FAIL 사유와 같은 방향을 가리킨다.
+2. **outage마다 서버측 누수**: 사이클 종료 시 `sshd-session` 22개 + `remote-client-bridge` 7개 잔존
+   (5개는 client가 사라진 지 15분 넘음, 2개는 launchd re-parent 고아). 폰 1대가 pane 1개 보는 비용.
