@@ -69,6 +69,8 @@ impl BlitEncoder {
         self.encode_inner(frame, repaint, false)
     }
 
+    // Upstream drawn-cursor path; unused until the mx client ports host_cursor (follow-up).
+    #[allow(dead_code)]
     pub(crate) fn encode_with_suppressed_visible_cursor(
         &self,
         frame: &FrameData,
@@ -140,6 +142,8 @@ impl BlitEncoder {
     }
 }
 
+// Upstream drawn-cursor path; unused until the mx client ports host_cursor (follow-up).
+#[allow(dead_code)]
 pub(crate) fn frame_with_drawn_cursor(mut frame: FrameData) -> FrameData {
     if let Some(cursor) = frame.cursor.as_ref().filter(|cursor| cursor.visible) {
         let (x, y) = clamp_cursor_position(&frame, cursor.x, cursor.y);

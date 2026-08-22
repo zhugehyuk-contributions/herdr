@@ -4,8 +4,8 @@ use crossterm::event::KeyModifiers;
 use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
-    ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
-    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
+    ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SoundConfig,
+    TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
     DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 
@@ -110,13 +110,22 @@ impl AgentPanelSortConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+/// herdr-mx: agent panel scope filter config ("current" | "all"). Default "all".
+///
+/// Upstream v0.8.2 retired this knob (it kept only a `LegacyAgentPanelScopeConfig` deserializer to
+/// swallow the old key). herdr-mx keeps the filter live — the multi-remote agents panel is a fleet
+/// view where "current workspace only" is the useful default reduction — so the live field stays
+/// and the legacy shim is not merged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
-enum LegacyAgentPanelScopeConfig {
+pub enum AgentPanelScopeConfig {
     Current,
+    #[default]
     All,
 }
 
+/// Agent status indicator glyph set (upstream v0.8.2). Adopted: additive, and the settings TUI /
+/// `ui/mobile.rs` rows that drive it merged cleanly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum StatusIndicatorStyle {
@@ -130,6 +139,15 @@ impl StatusIndicatorStyle {
         match self {
             Self::Dots => "dots",
             Self::Symbols => "symbols",
+        }
+    }
+}
+
+impl AgentPanelScopeConfig {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::All => "all",
         }
     }
 }
@@ -900,13 +918,10 @@ pub struct UiConfig {
     pub window_title: String,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
-    /// Retired setting that Herdr wrote before the workspace filter was removed.
-    #[serde(rename = "agent_panel_scope")]
-    _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
+    /// herdr-mx: agent sidebar scope. Saved values are "current" or "all". Default: "all".
+    pub agent_panel_scope: AgentPanelScopeConfig,
     /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
     pub status_indicators: StatusIndicatorStyle,
-    /// Expanded sidebar row composition.
-    pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
     pub accent: String,
@@ -914,6 +929,498 @@ pub struct UiConfig {
     pub toast: ToastConfig,
     /// Play sounds when agents change state in background workspaces.
     pub sound: SoundConfig,
+    /// Sidebar navigation display preferences.
+    pub sidebar: SidebarConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SidebarConfig {
+    pub spaces: SidebarSpacesConfig,
+    pub agents: SidebarAgentsConfig,
+    pub host: SidebarHostConfig,
+}
+
+/// Host-banner sidebar configuration (item 2 / C3). Styles the per-host banner row that
+/// sits above each remote host's spaces. There is NO off switch — the banner is always
+/// drawn for remote hosts; only its presentation is configured here.
+///
+/// Deserialization is hand-written via [`RawSidebarHostConfig`] (mirroring
+/// `SidebarSpacesConfig`) so unknown TOML enum values fall back to the documented defaults
+/// instead of failing the parse (contract Area 7 §3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SidebarHostConfig {
+    pub gradient: HostBannerGradient,
+    pub animation: HostBannerAnimation,
+    pub speed: HostBannerSpeed,
+    pub glyph: HostBannerGlyph,
+    pub show_count: bool,
+}
+
+impl Default for SidebarHostConfig {
+    fn default() -> Self {
+        Self {
+            gradient: HostBannerGradient::Rainbow,
+            animation: HostBannerAnimation::Animated,
+            speed: HostBannerSpeed::Calm,
+            glyph: HostBannerGlyph::Left,
+            show_count: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostBannerGradient {
+    Rainbow,
+    Accent,
+    Cool,
+    Warm,
+    Muted,
+}
+
+impl HostBannerGradient {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Rainbow => Self::Accent,
+            Self::Accent => Self::Cool,
+            Self::Cool => Self::Warm,
+            Self::Warm => Self::Muted,
+            Self::Muted => Self::Rainbow,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rainbow => "rainbow",
+            Self::Accent => "accent",
+            Self::Cool => "cool",
+            Self::Warm => "warm",
+            Self::Muted => "muted",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostBannerAnimation {
+    Animated,
+    Static,
+}
+
+impl HostBannerAnimation {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Animated => Self::Static,
+            Self::Static => Self::Animated,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Animated => "animated",
+            Self::Static => "static",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostBannerSpeed {
+    Calm,
+    Normal,
+    Lively,
+}
+
+impl HostBannerSpeed {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Calm => Self::Normal,
+            Self::Normal => Self::Lively,
+            Self::Lively => Self::Calm,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Calm => "calm",
+            Self::Normal => "normal",
+            Self::Lively => "lively",
+        }
+    }
+
+    /// Per-tick phase drift used by the lolcat gradient animation. `Calm < Normal < Lively`.
+    pub fn drift(self) -> f32 {
+        match self {
+            Self::Calm => 0.04,
+            Self::Normal => 0.09,
+            Self::Lively => 0.16,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostBannerGlyph {
+    Left,
+    None,
+}
+
+impl HostBannerGlyph {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Left => Self::None,
+            Self::None => Self::Left,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Raw intermediate for [`SidebarHostConfig`] deserialization. Every enum field is parsed
+/// through a `parse_host_*` helper whose final arm yields the default, so unknown / `"off"`
+/// / missing values degrade to defaults instead of rejecting the config.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct RawSidebarHostConfig {
+    gradient: Option<String>,
+    animation: Option<String>,
+    speed: Option<String>,
+    glyph: Option<String>,
+    show_count: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for SidebarHostConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawSidebarHostConfig::deserialize(deserializer)?;
+        Ok(SidebarHostConfig {
+            gradient: parse_host_gradient(raw.gradient.as_deref()),
+            animation: parse_host_animation(raw.animation.as_deref()),
+            speed: parse_host_speed(raw.speed.as_deref()),
+            glyph: parse_host_glyph(raw.glyph.as_deref()),
+            show_count: raw.show_count.unwrap_or(false),
+        })
+    }
+}
+
+fn parse_host_gradient(value: Option<&str>) -> HostBannerGradient {
+    match value {
+        Some("accent") => HostBannerGradient::Accent,
+        Some("cool") => HostBannerGradient::Cool,
+        Some("warm") => HostBannerGradient::Warm,
+        Some("muted") => HostBannerGradient::Muted,
+        _ => HostBannerGradient::Rainbow,
+    }
+}
+
+fn parse_host_animation(value: Option<&str>) -> HostBannerAnimation {
+    match value {
+        Some("static") => HostBannerAnimation::Static,
+        _ => HostBannerAnimation::Animated,
+    }
+}
+
+fn parse_host_speed(value: Option<&str>) -> HostBannerSpeed {
+    match value {
+        Some("normal") => HostBannerSpeed::Normal,
+        Some("lively") => HostBannerSpeed::Lively,
+        _ => HostBannerSpeed::Calm,
+    }
+}
+
+fn parse_host_glyph(value: Option<&str>) -> HostBannerGlyph {
+    match value {
+        Some("none") => HostBannerGlyph::None,
+        _ => HostBannerGlyph::Left,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarSpaceField {
+    Status,
+    Name,
+    Branch,
+    BranchStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarAgentField {
+    AgentStatus,
+    PaneName,
+    TabName,
+    SpaceName,
+    Status,
+    Time,
+    CustomStatus,
+    AgentName,
+    RightAlignment,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarColorPreset {
+    #[default]
+    Default,
+    Muted,
+    Accent,
+    Cool,
+    Warm,
+}
+
+impl SidebarColorPreset {
+    pub fn is_default(color: &Self) -> bool {
+        matches!(*color, Self::Default)
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Muted,
+            Self::Muted => Self::Accent,
+            Self::Accent => Self::Cool,
+            Self::Cool => Self::Warm,
+            Self::Warm => Self::Default,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Muted => "muted",
+            Self::Accent => "accent",
+            Self::Cool => "cool",
+            Self::Warm => "warm",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SidebarSpacesConfig {
+    pub lines: Vec<Vec<SidebarItem<SidebarSpaceField>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SidebarAgentsConfig {
+    pub lines: Vec<Vec<SidebarItem<SidebarAgentField>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SidebarItem<F> {
+    pub field: F,
+    #[serde(default = "default_true")]
+    pub show: bool,
+    #[serde(default, skip_serializing_if = "SidebarColorPreset::is_default")]
+    pub color: SidebarColorPreset,
+}
+
+impl<F> SidebarItem<F> {
+    pub const fn new(field: F, show: bool) -> Self {
+        Self {
+            field,
+            show,
+            color: SidebarColorPreset::Default,
+        }
+    }
+
+    pub const fn visible(field: F) -> Self {
+        Self::new(field, true)
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+struct RawSidebarItem {
+    field: Option<String>,
+    show: bool,
+    color: Option<String>,
+}
+
+impl Default for RawSidebarItem {
+    fn default() -> Self {
+        Self {
+            field: None,
+            show: true,
+            color: None,
+        }
+    }
+}
+
+impl RawSidebarItem {
+    fn into_item<F>(self, parse_field: fn(&str) -> Option<F>) -> Option<SidebarItem<F>> {
+        Some(SidebarItem {
+            field: parse_field(self.field.as_deref()?)?,
+            show: self.show,
+            color: parse_sidebar_color(self.color.as_deref()),
+        })
+    }
+}
+
+fn parse_sidebar_color(value: Option<&str>) -> SidebarColorPreset {
+    match value {
+        Some("muted") => SidebarColorPreset::Muted,
+        Some("accent") => SidebarColorPreset::Accent,
+        Some("cool") => SidebarColorPreset::Cool,
+        Some("warm") => SidebarColorPreset::Warm,
+        _ => SidebarColorPreset::Default,
+    }
+}
+
+fn parse_sidebar_space_field(value: &str) -> Option<SidebarSpaceField> {
+    match value {
+        "status" => Some(SidebarSpaceField::Status),
+        "name" => Some(SidebarSpaceField::Name),
+        "branch" => Some(SidebarSpaceField::Branch),
+        "branch_status" => Some(SidebarSpaceField::BranchStatus),
+        _ => None,
+    }
+}
+
+fn parse_sidebar_agent_field(value: &str) -> Option<SidebarAgentField> {
+    match value {
+        "agent_status" => Some(SidebarAgentField::AgentStatus),
+        "pane_name" => Some(SidebarAgentField::PaneName),
+        "tab_name" => Some(SidebarAgentField::TabName),
+        "space_name" => Some(SidebarAgentField::SpaceName),
+        "status" => Some(SidebarAgentField::Status),
+        "time" => Some(SidebarAgentField::Time),
+        "custom_status" => Some(SidebarAgentField::CustomStatus),
+        "agent_name" => Some(SidebarAgentField::AgentName),
+        "right_alignment" => Some(SidebarAgentField::RightAlignment),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct RawSidebarSpacesConfig {
+    lines: Option<Vec<Vec<RawSidebarItem>>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct RawSidebarAgentsConfig {
+    lines: Option<Vec<Vec<RawSidebarItem>>>,
+}
+
+impl<'de> Deserialize<'de> for SidebarSpacesConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawSidebarSpacesConfig::deserialize(deserializer)?;
+        Ok(raw.into_config())
+    }
+}
+
+impl<'de> Deserialize<'de> for SidebarAgentsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawSidebarAgentsConfig::deserialize(deserializer)?;
+        Ok(raw.into_config())
+    }
+}
+
+impl RawSidebarSpacesConfig {
+    fn into_config(self) -> SidebarSpacesConfig {
+        self.lines
+            .map(|lines| SidebarSpacesConfig {
+                lines: normalize_sidebar_space_lines(raw_sidebar_lines(
+                    lines,
+                    parse_sidebar_space_field,
+                )),
+            })
+            .unwrap_or_default()
+    }
+}
+
+impl RawSidebarAgentsConfig {
+    fn into_config(self) -> SidebarAgentsConfig {
+        self.lines
+            .map(|lines| SidebarAgentsConfig {
+                lines: normalize_sidebar_agent_lines(raw_sidebar_lines(
+                    lines,
+                    parse_sidebar_agent_field,
+                )),
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn raw_sidebar_lines<F>(
+    lines: Vec<Vec<RawSidebarItem>>,
+    parse_field: fn(&str) -> Option<F>,
+) -> Vec<Vec<SidebarItem<F>>> {
+    lines
+        .into_iter()
+        .map(|line| {
+            line.into_iter()
+                .filter_map(|item| item.into_item(parse_field))
+                .collect()
+        })
+        .collect()
+}
+
+fn normalize_sidebar_space_lines(
+    lines: Vec<Vec<SidebarItem<SidebarSpaceField>>>,
+) -> Vec<Vec<SidebarItem<SidebarSpaceField>>> {
+    normalize_sidebar_lines(lines)
+}
+
+fn normalize_sidebar_agent_lines(
+    lines: Vec<Vec<SidebarItem<SidebarAgentField>>>,
+) -> Vec<Vec<SidebarItem<SidebarAgentField>>> {
+    let mut seen = Vec::new();
+    let mut normalized = Vec::new();
+    for line in lines {
+        let mut normalized_line = Vec::new();
+        for item in line {
+            if item.field == SidebarAgentField::RightAlignment {
+                normalized_line.push(item);
+                continue;
+            }
+            if seen.contains(&item.field) {
+                continue;
+            }
+            seen.push(item.field);
+            normalized_line.push(item);
+        }
+        normalized.push(normalized_line);
+    }
+    normalized
+}
+
+fn normalize_sidebar_lines<F: Copy + Eq>(
+    lines: Vec<Vec<SidebarItem<F>>>,
+) -> Vec<Vec<SidebarItem<F>>> {
+    let mut seen = Vec::new();
+    let mut normalized = Vec::new();
+    for line in lines {
+        let mut normalized_line = Vec::new();
+        for item in line {
+            if seen.contains(&item.field) {
+                continue;
+            }
+            seen.push(item.field);
+            normalized_line.push(item);
+        }
+        normalized.push(normalized_line);
+    }
+    normalized
 }
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.
@@ -1127,12 +1634,51 @@ impl Default for UiConfig {
             tab_bar_right_separator: " ".into(),
             window_title: super::window_title::default_window_title(),
             agent_panel_sort: AgentPanelSortConfig::Spaces,
-            _legacy_agent_panel_scope: None,
+            agent_panel_scope: AgentPanelScopeConfig::All,
             status_indicators: StatusIndicatorStyle::Dots,
-            sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
+            sidebar: SidebarConfig::default(),
+        }
+    }
+}
+
+impl Default for SidebarSpacesConfig {
+    fn default() -> Self {
+        Self {
+            lines: vec![
+                vec![
+                    SidebarItem::visible(SidebarSpaceField::Status),
+                    SidebarItem::visible(SidebarSpaceField::Name),
+                ],
+                vec![
+                    SidebarItem::visible(SidebarSpaceField::Branch),
+                    SidebarItem::visible(SidebarSpaceField::BranchStatus),
+                ],
+            ],
+        }
+    }
+}
+
+impl Default for SidebarAgentsConfig {
+    fn default() -> Self {
+        Self {
+            lines: vec![
+                vec![
+                    SidebarItem::visible(SidebarAgentField::AgentStatus),
+                    SidebarItem::visible(SidebarAgentField::PaneName),
+                    SidebarItem::visible(SidebarAgentField::TabName),
+                    SidebarItem::visible(SidebarAgentField::SpaceName),
+                ],
+                vec![
+                    SidebarItem::visible(SidebarAgentField::Status),
+                    SidebarItem::visible(SidebarAgentField::Time),
+                    SidebarItem::visible(SidebarAgentField::CustomStatus),
+                    SidebarItem::visible(SidebarAgentField::RightAlignment),
+                    SidebarItem::visible(SidebarAgentField::AgentName),
+                ],
+            ],
         }
     }
 }
@@ -1914,6 +2460,285 @@ pane_history = true
     }
 
     #[test]
+    fn sidebar_config_defaults_to_lines_array_and_parses_variable_line_count() {
+        let default = Config::default();
+        assert_eq!(
+            default.ui.sidebar.spaces.lines,
+            vec![
+                vec![
+                    SidebarItem::visible(SidebarSpaceField::Status),
+                    SidebarItem::visible(SidebarSpaceField::Name),
+                ],
+                vec![
+                    SidebarItem::visible(SidebarSpaceField::Branch),
+                    SidebarItem::visible(SidebarSpaceField::BranchStatus),
+                ],
+            ]
+        );
+        assert_eq!(
+            default.ui.sidebar.agents.lines,
+            vec![
+                vec![
+                    SidebarItem::visible(SidebarAgentField::AgentStatus),
+                    SidebarItem::visible(SidebarAgentField::PaneName),
+                    SidebarItem::visible(SidebarAgentField::TabName),
+                    SidebarItem::visible(SidebarAgentField::SpaceName),
+                ],
+                vec![
+                    SidebarItem::visible(SidebarAgentField::Status),
+                    SidebarItem::visible(SidebarAgentField::Time),
+                    SidebarItem::visible(SidebarAgentField::CustomStatus),
+                    SidebarItem::visible(SidebarAgentField::RightAlignment),
+                    SidebarItem::visible(SidebarAgentField::AgentName),
+                ],
+            ]
+        );
+
+        let toml = r#"
+[ui.sidebar.spaces]
+lines = [
+  [
+    { field = "name", show = false, color = "muted" },
+    { field = "branch", show = true },
+  ],
+  [
+    { field = "status", show = true },
+    { field = "branch_status", show = false },
+  ],
+]
+
+[ui.sidebar.agents]
+lines = [
+  [
+    { field = "agent_status", show = true },
+    { field = "pane_name", show = true },
+    { field = "tab_name", show = true },
+    { field = "space_name", show = true },
+    { field = "status", show = false },
+    { field = "time", show = false },
+    { field = "custom_status", show = false, color = "warm" },
+    { field = "right_alignment", show = true },
+    { field = "agent_name", show = true },
+  ],
+]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(
+            config.ui.sidebar.spaces.lines,
+            vec![
+                vec![
+                    SidebarItem {
+                        field: SidebarSpaceField::Name,
+                        show: false,
+                        color: SidebarColorPreset::Muted,
+                    },
+                    SidebarItem::visible(SidebarSpaceField::Branch),
+                ],
+                vec![
+                    SidebarItem::visible(SidebarSpaceField::Status),
+                    SidebarItem::new(SidebarSpaceField::BranchStatus, false),
+                ],
+            ]
+        );
+        assert_eq!(
+            config.ui.sidebar.agents.lines,
+            vec![vec![
+                SidebarItem::visible(SidebarAgentField::AgentStatus),
+                SidebarItem::visible(SidebarAgentField::PaneName),
+                SidebarItem::visible(SidebarAgentField::TabName),
+                SidebarItem::visible(SidebarAgentField::SpaceName),
+                SidebarItem::new(SidebarAgentField::Status, false),
+                SidebarItem::new(SidebarAgentField::Time, false),
+                SidebarItem {
+                    field: SidebarAgentField::CustomStatus,
+                    show: false,
+                    color: SidebarColorPreset::Warm,
+                },
+                SidebarItem::visible(SidebarAgentField::RightAlignment),
+                SidebarItem::visible(SidebarAgentField::AgentName),
+            ],]
+        );
+    }
+
+    #[test]
+    fn sidebar_config_preserves_three_configured_lines() {
+        let toml = r#"
+[ui.sidebar.agents]
+lines = [
+  [
+    { field = "agent_status", show = true },
+    { field = "pane_name", show = true },
+    { field = "tab_name", show = true },
+  ],
+  [
+    { field = "space_name", show = true },
+    { field = "status", show = true },
+    { field = "time", show = true },
+    { field = "custom_status", show = true },
+  ],
+  [
+    { field = "right_alignment", show = true },
+    { field = "agent_name", show = true },
+  ],
+]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.ui.sidebar.agents.lines.len(), 3);
+        assert_eq!(
+            config.ui.sidebar.agents.lines[2],
+            vec![
+                SidebarItem::visible(SidebarAgentField::RightAlignment),
+                SidebarItem::visible(SidebarAgentField::AgentName),
+            ]
+        );
+    }
+
+    #[test]
+    fn sidebar_config_ignores_invalid_items_without_rejecting_ui() {
+        let toml = r#"
+[ui]
+mouse_capture = false
+
+[ui.sidebar.agents]
+lines = [
+  [
+    { field = "not_a_field", show = true },
+    { field = "time", show = true, color = "not_a_color" },
+  ],
+]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert!(!config.ui.mouse_capture);
+        let time = config
+            .ui
+            .sidebar
+            .agents
+            .lines
+            .iter()
+            .flatten()
+            .find(|item| item.field == SidebarAgentField::Time)
+            .copied();
+        assert_eq!(time, Some(SidebarItem::visible(SidebarAgentField::Time)));
+    }
+
+    #[test]
+    fn sidebar_config_preserves_omitted_items() {
+        let toml = r#"
+[ui.sidebar.spaces]
+lines = [
+  [
+    { field = "name", show = true },
+  ],
+]
+
+[ui.sidebar.agents]
+lines = [
+  [
+    { field = "status", show = true },
+  ],
+]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(
+            config.ui.sidebar.spaces.lines,
+            vec![vec![SidebarItem::visible(SidebarSpaceField::Name)]]
+        );
+        assert_eq!(
+            config.ui.sidebar.agents.lines,
+            vec![vec![SidebarItem::visible(SidebarAgentField::Status)]]
+        );
+    }
+
+    #[test]
+    fn sidebar_agent_config_preserves_per_line_right_alignment_markers() {
+        let toml = r#"
+[ui.sidebar.agents]
+lines = [
+  [
+    { field = "right_alignment", show = true },
+    { field = "agent_name", show = true },
+  ],
+  [
+    { field = "status", show = true },
+  ],
+  [
+    { field = "right_alignment", show = true },
+    { field = "time", show = true },
+  ],
+]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(
+            config.ui.sidebar.agents.lines[0][0],
+            SidebarItem::visible(SidebarAgentField::RightAlignment)
+        );
+        assert_eq!(
+            config.ui.sidebar.agents.lines[2][0],
+            SidebarItem::visible(SidebarAgentField::RightAlignment)
+        );
+    }
+
+    #[test]
+    fn sidebar_config_accepts_all_fields_on_one_line() {
+        let toml = r#"
+[ui.sidebar.spaces]
+lines = [
+  [
+    { field = "status", show = true },
+    { field = "name", show = true },
+    { field = "branch", show = true },
+    { field = "branch_status", show = true },
+  ],
+]
+
+[ui.sidebar.agents]
+lines = [
+  [
+    { field = "agent_status", show = true },
+    { field = "pane_name", show = true },
+    { field = "tab_name", show = true },
+    { field = "space_name", show = true },
+    { field = "status", show = true },
+    { field = "time", show = true },
+    { field = "custom_status", show = true },
+    { field = "right_alignment", show = true },
+    { field = "agent_name", show = true },
+  ],
+]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(
+            config.ui.sidebar.spaces.lines,
+            vec![vec![
+                SidebarItem::visible(SidebarSpaceField::Status),
+                SidebarItem::visible(SidebarSpaceField::Name),
+                SidebarItem::visible(SidebarSpaceField::Branch),
+                SidebarItem::visible(SidebarSpaceField::BranchStatus),
+            ],]
+        );
+        assert_eq!(
+            config.ui.sidebar.agents.lines,
+            vec![vec![
+                SidebarItem::visible(SidebarAgentField::AgentStatus),
+                SidebarItem::visible(SidebarAgentField::PaneName),
+                SidebarItem::visible(SidebarAgentField::TabName),
+                SidebarItem::visible(SidebarAgentField::SpaceName),
+                SidebarItem::visible(SidebarAgentField::Status),
+                SidebarItem::visible(SidebarAgentField::Time),
+                SidebarItem::visible(SidebarAgentField::CustomStatus),
+                SidebarItem::visible(SidebarAgentField::RightAlignment),
+                SidebarItem::visible(SidebarAgentField::AgentName),
+            ],]
+        );
+    }
+
+    #[test]
     fn kitty_graphics_default_off_and_parse() {
         let config = Config::default();
         assert!(!config.experimental.kitty_graphics);
@@ -1960,5 +2785,121 @@ scrollback_lines = 12345
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.advanced.scrollback_limit_bytes, 12345);
+    }
+
+    #[test]
+    fn color_preset_next_cycles_through_all_variants() {
+        let cycle = [
+            SidebarColorPreset::Default,
+            SidebarColorPreset::Muted,
+            SidebarColorPreset::Accent,
+            SidebarColorPreset::Cool,
+            SidebarColorPreset::Warm,
+        ];
+        let mut current = cycle[0];
+        for expected_next in cycle.iter().skip(1).chain(std::iter::once(&cycle[0])) {
+            current = current.next();
+            assert_eq!(&current, expected_next);
+        }
+        assert_eq!(current, SidebarColorPreset::Default);
+    }
+
+    #[test]
+    fn sidebar_host_config_default() {
+        let host = SidebarHostConfig::default();
+        assert_eq!(host.gradient, HostBannerGradient::Rainbow);
+        assert_eq!(host.animation, HostBannerAnimation::Animated);
+        assert_eq!(host.speed, HostBannerSpeed::Calm);
+        assert_eq!(host.glyph, HostBannerGlyph::Left);
+        assert!(!host.show_count);
+        // A config with no `[ui.sidebar.host]` table yields the default.
+        let config = Config::default();
+        assert_eq!(config.ui.sidebar.host, SidebarHostConfig::default());
+    }
+
+    #[test]
+    fn sidebar_host_partial_toml_falls_back() {
+        let toml = r#"
+[ui.sidebar.host]
+glyph = "none"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.sidebar.host.glyph, HostBannerGlyph::None);
+        // The other four keep their defaults.
+        assert_eq!(config.ui.sidebar.host.gradient, HostBannerGradient::Rainbow);
+        assert_eq!(
+            config.ui.sidebar.host.animation,
+            HostBannerAnimation::Animated
+        );
+        assert_eq!(config.ui.sidebar.host.speed, HostBannerSpeed::Calm);
+        assert!(!config.ui.sidebar.host.show_count);
+    }
+
+    #[test]
+    fn sidebar_host_unknown_value_falls_back() {
+        // The governing deserialization-fallback test (contract Area 7 §3): unknown / "off"
+        // string values degrade to the documented defaults instead of failing the parse.
+        let toml = r#"
+[ui.sidebar.host]
+gradient = "off"
+animation = "wobble"
+speed = "warp"
+glyph = "right"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.sidebar.host.gradient, HostBannerGradient::Rainbow);
+        assert_eq!(
+            config.ui.sidebar.host.animation,
+            HostBannerAnimation::Animated
+        );
+        assert_eq!(config.ui.sidebar.host.speed, HostBannerSpeed::Calm);
+        assert_eq!(config.ui.sidebar.host.glyph, HostBannerGlyph::Left);
+    }
+
+    #[test]
+    fn host_config_has_no_off_switch() {
+        // Structural guard: there is no `enabled`/`show`/`off` key and no `Off` gradient.
+        // `"off"` deserializes to the default gradient (asserted above); a TOML table that sets
+        // `enabled` parses fine (the key is ignored) — there is no off switch to honour.
+        let toml = r#"
+[ui.sidebar.host]
+enabled = false
+show = false
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.sidebar.host, SidebarHostConfig::default());
+        // Round-tripping the serialized form never emits an off/enabled key.
+        let serialized = toml::to_string(&config.ui.sidebar.host).unwrap();
+        assert!(!serialized.contains("enabled"));
+        assert!(!serialized.contains("\"off\""));
+    }
+
+    #[test]
+    fn host_speed_presets_ordered() {
+        assert!(HostBannerSpeed::Calm.drift() < HostBannerSpeed::Normal.drift());
+        assert!(HostBannerSpeed::Normal.drift() < HostBannerSpeed::Lively.drift());
+    }
+
+    #[test]
+    fn host_banner_enums_cycle_through_all_variants() {
+        assert_eq!(
+            HostBannerGradient::Rainbow.next(),
+            HostBannerGradient::Accent
+        );
+        assert_eq!(
+            HostBannerGradient::Muted.next(),
+            HostBannerGradient::Rainbow
+        );
+        assert_eq!(
+            HostBannerAnimation::Animated.next(),
+            HostBannerAnimation::Static
+        );
+        assert_eq!(
+            HostBannerAnimation::Static.next(),
+            HostBannerAnimation::Animated
+        );
+        assert_eq!(HostBannerSpeed::Lively.next(), HostBannerSpeed::Calm);
+        assert_eq!(HostBannerGlyph::Left.next(), HostBannerGlyph::None);
+        assert_eq!(HostBannerGlyph::None.next(), HostBannerGlyph::Left);
     }
 }

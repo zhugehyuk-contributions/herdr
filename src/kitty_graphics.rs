@@ -1256,6 +1256,9 @@ fn direct_file_command(
 }
 
 #[cfg(unix)]
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 pub(crate) fn encode_kitty_regular_file(
     out: &mut Vec<u8>,
     leading: &[u8],

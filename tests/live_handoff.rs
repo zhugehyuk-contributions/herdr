@@ -642,6 +642,101 @@ fn live_handoff_preserves_named_session_socket_paths() {
 }
 
 #[test]
+fn live_handoff_command_hands_off_every_running_session() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let work_dir = config_home.join("herdr-dev/sessions/work");
+    let ops_dir = config_home.join("herdr-dev/sessions/ops");
+    let work_api_socket = work_dir.join("herdr.sock");
+    let ops_api_socket = ops_dir.join("herdr.sock");
+    let work_client_socket = work_dir.join("herdr-client.sock");
+    let ops_client_socket = ops_dir.join("herdr-client.sock");
+
+    let work_spawned = spawn_named_session_server(&config_home, &runtime_dir, "work");
+    let ops_spawned = spawn_named_session_server(&config_home, &runtime_dir, "ops");
+    wait_for_socket(&work_api_socket, Duration::from_secs(10));
+    wait_for_socket(&ops_api_socket, Duration::from_secs(10));
+    register_runtime_dir(&runtime_dir);
+    let work_pid = work_spawned.child.process_id().expect("work server pid");
+    let ops_pid = ops_spawned.child.process_id().expect("ops server pid");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr"))
+        .arg("live-handoff")
+        .arg("--json")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env_remove("HERDR_SESSION")
+        .env_remove("HERDR_SOCKET_PATH")
+        .env_remove("HERDR_CLIENT_SOCKET_PATH")
+        .env_remove("HERDR_ENV")
+        .output()
+        .expect("live-handoff command should run");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "herdr live-handoff exited with {:?}; stdout {stdout}; stderr {stderr}",
+        output.status.code()
+    );
+    let report: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|err| panic!("live-handoff json was not parseable: {err}; got {stdout}"));
+    assert_eq!(report["ok"], 2, "unexpected live-handoff report: {report}");
+    assert_eq!(
+        report["failed"], 0,
+        "unexpected live-handoff report: {report}"
+    );
+    let handed_off: Vec<&str> = report["sessions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("live-handoff report has no sessions array: {report}"))
+        .iter()
+        .filter(|session| session["ok"] == serde_json::Value::Bool(true))
+        .filter_map(|session| session["name"].as_str())
+        .collect();
+    assert_eq!(
+        handed_off,
+        vec!["ops", "work"],
+        "both running sessions should be handed off: {report}"
+    );
+
+    // Each original server must be gone and replaced. These calls panic when no
+    // replacement appears, which is the assertion: a session the command skipped
+    // would still be served by its original pid.
+    //
+    // Deliberately no cross-comparison of the two returned pids: the Linux
+    // variant of this helper scans one shared runtime dir and returns the first
+    // pid that is not `old_pid`, so it can legitimately hand back the same
+    // replacement for both queries. The per-session proof is the report below
+    // plus both API/client sockets coming back up.
+    let _work_replacement =
+        wait_for_replacement_server_pid(&runtime_dir, work_pid, Duration::from_secs(10));
+    let _ops_replacement =
+        wait_for_replacement_server_pid(&runtime_dir, ops_pid, Duration::from_secs(10));
+
+    wait_for_api(&work_api_socket, Duration::from_secs(10));
+    wait_for_api(&ops_api_socket, Duration::from_secs(10));
+    wait_for_socket(&work_client_socket, Duration::from_secs(5));
+    wait_for_socket(&ops_client_socket, Duration::from_secs(5));
+    assert!(
+        !config_home.join("herdr-dev/herdr.sock").exists(),
+        "multi-session handoff unexpectedly bound the default session API socket"
+    );
+
+    let _ = request(
+        &work_api_socket,
+        serde_json::json!({"id":"test:stop-work","method":"server.stop","params":{}}),
+    );
+    let _ = request(
+        &ops_api_socket,
+        serde_json::json!({"id":"test:stop-ops","method":"server.stop","params":{}}),
+    );
+    drop(work_spawned);
+    drop(ops_spawned);
+    cleanup_test_base(&base);
+}
+
+#[test]
 fn live_handoff_ignores_leaked_default_socket_env_for_named_session() {
     let _lock = test_lock();
     let base = unique_test_dir();

@@ -5,7 +5,7 @@ use super::{App, SESSION_SAVE_DEBOUNCE};
 enum SessionSaveJob {
     Clear,
     Save {
-        snapshot: crate::persist::SessionSnapshot,
+        snapshot: Box<crate::persist::SessionSnapshot>,
         history: Option<crate::persist::SessionHistorySnapshot>,
     },
 }
@@ -46,14 +46,21 @@ impl App {
                 &self.terminal_runtimes,
                 self.state.active,
                 self.state.selected,
+                self.state.agent_panel_scope,
                 self.state.sidebar_width,
                 self.state.sidebar_section_split,
                 self.state.collapsed_space_keys.clone(),
+                self.state.remote_registry.clone(),
+                // #37: persist the cumulative pane-id alias map so agent hook ids survive handoff.
+                &self.state.pane_id_aliases,
             );
             let history = self.persist_pane_history.then(|| {
                 crate::persist::capture_history(&self.state.workspaces, &self.terminal_runtimes)
             });
-            SessionSaveJob::Save { snapshot, history }
+            SessionSaveJob::Save {
+                snapshot: Box::new(snapshot),
+                history,
+            }
         }
     }
 

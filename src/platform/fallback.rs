@@ -216,6 +216,11 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
     None
 }
 
+/// Unsupported platform stub (#59).
+pub fn clipboard_image_file_if_unreadable() -> Option<String> {
+    None
+}
+
 /// Unsupported platform stub.
 pub fn show_desktop_notification(_title: &str, _body: Option<&str>) -> std::io::Result<bool> {
     Ok(false)

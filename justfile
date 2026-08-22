@@ -78,6 +78,20 @@ bench-release-smoke:
     cargo build --release --locked
     scripts/release_perf_smoke.sh "${CARGO_TARGET_DIR:-target}/release/herdr"
 
+# Build an opt-in multi-platform "fat" herdr that can seed remotes of any supported
+# OS/arch offline (issue #28). Needs cargo-zigbuild and Zig 0.15 (set ZIG=...).
+bundle:
+    scripts/build_bundle.sh
+
+# Build the artifact used for LOCAL DEPLOY / INSTALL — ALWAYS the multi-platform bundle
+# (issue #28), so the deployed herdr can seed `add-remote` on ANY os/arch offline at exact
+# protocol parity. A plain `cargo build` carries no payload, so a cross-OS add-remote falls
+# back to a protocol-lagging release download and the remote installs an incompatible herdr
+# ("remote herdr is incompatible and can't be upgraded in place" — see #46). `/redeploy` MUST
+# build through this recipe and install/handoff `target/herdr-bundle`, NOT target/release/herdr.
+deploy-build: bundle
+    @echo "deploy artifact: target/herdr-bundle  (install/handoff THIS, not target/release/herdr)"
+
 # Build the website and documentation
 website-build:
     cd website && bun install --frozen-lockfile && bun run build

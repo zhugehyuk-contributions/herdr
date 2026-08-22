@@ -48,6 +48,20 @@ pub(crate) fn centered_popup_rect(area: Rect, popup_w: u16, popup_h: u16) -> Opt
     Some(Rect::new(popup_x, popup_y, popup_w, popup_h))
 }
 
+/// Anchor a popup at the bottom-left of `area`, opening upward — so a client overlay floats over
+/// the live content at the sidebar footer like the global launcher menu, instead of a centered,
+/// full-screen-dimmed modal. Callers pass `area` spanning the host top down to the footer row.
+pub(crate) fn bottom_left_popup_rect(area: Rect, popup_w: u16, popup_h: u16) -> Option<Rect> {
+    let popup_w = popup_w.min(area.width.saturating_sub(2));
+    let popup_h = popup_h.min(area.height.saturating_sub(1));
+    if popup_w < 4 || popup_h < 4 {
+        return None;
+    }
+    let popup_x = area.x;
+    let popup_y = area.y + area.height.saturating_sub(popup_h);
+    Some(Rect::new(popup_x, popup_y, popup_w, popup_h))
+}
+
 pub(super) fn render_modal_shell(
     frame: &mut Frame,
     area: Rect,

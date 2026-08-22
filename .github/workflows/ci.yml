@@ -4,7 +4,15 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
-    branches: [master, windows]
+    # herdr-mx#68: `mx` is this fork's default branch and upstream merges land on it as direct
+    # pushes, not PRs, so `on.pull_request` never covers them. Without `mx` here, fmt/clippy/nextest
+    # simply do not run on the branch the preview channel ships from (the v0.7.1 merge reached that
+    # channel with zero test gate). `master`/`windows` are kept so the workflow stays mergeable
+    # upstream. The `conventional-commits` job below is deliberately NOT extended to mx: an upstream
+    # merge push carries upstream's subjects plus a `Merge tag 'vX.Y.Z'` commit, which that
+    # validator rejects by construction. `nix.yml` is deliberately left alone too - it is
+    # path-filtered and PR-only, and herdr-mx ships through brew/mise, not nix.
+    branches: [master, windows, mx]
     paths-ignore:
       - "website/**"
 
@@ -52,6 +60,9 @@ jobs:
           - os: macos-latest
             kind: unix
             nextest_filter: not binary(live_handoff)
+          # herdr-mx#63: the multi-remote client does not compile on windows, so the windows
+          # legs are skipped on `mx` pushes (see the `if:` on each windows step below and on
+          # `windows-conpty-package`). Kept in the matrix so PRs and upstream parity are unchanged.
           - os: windows-latest
             kind: windows
     runs-on: ${{ matrix.os }}
@@ -133,25 +144,115 @@ jobs:
           cache-bin: false
           key: ${{ matrix.os }}
 
+      # herdr-mx#68: `mx` pushes run the same checks every other branch does. This used to be
+      # a separate `ci-mx` step that skipped `cargo fmt --check`, because the tree was not
+      # rustfmt-clean; `808b5ca7` made it clean instead, so the exemption would now only let
+      # drift back in.
       - name: Run checks
         if: matrix.kind == 'unix'
         run: just ci '${{ matrix.nextest_filter }}'
 
       - name: Run Windows checks
-        if: matrix.kind == 'windows'
+        if: matrix.kind == 'windows' && github.ref_name != 'mx'
         shell: pwsh
         run: .\scripts\windows_check.ps1 -Mode check
 
       - name: Smoke ConPTY pane
-        if: matrix.kind == 'windows'
+        if: matrix.kind == 'windows' && github.ref_name != 'mx'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $exe = Join-Path $PWD "target\x86_64-pc-windows-msvc\debug\herdr.exe"
           .\scripts\windows_smoke_conpty_path.ps1 -ExePath $exe -Session "ci-windows-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
 
+  # mobile/.prd/06-open-decisions.md D7 items 3 and 4: keeping `mobile/` and `packages/` in-tree
+  # was conditioned on this job existing. Item 3 (a tsc+vitest gate for the TypeScript surface)
+  # only became meaningful once herdr-mx#68 put `mx` on `on.push.branches` above - before that the
+  # branch this code lands on ran no CI at all, so the gate had nothing to hang on. Item 4 (fixture
+  # freshness) is the other half: `src/protocol/wire_fixtures.rs` already fails the `check` job when
+  # the generator drifts from the committed `docs/next/protocol/fixtures.json`, but nothing checked
+  # that file against the TypeScript codec - `fixtures.test.ts` skipped itself when the file was
+  # absent. `HERDR_REQUIRE_FIXTURES` below turns that silent skip into a failure.
+  #
+  # Deliberately not path-filtered. A `paths:` filter would have to list `docs/next/protocol/**`
+  # too (item 4 rings on corpus changes, not just on `mobile/**` edits), and a filter that is one
+  # path short is a gate that is silently off. The job is cheap enough that the filter buys nothing.
+  #
+  # Scope is what runs without a device or a native toolchain: no `expo`/EAS build, no `test:live`
+  # (needs a real sshd), no `typecheck:android|ios|keyformats|closepayload` (Kotlin/Swift).
+  mobile:
+    name: mobile + client-ts (typescript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # `fixtures.test.ts` is already strict whenever `CI` is set; stated here so the contract is
+      # visible at the job that depends on it rather than only in the test file.
+      HERDR_REQUIRE_FIXTURES: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      # Both packages are their own pnpm install root (no root package.json, no workspace) and
+      # neither declares `packageManager`, so the version is pinned here.
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10.34.5
+
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: |
+            packages/herdr-client-ts/pnpm-lock.yaml
+            mobile/pnpm-lock.yaml
+
+      # First: `mobile` depends on it through `link:../packages/herdr-client-ts`, so its own
+      # node_modules must exist before mobile typechecks against it.
+      - name: Install client-ts dependencies
+        working-directory: packages/herdr-client-ts
+        run: pnpm install --frozen-lockfile
+
+      # Scripts are NOT ignored here: `postinstall` runs
+      # `scripts/build-terminal-webview-engine.mjs`, which esbuild-bundles xterm into the gitignored
+      # `src/terminal/terminal-webview-engine.generated.ts` that typecheck and tests both import.
+      # It is a local bundle, no network of its own; esbuild's platform binary comes from the
+      # lockfile, and `pnpm.onlyBuiltDependencies` in mobile/package.json lets its install script run.
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck client-ts
+        working-directory: packages/herdr-client-ts
+        run: pnpm typecheck
+
+      - name: Test client-ts
+        working-directory: packages/herdr-client-ts
+        run: pnpm test
+
+      - name: Typecheck mobile
+        working-directory: mobile
+        run: pnpm typecheck
+
+      - name: Lint mobile
+        working-directory: mobile
+        run: pnpm lint
+
+      - name: Check mobile formatting
+        working-directory: mobile
+        run: pnpm format:check
+
+      - name: Test mobile
+        working-directory: mobile
+        run: pnpm test
+
   windows-conpty-package:
     name: Windows ConPTY package
+    # herdr-mx#63: no windows build on this fork's default branch.
+    if: github.ref_name != 'mx'
     runs-on: windows-2022
     timeout-minutes: 25
     steps:

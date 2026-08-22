@@ -29,6 +29,13 @@ const HERDR_UPDATE_COMMAND: &str = "herdr update";
 const HOMEBREW_UPDATE_COMMAND: &str = "brew update && brew upgrade herdr";
 const MISE_UPDATE_COMMAND: &str = "mise upgrade herdr";
 const NIX_UPDATE_COMMAND: &str = "update through Nix";
+// herdr-mx downstream builds must never self-update from the upstream
+// herdr.dev manifests: that would silently replace this binary with a stock
+// herdr that lacks the multi-remote client.
+const MX_BUILD_CHANNEL: &str = "mx";
+const MX_HOMEBREW_UPDATE_COMMAND: &str = "brew update && brew upgrade herdr-mx";
+const MX_RELEASES_UPDATE_COMMAND: &str =
+    "install a newer herdr-mx from https://github.com/2lab-ai/herdr-mx/releases";
 const MISE_INSTALLS_DIR_ENV: &str = "MISE_INSTALLS_DIR";
 const FAKE_UPDATE_VERSION_ENV: &str = "HERDR_FAKE_UPDATE_VERSION";
 const FAKE_UPDATE_NOTES_VERSION_ENV: &str = "HERDR_FAKE_UPDATE_NOTES_VERSION";
@@ -72,6 +79,9 @@ pub struct Version {
 impl Version {
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.strip_prefix('v').unwrap_or(s);
+        // Channel-suffixed build versions such as `0.6.10-mx.1` or
+        // `0.6.10-preview.20260611` order by their numeric core.
+        let s = s.split('-').next()?;
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 3 {
             return None;
@@ -1844,6 +1854,12 @@ fn print_running_session_update_outcomes(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn update_install_command() -> &'static str {
+    if crate::build_info::channel() == MX_BUILD_CHANNEL {
+        if is_homebrew_managed_install() {
+            return MX_HOMEBREW_UPDATE_COMMAND;
+        }
+        return MX_RELEASES_UPDATE_COMMAND;
+    }
     if is_homebrew_managed_install() {
         HOMEBREW_UPDATE_COMMAND
     } else if is_mise_managed_install() {
@@ -2069,6 +2085,11 @@ fn homebrew_cellar_keg_root(path: &Path) -> Option<PathBuf> {
 
 /// Manual self-update command (`herdr update`).
 pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
+    if crate::build_info::channel() == MX_BUILD_CHANNEL {
+        return Err(format!(
+            "self-update is disabled for herdr-mx builds; run `{MX_HOMEBREW_UPDATE_COMMAND}` for Homebrew installs, or {MX_RELEASES_UPDATE_COMMAND}"
+        ));
+    }
     let channel = UpdateChannel::configured();
 
     if is_homebrew_managed_install() {
@@ -2220,6 +2241,13 @@ pub fn auto_update(events: tokio::sync::mpsc::Sender<crate::events::AppEvent>) {
                 install_command: update_install_command().to_string(),
             });
         }
+        return;
+    }
+
+    if crate::build_info::channel() == MX_BUILD_CHANNEL {
+        crate::logging::update_check_failed(
+            "update checks against herdr.dev are disabled for herdr-mx builds; update via the herdr-mx tap or GitHub releases",
+        );
         return;
     }
 
@@ -2476,6 +2504,17 @@ mod tests {
                 patch: 0
             })
         );
+    }
+
+    #[test]
+    fn parse_version_with_channel_suffix() {
+        let expected = Some(Version {
+            major: 0,
+            minor: 6,
+            patch: 10,
+        });
+        assert_eq!(Version::parse("0.6.10-mx.1"), expected);
+        assert_eq!(Version::parse("v0.6.10-preview.20260611"), expected);
     }
 
     #[test]

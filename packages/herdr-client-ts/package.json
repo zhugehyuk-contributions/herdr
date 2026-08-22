@@ -1,0 +1,30 @@
+{
+  "name": "@herdr/client-ts",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Headless wire codec for the herdr client protocol (envelope + Hello encode + Welcome/Terminal decode).",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:live": "vitest run --config vitest.live.config.ts",
+    "test:live:ssh": "vitest run --config vitest.live-ssh.config.ts",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ssh2": "^1.15.5",
+    "ssh2": "^1.17.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

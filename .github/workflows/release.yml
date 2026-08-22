@@ -61,11 +61,10 @@ jobs:
             name: herdr-macos-aarch64
             libghostty_vt_optimize: ReleaseFast
             libghostty_vt_simd: 'true'
-          - target: x86_64-pc-windows-msvc
-            os: windows-2022
-            name: herdr-windows-x86_64.zip
-            libghostty_vt_optimize: ReleaseFast
-            libghostty_vt_simd: 'true'
+          # herdr-mx: no windows target. The multi-remote client does not compile on
+          # windows yet (2lab-ai/herdr-mx#63) and the release job publishes `fat/` bundles,
+          # not per-target archives, so upstream v0.8.2's windows matrix row is rejected.
+          # The windows packaging step below is kept dead so the next merge stays quiet.
 
     runs-on: ${{ matrix.os }}
     env:
@@ -82,6 +81,8 @@ jobs:
         run: |
           CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           TAG_VERSION="${GITHUB_REF_NAME#v}"
+          # herdr-mx tags (v0.6.10-mx.1) build the upstream base version.
+          TAG_VERSION="${TAG_VERSION%%-mx.*}"
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "error: tag $GITHUB_REF_NAME doesn't match Cargo.toml version $CARGO_VERSION"
             exit 1
@@ -148,6 +149,14 @@ jobs:
         shell: bash
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
+      # herdr-mx: tags look like v0.6.10-mx.1; stamp the build channel so
+      # `herdr --version` reports the mx identity and self-update stays gated.
+      - name: Set herdr-mx build identity
+        if: contains(github.ref_name, '-mx.')
+        run: |
+          echo "HERDR_BUILD_CHANNEL=mx" >> "$GITHUB_ENV"
+          echo "HERDR_BUILD_ID=${GITHUB_REF_NAME##*-mx.}" >> "$GITHUB_ENV"
+
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -207,6 +216,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # Deploy key with write access to 2lab-ai/homebrew-tap (repo-scoped; NOT a personal
+      # token). Present -> the tap step below pushes the rendered stable formula
+      # immediately after publishing. Absent -> the step no-ops and the tap's 6h cron
+      # catches up from the latest non-prerelease release.
+      TAP_PUSH_KEY: ${{ secrets.TAP_PUSH_KEY }}
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -216,6 +231,35 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
 
+      # herdr-mx: every published asset is a multi-platform "fat" bundle so any
+      # installed binary (brew/mise/direct) can seed a different-OS remote
+      # offline at exact version parity. `bundle pack` is pure file surgery, so
+      # the runner-native linux binary packs all four carriers.
+      - name: Pack fat bundles
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          COMMIT="${GITHUB_SHA::7}"
+          PACKER=herdr-linux-x86_64/herdr-linux-x86_64
+          chmod +x "$PACKER"
+          declare -A OSARCH=(
+            [herdr-macos-aarch64]=macos-aarch64
+            [herdr-macos-x86_64]=macos-x86_64
+            [herdr-linux-aarch64]=linux-aarch64
+            [herdr-linux-x86_64]=linux-x86_64
+          )
+          mkdir -p fat
+          for name in "${!OSARCH[@]}"; do
+            args=()
+            for other in "${!OSARCH[@]}"; do
+              [ "$other" = "$name" ] && continue
+              args+=(--binary "${OSARCH[$other]}=$other/$other")
+            done
+            "$PACKER" bundle pack --carrier "$name/$name" --output "fat/$name" \
+              --version "$VERSION" --commit "$COMMIT" "${args[@]}"
+            "$PACKER" bundle list "fat/$name"
+          done
+
       - name: Extract release notes from changelog
         run: python3 scripts/changelog.py extract --version "${GITHUB_REF_NAME#v}" --output RELEASE_NOTES.md
 
@@ -223,12 +267,53 @@ jobs:
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
           files: |
-            herdr-linux-x86_64/herdr-linux-x86_64
-            herdr-linux-aarch64/herdr-linux-aarch64
-            herdr-macos-x86_64/herdr-macos-x86_64
-            herdr-macos-aarch64/herdr-macos-aarch64
-            herdr-windows-x86_64.zip/herdr-windows-x86_64.zip
+            fat/herdr-linux-x86_64
+            fat/herdr-linux-aarch64
+            fat/herdr-macos-x86_64
+            fat/herdr-macos-aarch64
           body_path: RELEASE_NOTES.md
+
+      - name: Bump Homebrew tap to this release
+        # Event-driven tap update mirroring the preview flow: render Formula/herdr-mx.rb
+        # from the fat bundles just published (same sha256s brew will download) and push
+        # it to the tap over the deploy key, so `brew install herdr-mx` sees this build
+        # immediately instead of waiting on the tap's 6h cron (which stays as backstop
+        # and no-ops on "formula already at VERSION").
+        if: ${{ env.TAP_PUSH_KEY != '' && contains(github.ref_name, '-mx.') }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          eval "$(ssh-agent -s)" >/dev/null
+          ssh-add - <<< "$TAP_PUSH_KEY"
+
+          git clone --depth 1 git@github.com:2lab-ai/homebrew-tap.git tap-bump
+
+          declare -A SHAS
+          for name in herdr-macos-aarch64 herdr-macos-x86_64 herdr-linux-aarch64 herdr-linux-x86_64; do
+            SHAS[$name]=$(sha256sum "fat/$name" | cut -d' ' -f1)
+          done
+          sed -e "s/@VERSION@/$VERSION/g" \
+              -e "s/@SHA_MACOS_AARCH64@/${SHAS[herdr-macos-aarch64]}/" \
+              -e "s/@SHA_MACOS_X86_64@/${SHAS[herdr-macos-x86_64]}/" \
+              -e "s/@SHA_LINUX_AARCH64@/${SHAS[herdr-linux-aarch64]}/" \
+              -e "s/@SHA_LINUX_X86_64@/${SHAS[herdr-linux-x86_64]}/" \
+              tap-bump/Formula/herdr-mx.rb.tmpl > tap-bump/Formula/herdr-mx.rb
+          ruby -c tap-bump/Formula/herdr-mx.rb
+
+          cd tap-bump
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/herdr-mx.rb
+          git diff --cached --quiet && { echo "tap already current"; exit 0; }
+          git commit -m "herdr-mx v$VERSION"
+          # Commit before pulling (an unstaged render breaks --rebase), then rebase over
+          # anything the cron/other repos pushed meanwhile.
+          git pull --rebase
+          git push
+          echo "tap bumped to v$VERSION"
 
   close-released-issues:
     needs: release
@@ -368,6 +453,9 @@ jobs:
 
   update-latest-json:
     needs: release
+    # herdr-mx releases must not rewrite the upstream website manifest or push
+    # to the master mirror branch.
+    if: ${{ !contains(github.ref_name, '-mx.') }}
     runs-on: ubuntu-latest
     concurrency:
       group: docs-publish-master

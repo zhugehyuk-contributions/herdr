@@ -204,6 +204,7 @@ impl AppState {
             labels.push("what's new");
         }
         labels.push("detach");
+        labels.extend(self.global_menu_extra_labels.iter().copied());
         labels
     }
 
@@ -400,7 +401,7 @@ impl AppState {
                     ws_idx,
                     indented: false,
                 } => Some(ws_idx),
-                crate::ui::WorkspaceListEntry::Workspace { .. } => None,
+                _ => None,
             })
             .collect::<Vec<_>>();
         let source_pos = roots.iter().position(|ws_idx| *ws_idx == source_ws_idx)?;
@@ -496,27 +497,126 @@ impl AppState {
             detail_area,
             crate::ui::should_show_scrollbar(metrics),
         );
-        if body.height == 0 || row < body.y || row >= body.y + body.height {
+        let entry_rows = crate::ui::agent_panel_entry_row_count(self);
+        if entry_rows == 0
+            || body.height < entry_rows
+            || row < body.y
+            || row >= body.y + body.height
+        {
             return None;
         }
 
         let mut row_y = body.y;
-        let body_bottom = body.y + body.height;
-        let entries = crate::ui::agent_panel_entries(self);
+        let body_bottom = body.y.saturating_add(body.height);
         let scroll = self.agent_panel_scroll.min(metrics.max_offset_from_bottom);
-        for (index, detail) in entries.iter().enumerate().skip(scroll) {
-            let height = crate::ui::agent_entry_height_in_body(self, detail, body.height);
-            if row_y.saturating_add(height) > body_bottom {
+        for detail in crate::ui::agent_panel_entries(self)
+            .into_iter()
+            .skip(scroll)
+        {
+            let row_end = row_y.saturating_add(entry_rows);
+            if row_end > body_bottom {
                 break;
             }
-            if row >= row_y && row < row_y.saturating_add(height) {
+            if row >= row_y && row < row_end {
                 return Some((detail.ws_idx, detail.tab_idx, detail.pane_id));
             }
-            row_y = row_y
-                .saturating_add(height)
-                .saturating_add(crate::ui::agent_entry_gap(self, index, entries.len()))
-                .min(body_bottom);
+            row_y = row_end;
+            if row_y < body_bottom {
+                row_y = row_y.saturating_add(1);
+            }
         }
+        None
+    }
+
+    /// item 7 (Area 4): resolve a monolithic mouse-motion position to a sidebar hover target,
+    /// reusing the SAME geometry helpers the click path uses (so hover and click agree). Returns
+    /// `None` for non-selectable rows — the resize divider and the section separator (skipped via
+    /// `on_sidebar_divider`/`on_sidebar_section_divider`), and any row that maps to no
+    /// affordance/banner/card/agent entry. The ` new`/`menu` affordances hover only when drawn
+    /// (`self.mouse_capture` + `launcher_enabled`, matching the renderer's draw gate). The caller
+    /// gates this to `in_sidebar && !sidebar_collapsed` in a navigate-ish mode. No server traffic.
+    /// herdr-mx: hit-test the client-side agent-panel scope toggle (current/all) in the
+    /// monolithic sidebar. The multi-remote client drives the same toggle from the compositor.
+    pub(super) fn on_agent_panel_scope_toggle(&self, col: u16, row: u16) -> bool {
+        if self.sidebar_collapsed {
+            return false;
+        }
+
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
+            self.view.sidebar_rect,
+            self.sidebar_section_split,
+        );
+        let rect = crate::ui::agent_panel_scope_toggle_rect(detail_area, self.agent_panel_scope);
+        rect.width > 0
+            && col >= rect.x
+            && col < rect.x + rect.width
+            && row >= rect.y
+            && row < rect.y + rect.height
+    }
+
+    pub(super) fn resolve_sidebar_hover(
+        &self,
+        col: u16,
+        row: u16,
+        affordances_drawn: bool,
+    ) -> Option<crate::app::state::SidebarHoverTarget> {
+        use crate::app::state::SidebarHoverTarget;
+
+        // the resize column / section separator are not hoverable.
+        if self.on_sidebar_divider(col, row) || self.on_sidebar_section_divider(col, row) {
+            return None;
+        }
+
+        // item-4 space-divider rows are non-selectable. Resolve them to the defensive `Divider`
+        // target, which render treats as NO-highlight (a stable `None`-equivalent), rather than
+        // letting the card loop below claim the row. The contract's "hover never highlights the
+        // divider" (Decision 4) holds because render has no `Divider` arm.
+        if self.view.divider_rows.contains(&row) {
+            return Some(SidebarHoverTarget::Divider);
+        }
+
+        let in_rect = |rect: Rect| {
+            rect.width > 0
+                && col >= rect.x
+                && col < rect.x.saturating_add(rect.width)
+                && row >= rect.y
+                && row < rect.y.saturating_add(rect.height)
+        };
+
+        if affordances_drawn {
+            if in_rect(self.sidebar_new_button_rect()) {
+                return Some(SidebarHoverTarget::New);
+            }
+            if in_rect(self.global_launcher_rect()) {
+                return Some(SidebarHoverTarget::Menu);
+            }
+        }
+
+        if self.on_agent_panel_scope_toggle(col, row) {
+            return Some(SidebarHoverTarget::ScopeToggle);
+        }
+
+        // host-banner rect (item 2): empty in monolithic, hoverable defensively when present.
+        for banner in &self.view.host_banner_areas {
+            if in_rect(banner.rect) {
+                return Some(SidebarHoverTarget::HostBanner {
+                    banner_idx: banner.banner_idx,
+                });
+            }
+        }
+
+        if let Some(ws_idx) = self.workspace_at_row(row) {
+            return Some(SidebarHoverTarget::Workspace { ws_idx });
+        }
+
+        if let Some((ws_idx, tab_idx, pane_id)) = self.agent_detail_target_at(row) {
+            return Some(SidebarHoverTarget::AgentMono {
+                ws_idx,
+                tab_idx,
+                pane_id,
+            });
+        }
+
         None
     }
 }
@@ -530,11 +630,171 @@ mod tests {
 
     use super::super::{app_for_mouse_test, capture_snapshot, mouse, unique_temp_path};
     use crate::{
-        app::state::{AgentPanelSort, DragTarget, Mode},
+        app::state::{
+            AgentPanelScope, AgentPanelSort, AppState, DragTarget, Mode, SidebarAgentItem,
+        },
         config::SidebarCollapsedModeConfig,
         detect::{Agent, AgentState},
         workspace::Workspace,
     };
+
+    // item 4: the divider row produces no card, so hit-test on it resolves to no workspace.
+    fn divider_hit_test_app() -> AppState {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("local"), Workspace::test_new("remote")];
+        app.client_workspace_remote = vec![false, true];
+        app.active = None;
+        app.mode = Mode::Terminal;
+        let area = Rect::new(0, 0, 30, 20);
+        app.view.sidebar_rect = area;
+        let (cards, _banners, divider_rows) =
+            crate::ui::compute_workspace_list_areas_full(&app, area);
+        app.view.workspace_card_areas = cards;
+        app.view.divider_rows = divider_rows;
+        app
+    }
+
+    #[test]
+    fn dragging_workspace_reorders_without_changing_identity() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![
+            Workspace::test_new("a"),
+            Workspace::test_new("b"),
+            Workspace::test_new("c"),
+        ];
+        let active_id = app.state.workspaces[1].id.clone();
+        let selected_id = app.state.workspaces[2].id.clone();
+        app.state.active = Some(1);
+        app.state.selected = 2;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let source_row = app.state.view.workspace_card_areas[1].rect.y;
+        let target_row = crate::ui::workspace_drop_indicator_row(
+            &app.state,
+            &app.state.view.workspace_card_areas,
+            app.state.workspace_list_rect(),
+            crate::app::state::WorkspaceDropTarget::Before(0),
+        )
+        .unwrap();
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            source_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            2,
+            target_row,
+        ));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::WorkspaceReorder {
+                source_ws_idx: 1,
+                drop_target: Some(crate::app::state::WorkspaceDropTarget::Before(0)),
+                ..
+            })
+        ));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
+
+        let names: Vec<_> = app
+            .state
+            .workspaces
+            .iter()
+            .map(|ws| ws.display_name())
+            .collect();
+        assert_eq!(names, vec!["b", "a", "c"]);
+        assert_eq!(app.state.active, Some(0));
+        assert_eq!(app.state.selected, 2);
+        assert_eq!(app.state.workspaces[0].id, active_id);
+        assert_eq!(app.state.workspaces[2].id, selected_id);
+        let snapshot = capture_snapshot(&app.state);
+        let captured_names: Vec<_> = snapshot
+            .workspaces
+            .iter()
+            .map(|ws| ws.custom_name.clone().unwrap())
+            .collect();
+        assert_eq!(captured_names, vec!["b", "a", "c"]);
+    }
+    #[test]
+    fn top_drop_slot_is_distinct_from_gap_below_first_workspace() {
+        let mut app = app_for_mouse_test();
+        let first_repo = temp_git_repo("main");
+        let second_repo = temp_git_repo("main");
+
+        let mut first = Workspace::test_new("a");
+        let first_root = first.tabs[0].root_pane;
+        first.identity_cwd = first_repo.clone();
+        first.refresh_git_ahead_behind();
+
+        let mut second = Workspace::test_new("b");
+        let second_root = second.tabs[0].root_pane;
+        second.identity_cwd = second_repo.clone();
+        second.refresh_git_ahead_behind();
+
+        app.state.workspaces = vec![first, second];
+        app.state.ensure_test_terminals();
+        let first_terminal_id = app.state.workspaces[0].tabs[0].panes[&first_root]
+            .attached_terminal_id
+            .clone();
+        app.state.terminals.get_mut(&first_terminal_id).unwrap().cwd = first_repo.clone();
+        let second_terminal_id = app.state.workspaces[1].tabs[0].panes[&second_root]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&second_terminal_id)
+            .unwrap()
+            .cwd = second_repo.clone();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        use crate::app::state::WorkspaceDropTarget;
+        assert_eq!(
+            app.state.workspace_drop_target_at_row(0),
+            Some(WorkspaceDropTarget::Before(0))
+        );
+        assert_eq!(
+            app.state.workspace_drop_target_at_row(1),
+            Some(WorkspaceDropTarget::Before(0))
+        );
+        assert_eq!(
+            app.state.workspace_drop_target_at_row(2),
+            Some(WorkspaceDropTarget::Before(0))
+        );
+        assert_eq!(
+            app.state.workspace_drop_target_at_row(3),
+            Some(WorkspaceDropTarget::Before(1))
+        );
+
+        let _ = fs::remove_dir_all(first_repo);
+        let _ = fs::remove_dir_all(second_repo);
+    }
+
+    #[test]
+    fn workspace_at_row_returns_none_for_divider_row() {
+        let app = divider_hit_test_app();
+        assert_eq!(app.view.divider_rows.len(), 1);
+        let divider_y = app.view.divider_rows[0];
+        // The two real workspace rows still resolve to their cards.
+        let local_y = app.view.workspace_card_areas[0].rect.y;
+        let remote_y = app.view.workspace_card_areas[1].rect.y;
+        assert_eq!(app.workspace_at_row(local_y), Some(0));
+        assert_eq!(app.workspace_at_row(remote_y), Some(1));
+        // The divider row resolves to no workspace.
+        assert_eq!(app.workspace_at_row(divider_y), None);
+    }
+
+    #[test]
+    fn workspace_drop_index_at_row_unaffected_by_divider() {
+        // Dropping "onto" the divider row resolves via the adjacent real cards, never to a
+        // divider-derived index; drop geometry iterates workspace_card_areas only.
+        let app = divider_hit_test_app();
+        let divider_y = app.view.divider_rows[0];
+        let drop = app.workspace_drop_target_at_row(divider_y);
+        // The result (if any) is a valid drop target within workspaces bounds.
+        if let Some(crate::app::state::WorkspaceDropTarget::Before(idx)) = drop {
+            assert!(idx <= app.workspaces.len());
+        }
+    }
 
     #[test]
     fn clicking_launcher_opens_global_menu() {
@@ -746,60 +1006,6 @@ mod tests {
     }
 
     #[test]
-    fn per_agent_row_heights_preserve_card_gaps_and_trailing_mouse_targets() {
-        let mut app = app_for_mouse_test();
-        let first = Workspace::test_new("one");
-        let first_pane = first.tabs[0].root_pane;
-        let second = Workspace::test_new("two");
-        let second_pane = second.tabs[0].root_pane;
-        app.state.workspaces = vec![first, second];
-        app.state.ensure_test_terminals();
-        for (ws_idx, pane_id, agent) in
-            [(0, first_pane, Agent::Pi), (1, second_pane, Agent::Claude)]
-        {
-            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
-                .attached_terminal_id
-                .clone();
-            app.state
-                .terminals
-                .get_mut(&terminal_id)
-                .unwrap()
-                .detected_agent = Some(agent);
-        }
-        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
-        app.state.sidebar_agents.rows_by_agent.insert(
-            "claude".into(),
-            vec![
-                vec![crate::config::AgentSidebarToken::Agent],
-                vec![crate::config::AgentSidebarToken::Workspace],
-            ],
-        );
-        app.state.sidebar_agents.row_gap = 1;
-        let detail_area = app.state.agent_panel_rect();
-        let metrics = crate::ui::agent_panel_scroll_metrics(&app.state, detail_area);
-        let body = crate::ui::agent_panel_body_rect(
-            detail_area,
-            crate::ui::should_show_scrollbar(metrics),
-        );
-
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y),
-            Some((0, 0, first_pane))
-        );
-        assert_eq!(app.state.agent_detail_target_at(body.y + 1), None);
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y + 3),
-            Some((1, 0, second_pane))
-        );
-
-        app.state.sidebar_agents.row_gap = 0;
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y + 1),
-            Some((1, 0, second_pane))
-        );
-    }
-
-    #[test]
     fn agent_hit_testing_clamps_scroll_after_dynamic_filter_shrink() {
         let mut app = app_for_mouse_test();
         let first = Workspace::test_new("one");
@@ -918,6 +1124,111 @@ mod tests {
     }
 
     #[test]
+    fn agent_detail_hit_test_uses_one_configured_row_per_entry() {
+        let mut app = app_for_mouse_test();
+        let first = Workspace::test_new("one");
+        let first_pane = first.tabs[0].root_pane;
+
+        let second = Workspace::test_new("two");
+        let second_pane = second.tabs[0].root_pane;
+
+        app.state.workspaces = vec![first, second];
+        app.state.ensure_test_terminals();
+        for (ws_idx, pane_id, agent) in
+            [(0, first_pane, Agent::Pi), (1, second_pane, Agent::Claude)]
+        {
+            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(agent);
+        }
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.agent_panel_scope = AgentPanelScope::AllWorkspaces;
+        app.state.sidebar_agent.lines = vec![vec![crate::config::SidebarItem::visible(
+            SidebarAgentItem::AgentStatus,
+        )]];
+
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
+            app.state.view.sidebar_rect,
+            app.state.sidebar_section_split,
+        );
+        let body = crate::ui::agent_panel_body_rect(detail_area, false);
+
+        let target = app
+            .state
+            .agent_detail_target_at(body.y + 2)
+            .expect("second one-line entry should be hittable");
+
+        assert_eq!(target, (1, 0, second_pane));
+    }
+
+    #[test]
+    fn agent_detail_hit_test_uses_three_configured_rows_per_entry() {
+        let mut app = app_for_mouse_test();
+        // #9: the sidebar now reserves its bottom row for the collapse toggle button, so give the
+        // detail section one extra row to keep the same usable height this test asserts against.
+        app.state.view.sidebar_rect = ratatui::layout::Rect::new(0, 0, 26, 21);
+        let first = Workspace::test_new("one");
+        let first_pane = first.tabs[0].root_pane;
+
+        let second = Workspace::test_new("two");
+        let second_pane = second.tabs[0].root_pane;
+
+        app.state.workspaces = vec![first, second];
+        app.state.ensure_test_terminals();
+        for (ws_idx, pane_id, agent) in
+            [(0, first_pane, Agent::Pi), (1, second_pane, Agent::Claude)]
+        {
+            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(agent);
+        }
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.agent_panel_scope = AgentPanelScope::AllWorkspaces;
+        app.state.sidebar_agent.lines = vec![
+            vec![crate::config::SidebarItem::visible(
+                SidebarAgentItem::AgentStatus,
+            )],
+            vec![crate::config::SidebarItem::visible(
+                SidebarAgentItem::Status,
+            )],
+            vec![crate::config::SidebarItem::visible(
+                SidebarAgentItem::AgentName,
+            )],
+        ];
+
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
+            app.state.view.sidebar_rect,
+            app.state.sidebar_section_split,
+        );
+        let body = crate::ui::agent_panel_body_rect(detail_area, false);
+
+        assert_eq!(
+            app.state
+                .agent_detail_target_at(body.y + 2)
+                .expect("third row of first entry should be hittable"),
+            (0, 0, first_pane)
+        );
+        assert_eq!(
+            app.state
+                .agent_detail_target_at(body.y + 4)
+                .expect("second three-line entry should start after separator"),
+            (1, 0, second_pane)
+        );
+    }
+
+    #[test]
     fn scrolling_agent_panel_with_wheel_updates_agent_panel_scroll() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");
@@ -1018,14 +1329,6 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
-        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
-        app.state.sidebar_agents.rows_by_agent.insert(
-            "claude".into(),
-            vec![
-                vec![crate::config::AgentSidebarToken::Agent],
-                vec![crate::config::AgentSidebarToken::Workspace],
-            ],
-        );
         app.state.agent_panel_scroll = 1;
 
         let detail_area = app.state.agent_panel_rect();
@@ -1033,7 +1336,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             body.x + 1,
-            body.y + 1,
+            body.y,
         ));
 
         assert_eq!(app.state.workspaces[0].active_tab, second_tab);
@@ -1317,85 +1620,6 @@ mod tests {
     }
 
     #[test]
-    fn dragging_workspace_reorders_without_changing_identity() {
-        let mut app = app_for_mouse_test();
-        app.state.workspaces = vec![
-            Workspace::test_new("a"),
-            Workspace::test_new("b"),
-            Workspace::test_new("c"),
-        ];
-        app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
-        app.state.sidebar_spaces.row_gap = 0;
-        let active_id = app.state.workspaces[1].id.clone();
-        let selected_id = app.state.workspaces[2].id.clone();
-        app.state.active = Some(1);
-        app.state.selected = 2;
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        let packed_boundary_row = app.state.view.workspace_card_areas[1].rect.y;
-        assert_eq!(
-            app.state.workspace_drop_target_at_row(packed_boundary_row),
-            Some(crate::app::state::WorkspaceDropTarget::Before(2))
-        );
-
-        let source_row = app.state.view.workspace_card_areas[1].rect.y;
-        let target_row = crate::ui::workspace_drop_indicator_row(
-            &app.state,
-            &app.state.view.workspace_card_areas,
-            app.state.workspace_list_rect(),
-            crate::app::state::WorkspaceDropTarget::Before(0),
-        )
-        .unwrap();
-
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            2,
-            source_row,
-        ));
-        app.handle_mouse(mouse(
-            MouseEventKind::Drag(MouseButton::Left),
-            2,
-            target_row,
-        ));
-        assert!(matches!(
-            app.state.drag.as_ref().map(|drag| &drag.target),
-            Some(DragTarget::WorkspaceReorder {
-                source_ws_idx: 1,
-                drop_target: Some(crate::app::state::WorkspaceDropTarget::Before(0)),
-                ..
-            })
-        ));
-        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
-
-        let names: Vec<_> = app
-            .state
-            .workspaces
-            .iter()
-            .map(|ws| ws.display_name())
-            .collect();
-        assert_eq!(names, vec!["b", "a", "c"]);
-        assert_eq!(app.state.active, Some(0));
-        assert_eq!(app.state.selected, 2);
-        assert_eq!(app.state.workspaces[0].id, active_id);
-        assert_eq!(app.state.workspaces[2].id, selected_id);
-        let events = app.event_hub.events_after(0);
-        assert!(events.iter().any(|(_, event)| matches!(
-            event.data,
-            crate::api::schema::EventData::WorkspaceMoved { .. }
-        )));
-        assert!(!events.iter().any(|(_, event)| matches!(
-            event.data,
-            crate::api::schema::EventData::WorkspaceReordered { .. }
-        )));
-        let snapshot = capture_snapshot(&app.state);
-        let captured_names: Vec<_> = snapshot
-            .workspaces
-            .iter()
-            .map(|ws| ws.custom_name.clone().unwrap())
-            .collect();
-        assert_eq!(captured_names, vec!["b", "a", "c"]);
-    }
-
-    #[test]
     fn clicking_tab_scroll_button_reveals_hidden_tabs_without_renaming() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");
@@ -1550,60 +1774,6 @@ mod tests {
     }
 
     #[test]
-    fn top_drop_slot_is_distinct_from_gap_below_first_workspace() {
-        let mut app = app_for_mouse_test();
-        let first_repo = temp_git_repo("main");
-        let second_repo = temp_git_repo("main");
-
-        let mut first = Workspace::test_new("a");
-        let first_root = first.tabs[0].root_pane;
-        first.identity_cwd = first_repo.clone();
-        first.refresh_git_ahead_behind();
-
-        let mut second = Workspace::test_new("b");
-        let second_root = second.tabs[0].root_pane;
-        second.identity_cwd = second_repo.clone();
-        second.refresh_git_ahead_behind();
-
-        app.state.workspaces = vec![first, second];
-        app.state.ensure_test_terminals();
-        let first_terminal_id = app.state.workspaces[0].tabs[0].panes[&first_root]
-            .attached_terminal_id
-            .clone();
-        app.state.terminals.get_mut(&first_terminal_id).unwrap().cwd = first_repo.clone();
-        let second_terminal_id = app.state.workspaces[1].tabs[0].panes[&second_root]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&second_terminal_id)
-            .unwrap()
-            .cwd = second_repo.clone();
-        app.state.sidebar_spaces.row_gap = 1;
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-
-        assert_eq!(
-            app.state.workspace_drop_target_at_row(0),
-            Some(crate::app::state::WorkspaceDropTarget::Before(0))
-        );
-        assert_eq!(
-            app.state.workspace_drop_target_at_row(1),
-            Some(crate::app::state::WorkspaceDropTarget::Before(0))
-        );
-        assert_eq!(
-            app.state.workspace_drop_target_at_row(2),
-            Some(crate::app::state::WorkspaceDropTarget::Before(0))
-        );
-        assert_eq!(
-            app.state.workspace_drop_target_at_row(3),
-            Some(crate::app::state::WorkspaceDropTarget::Before(1))
-        );
-
-        let _ = fs::remove_dir_all(first_repo);
-        let _ = fs::remove_dir_all(second_repo);
-    }
-
-    #[test]
     fn bottom_drop_slot_stays_below_last_workspace_not_footer() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![
@@ -1611,16 +1781,16 @@ mod tests {
             Workspace::test_new("b"),
             Workspace::test_new("c"),
         ];
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
 
         let cards = &app.state.view.workspace_card_areas;
-        let bottom_slot = crate::ui::workspace_drop_indicator_row(
-            &app.state,
-            cards,
-            app.state.workspace_list_rect(),
-            crate::app::state::WorkspaceDropTarget::End,
-        )
-        .unwrap();
+        // The viewport clips the third workspace's card, so the bottom-most slot targets
+        // Before(2) (the first off-screen workspace), drawn just below the last VISIBLE card —
+        // never at the footer.
+        let (_, bottom_slot) =
+            *crate::ui::workspace_drop_slots(&app.state, cards, app.state.workspace_list_rect())
+                .last()
+                .unwrap();
 
         let last = cards.last().unwrap().rect;
         assert_eq!(bottom_slot, last.y + last.height);

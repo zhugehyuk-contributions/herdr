@@ -1,0 +1,447 @@
+/**
+ * The ssh path, end to end, against a real herdr server.
+ *
+ * `test/live/observeTerminal.live.test.ts` proves the codec agrees with the program over a unix
+ * socket. This proves the same scenario survives the transport the app actually uses: nothing here
+ * opens a socket path. Every byte goes `ssh exec` -> `herdr remote-{api,client}-bridge` ->
+ * `bridge_stdio_to_socket` (`src/remote/unix.rs:568-590`) -> the server's socket, and back.
+ *
+ * That end-to-end claim is the point, but the *contract* assertions are what the fake transport
+ * could not make: one ssh connection carrying every channel, one channel per API request, and the
+ * resident client-stream channel living alongside them.
+ *
+ * Isolation: an sshd generated for this test (`sshHarness.ts` — no developer key, no `~/.ssh`), a
+ * herdr server with its own `XDG_*` (`../live/harness.ts`), and the bridge pointed at that server
+ * through the command's `env` prefix. Nothing here can reach the developer's own daemons.
+ */
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import {
+  ClientLaunchMode,
+  HerdrChannelKind,
+  PROTOCOL_VERSION,
+  RenderEncoding,
+  ServerMessageChannel,
+  WIRE_ABI_EPOCH,
+  WIRE_ABI_FORK,
+  WIRE_SCHEMA_FINGERPRINT,
+  assertWelcomeAccepted,
+  createTransportJsonApiClient,
+  describeClose,
+  describeWireAbi,
+  OBSERVE_MODE,
+  encodeHelloFrame,
+  encodeObserveTerminalFrame,
+  encodeRetargetTerminalFrame,
+  type JsonApiClient,
+  type ServerMessage,
+  type TerminalMessage,
+  type WelcomeMessage,
+} from "../../src/index.js";
+import { SshHerdrTransport } from "../../src/node/index.js";
+import {
+  SERVER_BINARY,
+  serverBinaryExists,
+  spawnServer,
+  stripAnsiText,
+  visualize,
+  type SpawnedServer,
+} from "../live/harness.js";
+import { findSshd, spawnScratchSshd, type ScratchSshd } from "./sshHarness.js";
+import { readFileSync } from "node:fs";
+
+const CLIENT_COLS = 100;
+const CLIENT_ROWS = 30;
+const MARKER = "SSHMARKER";
+
+/**
+ * Loud, like `liveSkipReason` in the unix harness and for the same reason: a live test that
+ * quietly becomes a no-op still reports green. `HERDR_LIVE_REQUIRE=1` turns absence into failure.
+ */
+function sshLiveSkipReason(): string | null {
+  const reasons: string[] = [];
+  if (!serverBinaryExists()) {
+    reasons.push(`herdr server binary not found at ${SERVER_BINARY} — build it with \`cargo build\``);
+  }
+  if (findSshd() === null) {
+    reasons.push("no sshd binary found (set HERDR_LIVE_SSHD to one)");
+  }
+  if (reasons.length === 0) {
+    return null;
+  }
+  const reason = reasons.join("; ");
+  if (process.env["HERDR_LIVE_REQUIRE"] === "1") {
+    throw new Error(`HERDR_LIVE_REQUIRE=1 but ${reason}`);
+  }
+  process.stderr.write(`\n*** SKIPPING LIVE SSH SUITE ***\n${reason}\n\n`);
+  return reason;
+}
+
+const skipReason = sshLiveSkipReason();
+
+describe.skipIf(skipReason !== null)("live: herdr over an ssh transport", () => {
+  let server: SpawnedServer;
+  let sshd: ScratchSshd;
+  let transport: SshHerdrTransport;
+  let api: JsonApiClient;
+  let paneId: string;
+  let paneIdB: string;
+
+  beforeAll(async () => {
+    server = await spawnServer();
+    sshd = await spawnScratchSshd(findSshd() as string, server.base);
+
+    transport = await SshHerdrTransport.connect({
+      ssh: {
+        host: "127.0.0.1",
+        port: sshd.port,
+        username: sshd.username,
+        privateKey: readFileSync(sshd.privateKeyPath),
+      },
+      // Absolute, because ssh's non-interactive PATH is not the developer's.
+      herdrBinary: SERVER_BINARY,
+      // Points the bridge at THIS server. Without it the bridge would resolve the default socket
+      // paths — i.e. the developer's own daemon.
+      env: {
+        XDG_CONFIG_HOME: `${server.base}/config`,
+        XDG_RUNTIME_DIR: `${server.base}/runtime`,
+        HERDR_SOCKET_PATH: server.apiSocket,
+      },
+    });
+    api = createTransportJsonApiClient(transport);
+
+    const created = await api.request("workspace.create", { cwd: server.base, focus: true });
+    expect(created["type"], `workspace.create failed: ${JSON.stringify(created)}`).toBe(
+      "workspace_created",
+    );
+    paneId = (created["root_pane"] as { pane_id: string }).pane_id;
+    const split = await api.request("pane.split", { pane_id: paneId, direction: "right" });
+    paneIdB = (split["pane"] as { pane_id: string }).pane_id;
+    await sendInput(api, paneId, `echo ${MARKER}`);
+    await sendInput(api, paneIdB, `echo ${MARKER}B`);
+
+    process.stdout.write(
+      `[ssh] server pid=${server.pid} sshd pid=${sshd.pid} port=${sshd.port} pane=${paneId}\n`,
+    );
+  }, 120_000);
+
+  afterAll(async () => {
+    transport?.close();
+    await sshd?.stop();
+    await server?.stop();
+  });
+
+  it("round-trips the JSON API through remote-api-bridge, one exec channel per request", async () => {
+    const before = transport.channelCount;
+
+    const agents = await api.agentList();
+    expect(agents["type"]).toBe("agent_list");
+    const panes = await api.paneList();
+    expect(panes["type"]).toBe("pane_list");
+    expect((panes["panes"] as Array<Record<string, unknown>>).map((p) => p["pane_id"])).toContain(
+      paneId,
+    );
+
+    // Two requests, two channels. The API server answers one line per connection and returns
+    // (`src/api/server.rs:139-152`), so a reused channel would have hung on the second call.
+    expect(transport.channelCount - before).toBe(2);
+    process.stdout.write(
+      `[ssh] api ok; connections=${transport.connectionCount} channels=${transport.channelCount}\n`,
+    );
+  }, 60_000);
+
+  it("streams real ANSI Terminal frames through remote-client-bridge", async () => {
+    const messages: ServerMessage[] = [];
+    const undecodable: string[] = [];
+    let closed: string | null = null;
+    let wake: (() => void) | null = null;
+    const bump = (): void => {
+      const fire = wake;
+      wake = null;
+      fire?.();
+    };
+
+    const stream = await ServerMessageChannel.open(transport, {
+      onMessage: (message) => {
+        messages.push(message);
+        bump();
+      },
+      onUndecodable: (error) => {
+        undecodable.push(error.message);
+      },
+      onError: (error) => {
+        closed ??= error.message;
+        bump();
+      },
+      onClose: (close) => {
+        closed ??= describeClose("client bridge closed", close);
+        bump();
+      },
+    });
+
+    let cursor = 0;
+    const next = async <T extends ServerMessage>(
+      predicate: (message: ServerMessage) => message is T,
+      what: string,
+      timeoutMs: number,
+    ): Promise<T> => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        while (cursor < messages.length) {
+          const message = messages[cursor] as ServerMessage;
+          cursor += 1;
+          if (predicate(message)) {
+            return message;
+          }
+        }
+        if (closed !== null) {
+          throw new Error(`${what}: ${closed}; undecodable=${JSON.stringify(undecodable)}`);
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          throw new Error(
+            `${what}: nothing matched within ${timeoutMs}ms (decoded ` +
+              `${messages.map((m) => m.type).join(",")}; undecodable=${JSON.stringify(undecodable)})`,
+          );
+        }
+        await new Promise<void>((resolveWake) => {
+          const timer = setTimeout(() => {
+            wake = null;
+            resolveWake();
+          }, Math.min(remaining, 250));
+          wake = () => {
+            clearTimeout(timer);
+            resolveWake();
+          };
+        });
+      }
+    };
+
+    await stream.send(
+      encodeHelloFrame({
+        cols: CLIENT_COLS,
+        rows: CLIENT_ROWS,
+        requestedEncoding: RenderEncoding.TerminalAnsi,
+        launchMode: ClientLaunchMode.TerminalAttach,
+      }),
+    );
+
+    const welcome = await next<WelcomeMessage>(
+      (message): message is WelcomeMessage => message.type === "welcome",
+      "Welcome over ssh",
+      30_000,
+    );
+    process.stdout.write(
+      `[ssh] Welcome version=${welcome.version} encoding=${welcome.encoding} error=${welcome.error}\n`,
+    );
+    assertWelcomeAccepted(welcome, { encoding: RenderEncoding.TerminalAnsi });
+    expect(welcome.version).toBe(PROTOCOL_VERSION);
+
+    await stream.send(encodeObserveTerminalFrame(paneId));
+
+    const deadline = Date.now() + 45_000;
+    let frame: TerminalMessage;
+    for (;;) {
+      frame = await next<TerminalMessage>(
+        (message): message is TerminalMessage => message.type === "terminal",
+        `Terminal frame containing ${MARKER}`,
+        Math.max(deadline - Date.now(), 1),
+      );
+      if (stripAnsiText(frame.bytes).includes(MARKER)) {
+        break;
+      }
+    }
+    process.stdout.write(
+      `[ssh] TerminalFrame seq=${frame.seq} ${frame.width}x${frame.height} full=${frame.full} ` +
+        `bytes=${frame.bytes.length}\n[ssh] first 120 bytes: ${visualize(frame.bytes, 120)}\n`,
+    );
+
+    expect(frame.bytes.includes(0x1b)).toBe(true);
+    expect([frame.width, frame.height]).toEqual([CLIENT_COLS, CLIENT_ROWS]);
+
+    // The pane keeps producing into the SAME resident channel — not a one-shot exec.
+    await sendInput(api, paneId, `echo ${MARKER}2`);
+    const second = await next<TerminalMessage>(
+      (message): message is TerminalMessage => message.type === "terminal",
+      "a later Terminal frame",
+      45_000,
+    );
+    expect(second.seq > frame.seq).toBe(true);
+
+    // The wire-layout probe's no-false-positive receipt, against the real thing. `ObserveTerminal`
+    // armed it above (`ServerMessageChannel.send` reads the tag back out of the framed bytes), a
+    // healthy mx server ran a full observe session through it, and it stayed quiet. That is the
+    // half of `src/layoutProbe.ts` no fixture can establish: the rule was argued from what the
+    // server's code *can* emit (`src/server/headless.rs`, `src/server/render_stream.rs`), and this
+    // is the server actually emitting it.
+    process.stdout.write(
+      `[ssh] layout probe: undecodable=${stream.undecodableCount} ` +
+        `verdict=${stream.layoutMismatch?.message ?? "none"}\n`,
+    );
+    expect(stream.layoutMismatch).toBeUndefined();
+
+    // The gate that turned that probe from the primary detector into a backstop, over the real ssh
+    // bridge. Nothing in this test had to be changed for it: `ServerMessageChannel` writes the
+    // prelude on open and strips the server's before framing, so the whole ssh path — a byte pump
+    // that splits chunks wherever the network does — carried it transparently.
+    process.stdout.write(
+      `[ssh] peer wire ABI ${stream.peerAbi === undefined ? "MISSING" : describeWireAbi(stream.peerAbi)}\n`,
+    );
+    expect(stream.abiMismatch).toBeUndefined();
+    expect(stream.peerAbi).toEqual({
+      fork: WIRE_ABI_FORK,
+      abiEpoch: WIRE_ABI_EPOCH,
+      protocolVersion: PROTOCOL_VERSION,
+      schemaFingerprint: WIRE_SCHEMA_FINGERPRINT,
+    });
+
+    stream.close();
+  }, 120_000);
+
+  /**
+   * M6/B6, over the transport the app actually uses: **a pane switch that opens no channel.**
+   *
+   * This is the assertion the milestone is measured on. `transport.channelCount` is incremented in
+   * `SshHerdrTransport`'s own `openChannel` (`src/node/sshTransport.ts`), so it counts real ssh exec
+   * channels — each of which is a remote `herdr remote-client-bridge` process plus a handshake plus
+   * a fresh ~56 KB uncompressed ANSI baseline (B13). Before `RetargetTerminal`, a chip tap cost all
+   * three; the number below has to stay put across the switch.
+   *
+   * The elapsed time is printed rather than tightly bounded — a live ssh test on a loaded box is
+   * the wrong place for a 200 ms assertion — but the loose bound still separates the two regimes:
+   * a retarget is tens of milliseconds, a reconnect is a channel open and a handshake.
+   */
+  it("switches pane on the SAME ssh channel — no new channel, no second handshake", async () => {
+    const messages: ServerMessage[] = [];
+    let closed: string | null = null;
+    let wake: (() => void) | null = null;
+    const bump = (): void => {
+      const fire = wake;
+      wake = null;
+      fire?.();
+    };
+    const nextFrameWith = async (needle: string, timeoutMs: number): Promise<TerminalMessage> => {
+      const deadline = Date.now() + timeoutMs;
+      let cursor = 0;
+      for (;;) {
+        while (cursor < messages.length) {
+          const message = messages[cursor] as ServerMessage;
+          cursor += 1;
+          if (message.type === "terminal" && stripAnsiText(message.bytes).includes(needle)) {
+            return message;
+          }
+        }
+        if (closed !== null) {
+          throw new Error(`waiting for ${needle}: ${closed}`);
+        }
+        if (Date.now() > deadline) {
+          throw new Error(
+            `no Terminal frame carrying ${needle} within ${timeoutMs}ms ` +
+              `(${messages.map((m) => m.type).join(",")})`,
+          );
+        }
+        await new Promise<void>((resolveWake) => {
+          const timer = setTimeout(() => {
+            wake = null;
+            resolveWake();
+          }, 50);
+          wake = () => {
+            clearTimeout(timer);
+            resolveWake();
+          };
+        });
+      }
+    };
+
+    const channelsBefore = transport.channelCount;
+    const stream = await ServerMessageChannel.open(transport, {
+      onMessage: (message) => {
+        messages.push(message);
+        bump();
+      },
+      onError: (error) => {
+        closed ??= error.message;
+        bump();
+      },
+      onClose: (close) => {
+        closed ??= describeClose("client bridge closed", close);
+        bump();
+      },
+    });
+    await stream.send(
+      encodeHelloFrame({
+        cols: CLIENT_COLS,
+        rows: CLIENT_ROWS,
+        requestedEncoding: RenderEncoding.TerminalAnsi,
+        launchMode: ClientLaunchMode.TerminalAttach,
+      }),
+    );
+    await stream.send(encodeObserveTerminalFrame(paneId));
+    const first = await nextFrameWith(MARKER, 60_000);
+    const channelsAfterObserve = transport.channelCount;
+
+    // ---- the switch --------------------------------------------------------------------
+    const started = Date.now();
+    await stream.send(encodeRetargetTerminalFrame(paneIdB, OBSERVE_MODE));
+    const moved = await nextFrameWith(`${MARKER}B`, 60_000);
+    const elapsed = Date.now() - started;
+
+    process.stdout.write(
+      `[ssh] retarget ${paneId} -> ${paneIdB} in ${elapsed}ms; ` +
+        `channels ${channelsBefore} -> ${channelsAfterObserve} -> ${transport.channelCount} ` +
+        `connections=${transport.connectionCount}\n` +
+        `[ssh] frame before seq=${first.seq} ${first.width}x${first.height} full=${first.full} ` +
+        `bytes=${first.bytes.length}\n` +
+        `[ssh] frame after  seq=${moved.seq} ${moved.width}x${moved.height} full=${moved.full} ` +
+        `bytes=${moved.bytes.length}\n` +
+        `[ssh] after first 200 bytes: ${visualize(moved.bytes, 200)}\n`,
+    );
+
+    // The receipt: the switch cost zero ssh channels.
+    expect(transport.channelCount).toBe(channelsAfterObserve);
+    expect(channelsAfterObserve - channelsBefore).toBe(1);
+    // …and no second handshake: exactly one Welcome on this stream, ever.
+    expect(messages.filter((message) => message.type === "welcome")).toHaveLength(1);
+    // The screen really moved, and it moved as a full repaint (the server reset this client's
+    // baseline), so pane A's cells cannot survive underneath.
+    expect(moved.full).toBe(true);
+    expect(stripAnsiText(moved.bytes)).toContain(`${MARKER}B`);
+    expect(moved.seq > first.seq).toBe(true);
+    expect(elapsed).toBeLessThan(10_000);
+
+    stream.close();
+  }, 180_000);
+
+  /**
+   * The multiplexing contract of `mobile/.prd/02-architecture.md` §2.4, measured.
+   *
+   * Mutation check: make `openChannel` build its own `Client` per call and this goes from 1 to
+   * `channelCount`. The channel count itself is asserted to be large so the "1" is not trivially
+   * true — one connection carrying one channel would prove nothing.
+   */
+  it("carried every channel on a single ssh connection", () => {
+    process.stdout.write(
+      `[ssh] final connections=${transport.connectionCount} channels=${transport.channelCount} ` +
+        `suppressedErrors=${transport.suppressedErrorCount} ` +
+        `lastSuppressed=${transport.lastSuppressedError?.message ?? "none"}\n`,
+    );
+    expect(transport.channelCount).toBeGreaterThanOrEqual(6);
+    expect(transport.connectionCount).toBe(1);
+    // The post-handshake half of the guard in `SshHerdrTransport.connect`: it absorbs `error`
+    // events so they cannot crash the process, and this is the assertion that keeps "absorbed"
+    // from meaning "invisible" — a healthy session that quietly emitted connection errors would
+    // otherwise look identical to one that did not.
+    expect(transport.suppressedErrorCount).toBe(0);
+  });
+
+  it("names the right remote command for each channel kind", () => {
+    // Guards the mapping the whole suite silently depends on (`src/remote/unix.rs:75-76`).
+    expect(HerdrChannelKind.ClientStream).toBe("client-stream");
+    expect(HerdrChannelKind.ApiRequest).toBe("api-request");
+  });
+});
+
+async function sendInput(api: JsonApiClient, paneId: string, text: string): Promise<void> {
+  const sent = await api.request("pane.send_input", { pane_id: paneId, text, keys: ["Enter"] });
+  expect(sent["type"], `pane.send_input failed: ${JSON.stringify(sent)}`).toBe("ok");
+}

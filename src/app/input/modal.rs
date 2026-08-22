@@ -99,7 +99,7 @@ pub(super) fn open_global_menu(state: &mut AppState) {
     state.mode = Mode::GlobalMenu;
 }
 
-pub(super) fn open_keybind_help(state: &mut AppState) {
+pub(crate) fn open_keybind_help(state: &mut AppState) {
     state.keybind_help.scroll = 0;
     state.keybind_help.query.clear();
     state.keybind_help.search_focused = false;

@@ -427,14 +427,18 @@ fn client_handshake(stream: &mut UnixStream, version: u32, cols: u16, rows: u16)
     payload.extend_from_slice(&encode_varint_u32(8)); // cell_width_px
     payload.extend_from_slice(&encode_varint_u32(16)); // cell_height_px
     payload.extend_from_slice(&encode_varint_u32(0)); // RenderEncoding::SemanticFrame
+    payload.extend_from_slice(&encode_varint_u32(0)); // ClientSurfaceMode::FullApp
     payload.extend_from_slice(&encode_varint_u32(0)); // ClientKeybindings::Server
     payload.extend_from_slice(&encode_varint_u32(0)); // ClientLaunchMode::App
 
+    // The wire-ABI prelude precedes the Hello frame (`src/protocol/abi.rs`).
+    support::send_wire_abi_prelude(stream).expect("write wire-ABI prelude");
     stream
         .write_all(&frame_message(&payload))
         .expect("write hello");
     stream.flush().expect("flush hello");
 
+    support::expect_wire_abi_prelude(stream).expect("read server wire-ABI prelude");
     let mut len_buf = [0u8; 4];
     stream
         .read_exact(&mut len_buf)
@@ -501,7 +505,7 @@ fn is_timeout(err: &io::Error) -> bool {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct FrameWire {
     cells: Vec<CellWire>,
     width: u16,
@@ -511,8 +515,23 @@ struct FrameWire {
     graphics: Vec<u8>,
 }
 
+/// Mirror of `protocol::FrameDelta` for decoding (issue #13): the changed cells the server now
+/// streams instead of full frames. The harness reconstructs full frames from a baseline just like
+/// the real client.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
+struct FrameDeltaWire {
+    width: u16,
+    height: u16,
+    cells: Vec<(u32, CellWire)>,
+    cursor: Option<CursorWire>,
+    hyperlinks: Vec<String>,
+    graphics: Vec<u8>,
+    base_checksum: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
 struct CellWire {
     symbol: String,
     fg: u32,
@@ -522,7 +541,7 @@ struct CellWire {
     hyperlink: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct CursorWire {
     x: u16,
     y: u16,
@@ -546,6 +565,55 @@ fn decode_frame_payload(payload: &[u8]) -> io::Result<FrameWire> {
             }
             Ok(frame)
         })
+}
+
+fn decode_frame_delta_payload(payload: &[u8]) -> io::Result<FrameDeltaWire> {
+    bincode::serde::decode_from_slice(payload, bincode::config::standard())
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
+        .map(|(delta, _consumed): (FrameDeltaWire, usize)| delta)
+}
+
+/// A blank baseline of the given size, used when a `wait_for_*` call begins mid-session and the
+/// first message it sees is a delta (its changed cells — e.g. a status transition — still surface).
+fn blank_frame_wire(width: u16, height: u16) -> FrameWire {
+    let count = (width as usize) * (height as usize);
+    FrameWire {
+        cells: vec![
+            CellWire {
+                symbol: " ".to_string(),
+                fg: 0,
+                bg: 0,
+                modifier: 0,
+                skip: false,
+                hyperlink: None,
+            };
+            count
+        ],
+        width,
+        height,
+        cursor: None,
+        hyperlinks: Vec::new(),
+        graphics: Vec::new(),
+    }
+}
+
+/// Reconstruct a full frame by applying `delta` onto `baseline`, mirroring the real client.
+fn apply_frame_delta(baseline: &FrameWire, delta: FrameDeltaWire) -> FrameWire {
+    let mut cells = baseline.cells.clone();
+    for (index, cell) in delta.cells {
+        let i = index as usize;
+        if i < cells.len() {
+            cells[i] = cell;
+        }
+    }
+    FrameWire {
+        cells,
+        width: delta.width,
+        height: delta.height,
+        cursor: delta.cursor,
+        hyperlinks: delta.hyperlinks,
+        graphics: delta.graphics,
+    }
 }
 
 fn frame_contains_colored_symbol(frame: &FrameWire, symbol: &str, rgb: (u8, u8, u8)) -> bool {
@@ -624,24 +692,61 @@ fn read_server_message_payload(
     Ok((variant, payload[consumed..].to_vec()))
 }
 
+/// Reconstruct a full frame from a ServerMessage variant + payload, mirroring the real client.
+/// Handles Frame (1), FrameDelta (9), and Compressed (11, which deflate-wraps an inner message —
+/// issue #13). Returns None for non-frame messages.
+fn frame_from_message(
+    variant: u32,
+    payload: &[u8],
+    baseline: &mut Option<FrameWire>,
+) -> Option<FrameWire> {
+    match variant {
+        1 => {
+            let frame = decode_frame_payload(payload).ok()?;
+            *baseline = Some(frame.clone());
+            Some(frame)
+        }
+        9 => {
+            let delta = decode_frame_delta_payload(payload).ok()?;
+            let base = baseline
+                .take()
+                .unwrap_or_else(|| blank_frame_wire(delta.width, delta.height));
+            let frame = apply_frame_delta(&base, delta);
+            *baseline = Some(frame.clone());
+            Some(frame)
+        }
+        11 => {
+            let (compressed, _): (Vec<u8>, usize) =
+                bincode::serde::decode_from_slice(payload, bincode::config::standard()).ok()?;
+            let raw = miniz_oxide::inflate::decompress_to_vec(&compressed).ok()?;
+            let (inner_variant, consumed) = decode_varint_u32(&raw, 0).ok()?;
+            frame_from_message(inner_variant, &raw[consumed..], baseline)
+        }
+        _ => None,
+    }
+}
+
 fn wait_for_frame_matching(
     stream: &mut UnixStream,
     timeout: Duration,
     predicate: impl Fn(&FrameWire) -> bool,
 ) -> io::Result<bool> {
+    // issue #13: frames arrive as Frame (1), FrameDelta (9), or deflate-wrapped Compressed (11).
+    // Track a baseline and reconstruct full frames before testing the predicate, like the client.
+    let mut baseline: Option<FrameWire> = None;
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         let slice = deadline
             .saturating_duration_since(Instant::now())
             .min(Duration::from_millis(80));
         match read_server_message_payload(stream, slice) {
-            Ok((1, payload)) => {
-                let frame = decode_frame_payload(&payload)?;
-                if predicate(&frame) {
-                    return Ok(true);
+            Ok((variant, payload)) => {
+                if let Some(frame) = frame_from_message(variant, &payload, &mut baseline) {
+                    if predicate(&frame) {
+                        return Ok(true);
+                    }
                 }
             }
-            Ok((_variant, _payload)) => {}
             Err(err) if is_timeout(&err) => {}
             Err(err) => return Err(err),
         }
@@ -657,7 +762,8 @@ fn wait_for_frame(stream: &mut UnixStream, timeout: Duration) -> bool {
             .saturating_duration_since(Instant::now())
             .min(Duration::from_millis(80));
         match read_server_variant(stream, slice) {
-            Ok(1) => return true, // ServerMessage::Frame
+            // Frame (1), FrameDelta (9), or Compressed frame (11) — issue #13.
+            Ok(1) | Ok(9) | Ok(11) => return true,
             Ok(_) => {}
             Err(err) if is_timeout(&err) => {}
             Err(_) => return false,
@@ -1070,7 +1176,9 @@ fn cross_area_server_kill_then_restart_and_reconnect() {
 
     let mut crash_output = String::new();
     let thin_exited = {
-        let deadline = Instant::now() + Duration::from_secs(12);
+        // 30s: slow CI runners have taken >12s between SIGKILL delivery and the thin
+        // client observing the closed stream (local runs finish in ~5s).
+        let deadline = Instant::now() + Duration::from_secs(30);
         let mut exited = false;
         let mut buf = [0u8; 1024];
         while Instant::now() < deadline {

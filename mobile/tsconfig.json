@@ -1,0 +1,18 @@
+{
+  "//": "Ported from orca mobile/tsconfig.json @ 4fd93ead. Same shape: expo base, strict, `@/*` -> src, tests excluded from the app project. `@herdr/client-ts` is added because herdr's wire codec is a repo-root workspace package rather than a node_modules dependency (mobile/.prd/02-architecture.md §2.5); the Metro half of that wiring lives in metro.config.js.",
+  "extends": "expo/tsconfig.base.json",
+  "compilerOptions": {
+    // Mobile stays on TypeScript 6 so Expo/Metro can still use the JS
+    // compiler API (require('typescript').sys) during release bundling.
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "strict": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@herdr/client-ts": ["../packages/herdr-client-ts/src/index.ts"],
+      "zod": ["./node_modules/zod"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["**/*.test.ts", "**/*.test.tsx"]
+}

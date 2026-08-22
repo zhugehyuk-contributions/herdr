@@ -212,6 +212,25 @@ pub(super) fn state_icon_symbol(
     }
 }
 
+/// herdr-mx: the animated agent glyph. Upstream v0.8.2 replaced the continuous spinner with
+/// static marks; this fork keeps the spinner in the sidebar's agent rows (DIVERGENCE.md), so
+/// `agent_icon` lives alongside upstream's `state_icon` rather than being replaced by it.
+pub(super) fn agent_icon(
+    state: AgentState,
+    seen: bool,
+    tick: u32,
+    p: &Palette,
+) -> (&'static str, Style) {
+    match (state, seen) {
+        (AgentState::Blocked, _) => ("◉", Style::default().fg(p.red)),
+        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.yellow)),
+        (AgentState::Idle, false) => ("●", Style::default().fg(p.teal)),
+        (AgentState::Idle, true) => ("✓", Style::default().fg(p.green)),
+        (AgentState::Unknown, _) => ("○", Style::default().fg(p.overlay0)),
+    }
+}
+
+/// Upstream v0.8.2's renamed `state_dot`, now driven by `ui.status_indicators`.
 pub(super) fn state_icon(
     state: AgentState,
     seen: bool,

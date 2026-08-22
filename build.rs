@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn zig_target(target: &str) -> &str {
@@ -29,6 +29,73 @@ fn env_bool(name: &str) -> Option<bool> {
     }
 }
 
+fn git_output(manifest_dir: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(manifest_dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Mirror of `src/build_info.rs::version()`: base version plus the channel/build-id
+/// suffix. Exported as `HERDR_FULL_VERSION` so version comparisons can be compile-time
+/// constants that match what suffixed builds actually report.
+fn full_version() -> String {
+    let base = env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION");
+    let channel = non_empty_env("HERDR_BUILD_CHANNEL").unwrap_or_else(|| "stable".into());
+    if channel == "stable" {
+        return base;
+    }
+    match non_empty_env("HERDR_BUILD_ID") {
+        Some(build_id) => format!("{base}-{channel}.{build_id}"),
+        None => format!("{base}-{channel}"),
+    }
+}
+
+fn build_commit(manifest_dir: &Path) -> String {
+    if let Ok(commit) = env::var("HERDR_BUILD_COMMIT") {
+        return commit;
+    }
+
+    let Some(mut commit) = git_output(manifest_dir, &["rev-parse", "--short", "HEAD"]) else {
+        return "unknown".into();
+    };
+
+    if git_output(
+        manifest_dir,
+        &["status", "--porcelain", "--untracked-files=no"],
+    )
+    .is_some()
+    {
+        commit.push_str("-dirty");
+        // Distinguish two DIFFERENT dirty trees at the same commit: a bare `-dirty` marker let the
+        // bundle-seed parity gate (`remote::bundle_seeds_platform`) treat divergent working trees
+        // as identical and seed a stale-content sibling binary. Append a short hash of the tracked
+        // diff so different uncommitted content yields a different build id.
+        if let Some(diff) = git_output(manifest_dir, &["diff", "HEAD"]) {
+            let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+            for byte in diff.as_bytes() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            commit.push_str(&format!(".{:08x}", hash & 0xffff_ffff));
+        }
+    }
+    commit
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=vendor/libghostty-vt.vendor.json");
@@ -50,6 +117,21 @@ fn main() {
     );
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    if let Some(git_head) = git_output(&manifest_dir, &["rev-parse", "--git-path", "HEAD"]) {
+        println!("cargo:rerun-if-changed={}", git_head);
+    }
+    if let Some(git_index) = git_output(&manifest_dir, &["rev-parse", "--git-path", "index"]) {
+        println!("cargo:rerun-if-changed={}", git_index);
+    }
+    println!(
+        "cargo:rustc-env=HERDR_BUILD_COMMIT={}",
+        build_commit(&manifest_dir)
+    );
+    // The full user-facing version (base + channel/build-id suffix), computed once here
+    // so every compile-time consumer (version probes, bundle parity, handoff expectations)
+    // agrees on the exact string a suffixed build reports from `herdr --version`.
+    println!("cargo:rustc-env=HERDR_FULL_VERSION={}", full_version());
+
     let vendored_dir = manifest_dir.join("vendor/libghostty-vt");
     let optimize = env::var("LIBGHOSTTY_VT_OPTIMIZE").unwrap_or_else(|_| "ReleaseFast".into());
     let simd = env_bool("LIBGHOSTTY_VT_SIMD").unwrap_or(true);

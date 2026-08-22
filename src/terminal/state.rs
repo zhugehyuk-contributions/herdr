@@ -107,6 +107,12 @@ struct AgentNameOwner {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkingDuration {
+    pub elapsed: Duration,
+    pub is_live: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RecentAgentProcessExit {
     agent: Agent,
     observed_at: Instant,
@@ -140,6 +146,8 @@ pub struct TerminalState {
     metadata_report_agents: HashMap<String, Agent>,
     metadata_token_sequence_sources: std::collections::HashSet<String>,
     pub state: AgentState,
+    working_since: Option<Instant>,
+    last_working_duration: Option<Duration>,
     pub last_agent_state_change_seq: Option<u64>,
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
@@ -174,6 +182,8 @@ impl TerminalState {
             metadata_report_agents: HashMap::new(),
             metadata_token_sequence_sources: std::collections::HashSet::new(),
             state: AgentState::Unknown,
+            working_since: None,
+            last_working_duration: None,
             last_agent_state_change_seq: None,
             revision: 0,
             launch_argv: None,
@@ -697,7 +707,9 @@ impl TerminalState {
         if reanchor_sequence {
             self.hook_report_sequences.remove(&source);
         }
-        if !self.accept_hook_report(&source, seq) {
+        // Sequence gate runs AFTER the reanchor decision (upstream ordering): a fresh session
+        // after suppression/release resets the per-source sequence so its lower seq is accepted.
+        if !self.hook_report_is_new(&source, seq) {
             return None;
         }
 
@@ -723,6 +735,7 @@ impl TerminalState {
                 }
             }
         }
+        self.record_hook_report(&source, seq);
         self.persisted_agent_session = None;
         self.hook_authority = Some(HookAuthority {
             source,
@@ -1507,8 +1520,15 @@ impl TerminalState {
             }
             return None;
         }
-        if !unsequenced_selection && !self.accept_hook_report(&source, seq) {
-            return None;
+        // mx keeps the sequence gate split into a pure check + an explicit record (so the
+        // reanchor decision can run before it); upstream v0.8.2 adds the unsequenced-opencode
+        // selection bypass. Union: the bypass skips BOTH halves, matching upstream's single
+        // `accept_hook_report` call being skipped entirely.
+        if !unsequenced_selection {
+            if !self.hook_report_is_new(&source, seq) {
+                return None;
+            }
+            self.record_hook_report(&source, seq);
         }
         if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
             return None;
@@ -1649,7 +1669,7 @@ impl TerminalState {
             && crate::agent_resume::plan(source, agent_label, session_ref).is_some()
     }
 
-    fn accept_hook_report(&mut self, source: &str, seq: Option<u64>) -> bool {
+    fn hook_report_is_new(&self, source: &str, seq: Option<u64>) -> bool {
         let Some(seq) = seq else {
             return !self.hook_report_sequences.contains_key(source);
         };
@@ -1662,7 +1682,24 @@ impl TerminalState {
             return false;
         }
 
+        true
+    }
+
+    fn record_hook_report(&mut self, source: &str, seq: Option<u64>) {
+        let Some(seq) = seq else {
+            return;
+        };
         self.hook_report_sequences.insert(source.to_string(), seq);
+    }
+
+    /// Check-and-record in one step for call sites that accept the report immediately.
+    /// Split from `hook_report_is_new`/`record_hook_report` so rejected reports never
+    /// advance the per-source sequence (mx).
+    fn accept_hook_report(&mut self, source: &str, seq: Option<u64>) -> bool {
+        if !self.hook_report_is_new(source, seq) {
+            return false;
+        }
+        self.record_hook_report(source, seq);
         true
     }
 
@@ -1694,7 +1731,7 @@ impl TerminalState {
             return None;
         }
         if let Some(source) = sequence_source.as_deref() {
-            if !self.accept_hook_report(source, seq) {
+            if !self.hook_report_is_new(source, seq) {
                 return None;
             }
         }
@@ -1705,6 +1742,9 @@ impl TerminalState {
         let previous_state = self.state;
         let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
         let previous_session = self.current_session_identity_for_persistence();
+        if let Some(source) = sequence_source.as_deref() {
+            self.record_hook_report(source, seq);
+        }
         self.suppress_current_full_lifecycle_hook_authority(
             FullLifecycleHookSuppressionReason::HookClear,
         );
@@ -1721,6 +1761,17 @@ impl TerminalState {
             session_ref_changed: previous_session.is_some(),
             agent_released: false,
         })
+    }
+
+    #[cfg(test)]
+    pub fn release_agent(
+        &mut self,
+        source: &str,
+        agent_label: &str,
+        seq: Option<u64>,
+    ) -> Option<EffectiveStateChange> {
+        self.release_agent_with_mutation(source, agent_label, seq)
+            .and_then(|mutation| mutation.effective_state_change)
     }
 
     pub fn release_agent_with_mutation(
@@ -1752,6 +1803,7 @@ impl TerminalState {
                 self.detected_agent == Some(agent) && self.recent_agent_process_exit.is_none()
             });
 
+        self.record_hook_report(source, seq);
         let now = Instant::now();
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
@@ -1811,6 +1863,26 @@ impl TerminalState {
     pub fn effective_known_agent(&self) -> Option<Agent> {
         self.effective_agent_label()
             .and_then(crate::detect::parse_agent_label)
+    }
+
+    pub fn working_duration_at(&self, now: Instant) -> Option<WorkingDuration> {
+        if self.state == AgentState::Working {
+            let since = self.working_since?;
+            let elapsed = now.checked_duration_since(since).unwrap_or_default();
+            return Some(WorkingDuration {
+                elapsed,
+                is_live: true,
+            });
+        }
+
+        if self.state == AgentState::Unknown {
+            return None;
+        }
+
+        self.last_working_duration.map(|elapsed| WorkingDuration {
+            elapsed,
+            is_live: false,
+        })
     }
 
     pub(crate) fn unchanged_effective_state_change_at(&self, now: Instant) -> EffectiveStateChange {
@@ -2068,6 +2140,16 @@ impl TerminalState {
     }
 
     pub fn is_agent_terminal(&self) -> bool {
+        // #37: classify a terminal as an agent only when a *live* agent signal is
+        // present, not merely a leftover launch record. `launch_argv` is a static
+        // description of how the pane was first spawned; it survives the agent
+        // process exiting (for panes that do not respawn a shell), so keying off
+        // it kept finished/non-agent panes showing as agents in the sidebar.
+        //
+        // `agent_name` is an explicit, deliberate marker (set by orchestration or
+        // the user) and stays authoritative. `effective_agent_label()` reflects a
+        // live hook authority or a currently-detected agent; both are cleared when
+        // the agent goes away, so they are safe live signals.
         self.agent_name.is_some() || self.effective_agent_label().is_some()
     }
 
@@ -2152,7 +2234,46 @@ impl TerminalState {
             return None;
         }
 
+        if previous_state != AgentState::Working && state == AgentState::Working {
+            self.working_since = if previous_state == AgentState::Blocked {
+                self.last_working_duration
+                    .and_then(|elapsed| now.checked_sub(elapsed))
+                    .or(Some(now))
+            } else {
+                Some(now)
+            };
+            self.last_working_duration = None;
+        } else if previous_state == AgentState::Working && state != AgentState::Working {
+            let elapsed = self
+                .working_since
+                .and_then(|since| now.checked_duration_since(since))
+                .unwrap_or_default();
+            self.working_since = None;
+            self.last_working_duration = (state != AgentState::Unknown).then_some(elapsed);
+        } else if state == AgentState::Unknown
+            || (previous_state != AgentState::Working && state == AgentState::Blocked)
+            || (previous_state == AgentState::Blocked && state == AgentState::Idle)
+        {
+            self.working_since = None;
+            self.last_working_duration = None;
+        }
+
         self.state = state;
+        // #37: trace effective agent state transitions so false positives /
+        // stuck "working" states are debuggable from the server log. Only fires
+        // on an actual change (the early-return above filters no-ops).
+        tracing::debug!(
+            subsystem = "agent",
+            event = "agent.state.transition",
+            terminal = %self.id,
+            previous_agent = ?previous_agent_label,
+            agent = ?agent_label,
+            previous_state = ?previous_state,
+            state = ?state,
+            has_hook_authority = self.hook_authority.is_some(),
+            detected_agent = ?self.detected_agent,
+            "effective agent state changed"
+        );
         Some(EffectiveStateChange {
             previous_agent_label,
             previous_known_agent,
@@ -2285,6 +2406,425 @@ mod tests {
         };
 
         assert_eq!(stabilize_agent_detection(detection), AgentState::Idle);
+    }
+
+    #[test]
+    fn working_duration_starts_when_effective_state_enters_working() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start,
+        );
+
+        let duration = terminal
+            .working_duration_at(start + std::time::Duration::from_secs(12))
+            .unwrap();
+        assert_eq!(duration.elapsed, std::time::Duration::from_secs(12));
+        assert!(duration.is_live);
+    }
+
+    #[test]
+    fn repeated_working_reports_do_not_reset_working_duration() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start + std::time::Duration::from_secs(5),
+        );
+
+        let duration = terminal
+            .working_duration_at(start + std::time::Duration::from_secs(8))
+            .unwrap();
+        assert_eq!(duration.elapsed, std::time::Duration::from_secs(8));
+        assert!(duration.is_live);
+    }
+
+    #[test]
+    fn leaving_working_freezes_last_working_duration() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Idle,
+            false,
+            true,
+            false,
+            false,
+            start + std::time::Duration::from_secs(7),
+        );
+
+        let duration = terminal
+            .working_duration_at(start + std::time::Duration::from_secs(20))
+            .unwrap();
+        assert_eq!(duration.elapsed, std::time::Duration::from_secs(7));
+        assert!(!duration.is_live);
+    }
+
+    #[test]
+    fn new_working_transition_clears_stale_duration_and_restarts_timer() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Idle,
+            false,
+            true,
+            false,
+            false,
+            start + std::time::Duration::from_secs(7),
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start + std::time::Duration::from_secs(20),
+        );
+
+        let duration = terminal
+            .working_duration_at(start + std::time::Duration::from_secs(22))
+            .unwrap();
+        assert_eq!(duration.elapsed, std::time::Duration::from_secs(2));
+        assert!(duration.is_live);
+    }
+
+    #[test]
+    fn blocked_to_working_transition_resumes_previous_working_duration() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Blocked,
+            true,
+            false,
+            false,
+            false,
+            start + std::time::Duration::from_secs(10),
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start + std::time::Duration::from_secs(12),
+        );
+
+        let duration = terminal
+            .working_duration_at(start + std::time::Duration::from_secs(15))
+            .unwrap();
+        assert_eq!(duration.elapsed, std::time::Duration::from_secs(13));
+        assert!(duration.is_live);
+    }
+
+    #[test]
+    fn blocked_after_idle_does_not_resume_previous_working_duration() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Idle,
+            false,
+            true,
+            false,
+            false,
+            start + std::time::Duration::from_secs(7),
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Blocked,
+            true,
+            false,
+            false,
+            false,
+            start + std::time::Duration::from_secs(10),
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start + std::time::Duration::from_secs(12),
+        );
+
+        let duration = terminal
+            .working_duration_at(start + std::time::Duration::from_secs(15))
+            .unwrap();
+        assert_eq!(duration.elapsed, std::time::Duration::from_secs(3));
+        assert!(duration.is_live);
+    }
+
+    #[test]
+    fn blocked_without_resuming_working_keeps_frozen_duration() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Blocked,
+            true,
+            false,
+            false,
+            false,
+            start + std::time::Duration::from_secs(10),
+        );
+
+        let duration = terminal
+            .working_duration_at(start + std::time::Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(duration.elapsed, std::time::Duration::from_secs(10));
+        assert!(!duration.is_live);
+    }
+
+    #[test]
+    fn blocked_to_idle_clears_frozen_working_duration() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Blocked,
+            true,
+            false,
+            false,
+            false,
+            start + std::time::Duration::from_secs(10),
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Idle,
+            false,
+            true,
+            false,
+            false,
+            start + std::time::Duration::from_secs(12),
+        );
+
+        assert_eq!(
+            terminal.working_duration_at(start + std::time::Duration::from_secs(30)),
+            None
+        );
+    }
+
+    #[test]
+    fn unknown_state_hides_stale_working_duration() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            None,
+            AgentState::Unknown,
+            false,
+            false,
+            false,
+            false,
+            start + std::time::Duration::from_secs(3),
+        );
+
+        assert_eq!(
+            terminal.working_duration_at(start + std::time::Duration::from_secs(5)),
+            None
+        );
+    }
+
+    #[test]
+    fn idle_to_blocked_without_prior_working_keeps_no_duration() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Idle,
+            false,
+            true,
+            false,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Blocked,
+            true,
+            false,
+            false,
+            false,
+            start + std::time::Duration::from_secs(2),
+        );
+
+        assert_eq!(
+            terminal.working_duration_at(start + std::time::Duration::from_secs(5)),
+            None,
+            "no working session was ever observed; duration must remain None",
+        );
+    }
+
+    #[test]
+    fn blocked_to_unknown_clears_frozen_working_duration() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Blocked,
+            true,
+            false,
+            false,
+            false,
+            start + std::time::Duration::from_secs(10),
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            None,
+            AgentState::Unknown,
+            false,
+            false,
+            false,
+            false,
+            start + std::time::Duration::from_secs(15),
+        );
+
+        assert_eq!(
+            terminal.working_duration_at(start + std::time::Duration::from_secs(20)),
+            None,
+            "Blocked -> Unknown clears the frozen working duration",
+        );
+    }
+
+    #[test]
+    fn unknown_to_working_starts_fresh_duration() {
+        let mut terminal = test_terminal();
+        let start = std::time::Instant::now();
+
+        terminal.set_detected_state_with_screen_signals_at(
+            None,
+            AgentState::Unknown,
+            false,
+            false,
+            false,
+            false,
+            start,
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Working,
+            false,
+            false,
+            true,
+            false,
+            start + std::time::Duration::from_secs(5),
+        );
+
+        let duration = terminal
+            .working_duration_at(start + std::time::Duration::from_secs(8))
+            .unwrap();
+        assert_eq!(
+            duration.elapsed,
+            std::time::Duration::from_secs(3),
+            "fresh Working epoch must start the clock from zero, not resume",
+        );
+        assert!(duration.is_live);
     }
 
     #[test]
@@ -5832,6 +6372,86 @@ mod tests {
     }
 
     #[test]
+    fn rejected_hook_report_does_not_advance_sequence() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+
+        let rejected = terminal.set_hook_authority(
+            "herdr:codex".into(),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            Some(20),
+        );
+        assert!(rejected.is_none());
+
+        let accepted = terminal.set_hook_authority(
+            "herdr:codex".into(),
+            "codex".into(),
+            AgentState::Working,
+            None,
+            Some(20),
+        );
+
+        assert!(accepted.is_some());
+        assert_eq!(terminal.state, AgentState::Working);
+    }
+
+    #[test]
+    fn stale_release_sequence_is_ignored_for_same_source() {
+        let mut terminal = test_terminal();
+        anchor_full_lifecycle_session(
+            &mut terminal,
+            Agent::Pi,
+            "herdr:pi",
+            "pi",
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).unwrap(),
+        );
+        terminal.set_hook_authority(
+            "herdr:pi".into(),
+            "pi".into(),
+            AgentState::Working,
+            None,
+            Some(20),
+        );
+
+        let change = terminal.release_agent("herdr:pi", "pi", Some(19));
+
+        assert!(change.is_none());
+        assert_eq!(terminal.state, AgentState::Working);
+        assert!(terminal.hook_authority.is_some());
+    }
+
+    #[test]
+    fn rejected_release_does_not_advance_sequence() {
+        let mut terminal = test_terminal();
+        anchor_full_lifecycle_session(
+            &mut terminal,
+            Agent::Pi,
+            "herdr:pi",
+            "pi",
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).unwrap(),
+        );
+        terminal.set_hook_authority(
+            "herdr:pi".into(),
+            "pi".into(),
+            AgentState::Working,
+            None,
+            Some(20),
+        );
+
+        let rejected = terminal.release_agent("herdr:pi", "codex", Some(21));
+        assert!(rejected.is_none());
+        assert!(terminal.hook_authority.is_some());
+
+        let accepted = terminal.release_agent("herdr:pi", "pi", Some(21));
+
+        assert!(accepted.is_some());
+        assert!(terminal.hook_authority.is_none());
+        assert_eq!(terminal.state, AgentState::Unknown);
+    }
+
+    #[test]
     fn stale_clear_all_sequence_is_checked_against_current_authority_source() {
         let mut terminal = test_terminal();
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
@@ -5855,6 +6475,34 @@ mod tests {
         assert!(change.is_none());
         assert_eq!(terminal.state, AgentState::Working);
         assert!(terminal.hook_authority.is_some());
+    }
+
+    #[test]
+    fn rejected_clear_does_not_advance_sequence() {
+        let mut terminal = test_terminal();
+        anchor_full_lifecycle_session(
+            &mut terminal,
+            Agent::Pi,
+            "herdr:pi",
+            "pi",
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).unwrap(),
+        );
+        terminal.set_hook_authority(
+            "herdr:pi".into(),
+            "pi".into(),
+            AgentState::Working,
+            None,
+            Some(20),
+        );
+
+        let rejected = terminal.clear_hook_authority(Some("custom:pi"), Some(21));
+        assert!(rejected.is_none());
+        assert!(terminal.hook_authority.is_some());
+
+        let accepted = terminal.clear_hook_authority(Some("herdr:pi"), Some(21));
+
+        assert!(accepted.is_some());
+        assert!(terminal.hook_authority.is_none());
     }
 
     #[test]
@@ -5882,5 +6530,165 @@ mod tests {
             terminal.hook_authority.as_ref().unwrap().source,
             "custom:pi"
         );
+    }
+
+    // #6: the stored sequence must only advance on a *successfully applied*
+    // report. A rejected report leaves the sequence untouched so the agent can
+    // replay a corrected payload at the same sequence; an accepted report
+    // consumes the sequence so a genuine duplicate at that sequence is dropped.
+
+    #[test]
+    fn rejected_then_corrected_report_at_same_sequence_is_accepted() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+
+        // Caller rejects this report: the label conflicts with the detected agent.
+        let rejected = terminal.set_hook_authority(
+            "herdr:codex".into(),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            Some(42),
+        );
+        assert!(rejected.is_none());
+        assert!(terminal.hook_authority.is_none());
+
+        // A corrected report at the SAME sequence must still be accepted because
+        // the rejected one never advanced the stored sequence.
+        let accepted = terminal.set_hook_authority(
+            "herdr:codex".into(),
+            "codex".into(),
+            AgentState::Working,
+            None,
+            Some(42),
+        );
+        assert!(accepted.is_some());
+        assert_eq!(terminal.state, AgentState::Working);
+    }
+
+    #[test]
+    fn accepted_report_consumes_sequence_so_same_sequence_is_a_duplicate() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+
+        let accepted = terminal.set_hook_authority(
+            "herdr:codex".into(),
+            "codex".into(),
+            AgentState::Working,
+            None,
+            Some(42),
+        );
+        assert!(accepted.is_some());
+        assert_eq!(terminal.state, AgentState::Working);
+
+        // A second report at the now-consumed sequence is a duplicate and is
+        // rejected even though its payload differs — the Working state is kept.
+        let duplicate = terminal.set_hook_authority(
+            "herdr:codex".into(),
+            "codex".into(),
+            AgentState::Idle,
+            None,
+            Some(42),
+        );
+        assert!(duplicate.is_none());
+        assert_eq!(terminal.state, AgentState::Working);
+    }
+
+    // #37: a leftover launch_argv must NOT keep a finished/non-agent pane
+    // classified as an agent. Only a live agent signal (agent_name or an
+    // effective agent label) counts.
+
+    #[test]
+    fn launch_argv_alone_is_not_an_agent_terminal() {
+        let terminal = TerminalState::new(TerminalId::alloc(), "/tmp".into())
+            .with_launch_argv(vec!["claude".into()]);
+
+        assert!(
+            !terminal.is_agent_terminal(),
+            "a leftover launch record must not classify a finished pane as an agent",
+        );
+    }
+
+    #[test]
+    fn live_detected_agent_is_an_agent_terminal() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal.is_agent_terminal());
+
+        // When the agent goes away, the pane is no longer an agent terminal.
+        terminal.set_detected_state(None, AgentState::Unknown);
+        assert!(!terminal.is_agent_terminal());
+    }
+
+    #[test]
+    fn explicit_agent_name_is_an_agent_terminal() {
+        let mut terminal = test_terminal();
+        terminal.set_agent_name("planner".into());
+        assert!(terminal.is_agent_terminal());
+    }
+
+    // #37: process exit must reliably clear a stale "working" hook authority even
+    // when the agent has fully disappeared from the screen (detected agent None).
+
+    #[test]
+    fn process_exit_clears_working_hook_when_agent_fully_gone() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        terminal.set_hook_authority_at(
+            "herdr:claude".into(),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            None,
+            Some(1),
+            now,
+        );
+
+        // The agent process exits and no agent is detected on screen any more.
+        terminal.set_detected_state_with_screen_signals_at(
+            None,
+            AgentState::Unknown,
+            false,
+            false,
+            false,
+            true,
+            now + Duration::from_secs(1),
+        );
+
+        assert!(terminal.hook_authority.is_none());
+        assert!(!terminal.is_agent_terminal());
+        assert_eq!(terminal.state, AgentState::Unknown);
+    }
+
+    #[test]
+    fn process_exit_does_not_clear_newer_hook_when_agent_gone() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+
+        // A stale process-exit observation must not clobber a hook report that is
+        // newer than the exit.
+        terminal.set_detected_state_with_screen_signals_at(
+            None,
+            AgentState::Unknown,
+            false,
+            false,
+            false,
+            true,
+            now,
+        );
+        terminal.set_hook_authority_at(
+            "herdr:claude".into(),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            None,
+            Some(1),
+            now + Duration::from_secs(1),
+        );
+
+        assert!(terminal.hook_authority.is_some());
+        assert_eq!(terminal.state, AgentState::Working);
     }
 }

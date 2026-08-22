@@ -110,6 +110,8 @@ pub fn encode_mouse_button(
         MouseEventKind::Drag(MouseButton::Left) => (32u16, false),
         MouseEventKind::Drag(MouseButton::Middle) => (33u16, false),
         MouseEventKind::Drag(MouseButton::Right) => (34u16, false),
+        // #31: buttonless motion (any-event tracking, ?1003h): motion bit (32) + no-button (3).
+        MouseEventKind::Moved => (35u16, false),
         _ => return None,
     };
     encode_mouse_cb(button, release, column, row, modifiers, encoding)

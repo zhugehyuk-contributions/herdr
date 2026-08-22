@@ -1,0 +1,16 @@
+id = "herdr-mx.blocked-push"
+name = "Blocked push"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Append blocked agent-status changes to a local queue file for an out-of-process push sender (mobile M5)"
+platforms = ["linux", "macos"]
+
+# The hook is deliberately the whole plugin surface: it appends to a queue file and exits.
+# It never opens a socket. Delivery lives in `sender/drain.py`, which a launchd/systemd job
+# runs out of band, because the hook runtime has no timeout, no retry and no dead-letter
+# handling (`src/app/api/plugins/runtime.rs:121-172` spawns a thread and `child.wait()`s
+# forever; the only backstop is the 32-command in-flight cap at `runtime.rs:12`, past which
+# a hook invocation is dropped, `runtime.rs:82-100`).
+[[events]]
+on = "pane.agent_status_changed"
+command = ["sh", "hooks/enqueue.sh"]

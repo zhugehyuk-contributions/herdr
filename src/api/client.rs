@@ -7,7 +7,8 @@ use interprocess::local_socket::traits::Stream as _;
 use serde::de::DeserializeOwned;
 
 use crate::api::schema::{
-    ErrorResponse, Method, PingParams, Request, ResponseResult, SuccessResponse,
+    ErrorResponse, EventsSubscribeParams, Method, PingParams, Request, ResponseResult,
+    SubscriptionEventEnvelope, SuccessResponse,
 };
 use crate::ipc::LocalStream;
 
@@ -74,6 +75,37 @@ impl ApiClient {
         read_json_line(&mut reader)
     }
 
+    #[allow(dead_code)] // Kept as the typed subscription API; CLI wait paths use subscribe_value to preserve raw ack errors.
+    pub fn subscribe(
+        &self,
+        id: impl Into<String>,
+        params: EventsSubscribeParams,
+        read_timeout: Option<Duration>,
+    ) -> Result<(SuccessResponse, EventStream), ApiClientError> {
+        let request = Request {
+            id: id.into(),
+            method: Method::EventsSubscribe(params),
+        };
+        let (ack, stream) = self.subscribe_value(&request, read_timeout)?;
+        Ok((parse_response_value(ack)?, stream))
+    }
+
+    pub fn subscribe_value(
+        &self,
+        request: &Request,
+        read_timeout: Option<Duration>,
+    ) -> Result<(serde_json::Value, EventStream), ApiClientError> {
+        let mut stream = self.connect()?;
+        write_request(&mut stream, request)?;
+        if let Some(timeout) = read_timeout {
+            set_timeout_best_effort(&stream, TimeoutKind::Recv, timeout)?;
+        }
+
+        let mut reader = BufReader::new(stream);
+        let ack = read_json_line(&mut reader)?;
+        Ok((ack, EventStream { reader }))
+    }
+
     pub fn status(&self) -> Result<crate::api::RuntimeStatus, ApiClientError> {
         let response = self.request(Request {
             id: "api-client:status".into(),
@@ -95,6 +127,24 @@ impl ApiClient {
 
     fn connect(&self) -> io::Result<LocalStream> {
         crate::ipc::connect_local_stream(&self.socket_path())
+    }
+}
+
+pub struct EventStream {
+    reader: BufReader<LocalStream>,
+}
+
+impl EventStream {
+    pub fn next_value(&mut self) -> Result<Option<serde_json::Value>, ApiClientError> {
+        read_optional_json_line(&mut self.reader)
+    }
+
+    #[allow(dead_code)] // Typed companion to next_value; kept for API parity with subscribe().
+    pub fn next_event(&mut self) -> Result<Option<SubscriptionEventEnvelope>, ApiClientError> {
+        self.next_value()?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(ApiClientError::Json)
     }
 }
 
@@ -171,6 +221,22 @@ fn read_json_line<T: DeserializeOwned>(
         return Err(ApiClientError::EmptyResponse);
     }
     serde_json::from_str(&line).map_err(ApiClientError::Json)
+}
+
+fn read_optional_json_line<T: DeserializeOwned>(
+    reader: &mut BufReader<LocalStream>,
+) -> Result<Option<T>, ApiClientError> {
+    let mut line = String::new();
+    let read = reader.read_line(&mut line)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if line.trim().is_empty() {
+        return Err(ApiClientError::EmptyResponse);
+    }
+    serde_json::from_str(&line)
+        .map(Some)
+        .map_err(ApiClientError::Json)
 }
 
 #[derive(serde::Deserialize)]

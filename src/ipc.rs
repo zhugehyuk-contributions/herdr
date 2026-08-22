@@ -132,6 +132,9 @@ pub(crate) fn set_local_stream_polling(stream: &mut LocalStream, enabled: bool) 
 }
 
 #[cfg(unix)]
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 pub(crate) fn shutdown_local_stream_write(stream: &LocalStream) -> io::Result<()> {
     match stream {
         LocalStream::UdSocket(stream) => stream.inner().shutdown(std::net::Shutdown::Write),
@@ -140,6 +143,9 @@ pub(crate) fn shutdown_local_stream_write(stream: &LocalStream) -> io::Result<()
 
 /// Binds a listener for private terminal traffic. Unix callers restrict the
 /// socket file after binding; Windows must set the named-pipe DACL at creation.
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 pub(crate) fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
     #[cfg(unix)]
     {

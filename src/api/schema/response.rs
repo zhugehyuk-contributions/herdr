@@ -6,6 +6,7 @@ use super::events::EventEnvelope;
 use super::integrations::{
     IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult,
 };
+use super::mx::UiSettingsInfo;
 use super::panes::{
     LayoutDescription, PaneEdgesResult, PaneFocusDirectionResult, PaneInfo, PaneLayoutSnapshot,
     PaneMoveResult, PaneNeighborResult, PaneProcessInfo, PaneReadResult, PaneResizeResult,
@@ -61,6 +62,27 @@ pub enum ResponseResult {
     },
     WorkspaceList {
         workspaces: Vec<WorkspaceInfo>,
+    },
+    RemoteList {
+        remotes: Vec<crate::remote_registry::RemoteDefinitionSnapshot>,
+    },
+    RemoteAdded {
+        remote: crate::remote_registry::RemoteDefinitionSnapshot,
+    },
+    RemoteRemoved {
+        remote_id: String,
+    },
+    RemoteRenamed {
+        remote: crate::remote_registry::RemoteDefinitionSnapshot,
+    },
+    RemoteEnabledChanged {
+        remote: crate::remote_registry::RemoteDefinitionSnapshot,
+    },
+    SessionList {
+        sessions: Vec<crate::session::SessionInfo>,
+    },
+    UiSettings {
+        settings: UiSettingsInfo,
     },
     WorktreeList {
         source: WorktreeSourceInfo,

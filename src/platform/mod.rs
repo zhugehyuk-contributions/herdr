@@ -189,6 +189,9 @@ pub(crate) fn read_limited_reader(
     }
 }
 
+// herdr-mx: upstream v0.8.2's managed-ssh-config keepalive path is deferred (DIVERGENCE.md), so
+// nothing reads these yet. Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct RemoteSshConfigPaths {
     pub(crate) user_config: Option<std::path::PathBuf>,

@@ -1,0 +1,281 @@
+name: Preview (mx)
+
+# herdr-mx preview channel: every push to `mx` publishes a fat-bundle
+# prerelease tagged mx-preview-<date>-<sha>. Stable releases (v*-mx.N tags,
+# which feed the brew `herdr-mx` formula) are cut manually on request.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - mx
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Must match rust-toolchain.toml (added by the upstream v0.7.4 merge): the dtolnay
+  # action installs cross targets for the toolchain it resolves, while cargo obeys the
+  # pinned file — leaving them mismatched breaks every cross build with E0463 (no std).
+  RUST_TOOLCHAIN_VERSION: 1.96.1
+
+concurrency:
+  group: preview-mx
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      short_sha: ${{ steps.plan.outputs.short_sha }}
+      build_id: ${{ steps.plan.outputs.build_id }}
+      tag: ${{ steps.plan.outputs.tag }}
+      base_version: ${{ steps.plan.outputs.base_version }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Plan preview build
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          # Date + HHMM (UTC) make preview versions humanly orderable: `herdr status`
+          # surfaces this stamp as `build: YYYY.MM.DD.HHMM` — the SAME number the tap
+          # derives from the tag for the brew formula version, so status and brew agree.
+          day="$(date -u +%Y-%m-%d)"
+          hhmm="$(date -u +%H%M)"
+          build_id="$day-$hhmm-$short_sha"
+          base_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          {
+            echo "short_sha=$short_sha"
+            echo "build_id=$build_id"
+            echo "tag=mx-preview-$build_id"
+            echo "base_version=$base_version"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: preflight
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            name: herdr-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            name: herdr-linux-aarch64
+          # macos-15 pinned (not macos-latest): with the vendored libghostty-vt's required
+          # zig 0.15.2, the aarch64-macos link fails on the macos-26/Tahoe SDK (undefined
+          # libSystem symbols). macos-15-arm64 is the last image this exact toolchain built
+          # on (2026-06-12 mx preview); upstream uses the same zig 0.15.2 + macos-latest.
+          - target: x86_64-apple-darwin
+            os: macos-15
+            name: herdr-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-15
+            name: herdr-macos-aarch64
+    runs-on: ${{ matrix.os }}
+    env:
+      LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
+      LIBGHOSTTY_VT_SIMD: 'true'
+      HERDR_BUILD_CHANNEL: mx
+      HERDR_BUILD_ID: preview-${{ needs.preflight.outputs.build_id }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build musl-tools gcc-aarch64-linux-gnu crossbuild-essential-arm64
+
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
+
+      - name: Set Linux aarch64 linker
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: preview-mx-${{ matrix.target }}
+
+      - name: Remove Zig caches
+        run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Rename binary
+        run: cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+          if-no-files-found: error
+
+  publish:
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      # Deploy key with write access to 2lab-ai/homebrew-tap (repo-scoped; NOT a personal
+      # token). Present -> the step below pushes the rendered preview formula immediately
+      # after publishing. Absent -> the step no-ops and the tap's 6h cron catches up.
+      TAP_PUSH_KEY: ${{ secrets.TAP_PUSH_KEY }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+
+      - name: Pack fat bundles
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.preflight.outputs.base_version }}-mx.preview-${{ needs.preflight.outputs.build_id }}"
+          COMMIT="${GITHUB_SHA::7}"
+          PACKER=herdr-linux-x86_64/herdr-linux-x86_64
+          chmod +x "$PACKER"
+          declare -A OSARCH=(
+            [herdr-macos-aarch64]=macos-aarch64
+            [herdr-macos-x86_64]=macos-x86_64
+            [herdr-linux-aarch64]=linux-aarch64
+            [herdr-linux-x86_64]=linux-x86_64
+          )
+          mkdir -p fat
+          for name in "${!OSARCH[@]}"; do
+            args=()
+            for other in "${!OSARCH[@]}"; do
+              [ "$other" = "$name" ] && continue
+              args+=(--binary "${OSARCH[$other]}=$other/$other")
+            done
+            "$PACKER" bundle pack --carrier "$name/$name" --output "fat/$name" \
+              --version "$VERSION" --commit "$COMMIT" "${args[@]}"
+            "$PACKER" bundle list "fat/$name"
+          done
+
+      - name: Generate preview notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          prev="$(git tag -l 'mx-preview-*' --sort=-creatordate | head -1 || true)"
+          {
+            echo "herdr-mx preview build \`${{ needs.preflight.outputs.build_id }}\` (commit ${GITHUB_SHA::7})."
+            echo
+            echo "Fat-bundle binaries; installs as \`herdr\`. Install with:"
+            echo
+            echo '```'
+            echo "brew install 2lab-ai/tap/herdr-mx-preview"
+            echo '```'
+            echo
+            if [ -n "$prev" ]; then
+              echo "Changes since \`$prev\`:"
+              echo
+              # `git log -n 40` (not `| head -40`): under `set -o pipefail`, head closing the
+              # pipe early SIGPIPEs sed when the range exceeds 40 commits (e.g. a big upstream
+              # merge), failing the step. Limiting git log itself avoids the broken pipe.
+              git log --oneline -n 40 "$prev"..HEAD | sed 's/^/- /'
+            fi
+          } > PREVIEW_NOTES.md
+
+      - name: Create preview prerelease
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        with:
+          tag_name: ${{ needs.preflight.outputs.tag }}
+          name: mx preview ${{ needs.preflight.outputs.build_id }}
+          body_path: PREVIEW_NOTES.md
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: |
+            fat/herdr-linux-x86_64
+            fat/herdr-linux-aarch64
+            fat/herdr-macos-x86_64
+            fat/herdr-macos-aarch64
+
+
+      - name: Bump Homebrew tap to this preview
+        # Event-driven tap update: render Formula/herdr-mx-preview.rb from the fat
+        # bundles just published (same sha256s brew will download) and push it to the
+        # tap over the deploy key, so `brew upgrade herdr-mx-preview` sees this build
+        # immediately instead of waiting on the tap's 6h cron (which stays as backstop
+        # and no-ops on "already at TAG").
+        if: ${{ env.TAP_PUSH_KEY != '' }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.preflight.outputs.tag }}"
+          BUILD_ID="${{ needs.preflight.outputs.build_id }}"
+          VERSION="$(echo "$BUILD_ID" | awk -F- '{print $1"."$2"."$3"."$4}')"
+
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          eval "$(ssh-agent -s)" >/dev/null
+          ssh-add - <<< "$TAP_PUSH_KEY"
+
+          git clone --depth 1 git@github.com:2lab-ai/homebrew-tap.git tap-bump
+
+          declare -A SHAS
+          for name in herdr-macos-aarch64 herdr-macos-x86_64 herdr-linux-aarch64 herdr-linux-x86_64; do
+            SHAS[$name]=$(sha256sum "fat/$name" | cut -d' ' -f1)
+          done
+          sed -e "s/@VERSION@/$VERSION/g" \
+              -e "s/@TAG@/$TAG/g" \
+              -e "s/@SHA_MACOS_AARCH64@/${SHAS[herdr-macos-aarch64]}/" \
+              -e "s/@SHA_MACOS_X86_64@/${SHAS[herdr-macos-x86_64]}/" \
+              -e "s/@SHA_LINUX_AARCH64@/${SHAS[herdr-linux-aarch64]}/" \
+              -e "s/@SHA_LINUX_X86_64@/${SHAS[herdr-linux-x86_64]}/" \
+              tap-bump/Formula/herdr-mx-preview.rb.tmpl > tap-bump/Formula/herdr-mx-preview.rb
+          ruby -c tap-bump/Formula/herdr-mx-preview.rb
+
+          cd tap-bump
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/herdr-mx-preview.rb
+          git diff --cached --quiet && { echo "tap already current"; exit 0; }
+          git commit -m "herdr-mx-preview $TAG"
+          # Commit before pulling (an unstaged render breaks --rebase), then rebase over
+          # anything the cron/other repos pushed meanwhile.
+          git pull --rebase
+          git push
+          echo "tap bumped to $TAG"
+
+      - name: Prune old mx previews (keep 3)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease and (.tagName | startswith("mx-preview-"))) | .tagName' \
+            | tail -n +4 \
+            | while read -r tag; do
+                echo "pruning $tag"
+                gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+              done

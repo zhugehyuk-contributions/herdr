@@ -74,7 +74,10 @@ pub enum Subscription {
     },
     #[serde(rename = "pane.agent_status_changed")]
     PaneAgentStatusChanged {
-        pane_id: String,
+        // herdr-mx: optional so a subscription can match agent-status changes on ANY pane
+        // (the CLI `wait` flows and the multi-remote client subscribe without a fixed pane).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_status: Option<AgentStatus>,
     },

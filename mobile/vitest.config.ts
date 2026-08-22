@@ -1,0 +1,26 @@
+// Ported from orca mobile/vitest.config.ts
+// at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
+// MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.
+import { defineConfig } from 'vitest/config'
+
+const vitestOxcConfig = { tsconfig: false } as never
+
+export default defineConfig({
+  root: import.meta.dirname,
+  // Why: the app tsconfig intentionally excludes tests; Vite 8's OXC transform
+  // otherwise fails before Vitest can run the test modules.
+  oxc: vitestOxcConfig,
+  test: {
+    environment: 'node',
+    setupFiles: ['./vitest.setup.ts'],
+    onConsoleLog: (log) => !log.includes('react-test-renderer is deprecated'),
+    // .tsx too: component tests exist (react-test-renderer + mocked react-native) and were
+    // silently never collected, so render-level regressions shipped untested.
+    //
+    // `modules/` for the same reason, one directory over: a local Expo module lives outside `src/`
+    // by autolinking convention (`expo-modules-autolinking` resolves `./modules` as
+    // `nativeModulesDir` — build/commands/autolinkingOptions.js:170-174), and its TypeScript half is
+    // the only part of the native ssh path that can be tested without a device.
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'modules/**/*.test.ts']
+  }
+})

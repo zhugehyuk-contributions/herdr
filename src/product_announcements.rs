@@ -98,8 +98,10 @@ pub fn save_manifest_announcement(
 }
 
 pub fn load_unseen_for_current_version() -> Option<ProductAnnouncement> {
+    // Announcements are keyed by the base release version: channel-suffixed
+    // builds (preview/mx) of 0.6.10 still describe the 0.6.10 release.
     load_fake_for_current_version()
-        .or_else(|| load_unseen_from_path(&store_path(), &crate::build_info::version()))
+        .or_else(|| load_unseen_from_path(&store_path(), crate::build_info::BASE_VERSION))
 }
 
 pub fn mark_seen(version: &str, id: &str) -> io::Result<()> {

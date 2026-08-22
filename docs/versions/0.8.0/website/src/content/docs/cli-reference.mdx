@@ -101,6 +101,16 @@ herdr notification show <title> [--body TEXT] [--position top-left|top-right|bot
 
 `notification show` uses the configured `[ui.toast]` delivery. `--position` only affects in-app Herdr toasts. `--sound` defaults to `none`; `done` and `request` play the existing finished and needs-attention sounds only when the notification is shown.
 
+## Multi-platform bundles
+
+```bash
+herdr bundle list [path] [--json]   # show which platforms a herdr binary carries
+herdr bundle pack --carrier <path> --output <path> \
+    --binary <os>-<arch>=<path> [--binary ...] [--version <v>] [--commit <c>]
+```
+
+A "fat" build carries sibling-platform binaries as appended data so `herdr --remote <host>` can seed a different-OS host offline (see [Persistence & remote](/docs/persistence-remote/)). Run `just bundle` to produce one; `bundle pack` is the low-level step it uses. `bundle list` with no path inspects the running binary.
+
 ## Sessions
 
 ```bash

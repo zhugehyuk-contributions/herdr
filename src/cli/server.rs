@@ -200,6 +200,7 @@ fn server_live_handoff(args: &[String]) -> std::io::Result<i32> {
         );
         return Ok(2);
     };
+    let params = live_handoff_params_with_cli_defaults(params)?;
 
     // Live handoff is itself a protocol-mismatch recovery path, so it must
     // reach the running server without the normal CLI compatibility guard.
@@ -226,7 +227,7 @@ fn server_live_handoff(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn parse_live_handoff_params(args: &[String]) -> Option<ServerLiveHandoffParams> {
+pub(super) fn parse_live_handoff_params(args: &[String]) -> Option<ServerLiveHandoffParams> {
     let mut params = ServerLiveHandoffParams::default();
     let mut idx = 0;
     while idx < args.len() {
@@ -252,11 +253,36 @@ fn parse_live_handoff_params(args: &[String]) -> Option<ServerLiveHandoffParams>
     Some(params)
 }
 
+pub(super) fn live_handoff_params_with_cli_defaults(
+    mut params: ServerLiveHandoffParams,
+) -> std::io::Result<ServerLiveHandoffParams> {
+    if params.import_exe.is_none() {
+        let current_exe = std::env::current_exe().map_err(|err| {
+            std::io::Error::new(
+                err.kind(),
+                format!("failed to determine herdr executable path for live handoff: {err}"),
+            )
+        })?;
+        params.import_exe = Some(current_exe.to_string_lossy().into_owned());
+    }
+    params
+        .expected_protocol
+        .get_or_insert(crate::protocol::PROTOCOL_VERSION);
+    // Default to the full build version: channel-suffixed builds (preview/mx)
+    // report e.g. 0.6.10-mx.1 from the import side, so a bare
+    // CARGO_PKG_VERSION default would make them reject their own handoff.
+    params
+        .expected_version
+        .get_or_insert_with(crate::build_info::version);
+    Ok(params)
+}
+
 fn print_server_help() {
     eprintln!("herdr server commands:");
     eprintln!("  herdr server                run as headless server");
     eprintln!("  herdr server stop           stop the running server via the API socket");
     eprintln!("  herdr server live-handoff   hand off live panes to a new local server");
+    eprintln!("  herdr live-handoff          hand off every running session, one at a time");
     eprintln!("  herdr server reload-config  reload config.toml in the running server");
     eprintln!("  herdr server agent-manifests [--json]  show agent detection manifest status");
     eprintln!("  herdr server update-agent-manifests [--json]  fetch and reload agent detection manifests");
@@ -363,5 +389,25 @@ mod tests {
         );
         assert_eq!(params.expected_protocol, Some(9));
         assert_eq!(params.expected_version.as_deref(), Some("0.6.2"));
+    }
+
+    #[test]
+    fn live_handoff_params_default_import_exe_to_current_cli_binary() {
+        let params = live_handoff_params_with_cli_defaults(ServerLiveHandoffParams::default())
+            .expect("params");
+        let current_exe = std::env::current_exe().expect("current exe");
+
+        assert_eq!(
+            params.import_exe.as_deref(),
+            Some(current_exe.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            params.expected_protocol,
+            Some(crate::protocol::PROTOCOL_VERSION)
+        );
+        assert_eq!(
+            params.expected_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
     }
 }

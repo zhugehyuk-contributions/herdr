@@ -8,6 +8,7 @@ mod layouts;
 mod pane_graphics;
 mod panes;
 pub(crate) mod plugins;
+mod remotes;
 mod responses;
 mod session;
 mod tabs;
@@ -964,6 +965,12 @@ impl App {
                     },
                 }
             }
+            Method::ServerUiSettings(_) => SuccessResponse {
+                id: request.id,
+                result: ResponseResult::UiSettings {
+                    settings: self.ui_settings_info(),
+                },
+            },
             Method::ServerAgentManifests(_) => {
                 self.state.refresh_agent_manifest_summaries();
                 let update_status = crate::detect::manifest_update::load_status();
@@ -997,6 +1004,20 @@ impl App {
                     },
                 }
             }
+            Method::RemoteList(_) => return self.handle_remote_list(request.id),
+            Method::RemoteAdd(params) => return self.handle_remote_add(request.id, params),
+            Method::RemoteRemove(params) => return self.handle_remote_remove(request.id, params),
+            Method::RemoteRename(params) => return self.handle_remote_rename(request.id, params),
+            Method::RemoteSetEnabled(params) => {
+                return self.handle_remote_set_enabled(request.id, params)
+            }
+            Method::RemoteSetAutoUpdate(params) => {
+                return self.handle_remote_set_auto_update(request.id, params)
+            }
+            Method::RemoteSetSession(params) => {
+                return self.handle_remote_set_session(request.id, params)
+            }
+            Method::SessionList(_) => return self.handle_session_list(request.id),
             Method::NotificationShow(params) => {
                 return self.handle_notification_show(request.id, params);
             }
@@ -1032,6 +1053,9 @@ impl App {
             }
             Method::WorkspaceClose(target) => {
                 return self.handle_workspace_close(request.id, target)
+            }
+            Method::WorkspaceReorder(params) => {
+                return self.handle_workspace_reorder(request.id, params)
             }
             Method::WorktreeList(params) => return self.handle_worktree_list(request.id, params),
             Method::WorktreeCreate(params) => {
@@ -1213,6 +1237,21 @@ impl App {
         serde_json::to_string(&response).unwrap()
     }
 
+    fn ui_settings_info(&self) -> crate::api::schema::UiSettingsInfo {
+        crate::api::schema::UiSettingsInfo {
+            sidebar_width: self.state.sidebar_width,
+            sidebar_default_width: self.state.default_sidebar_width,
+            sidebar_min_width: self.state.sidebar_min_width,
+            sidebar_max_width: self.state.sidebar_max_width,
+            sidebar_section_split_per_mille: sidebar_split_per_mille(
+                self.state.sidebar_section_split,
+            ),
+            sidebar_spaces: self.state.sidebar_space.clone(),
+            sidebar_agents: self.state.sidebar_agent.clone(),
+            sidebar_host: self.state.sidebar_host.clone(),
+        }
+    }
+
     fn handle_notification_show(
         &mut self,
         id: String,
@@ -1302,6 +1341,13 @@ impl App {
     pub(crate) fn mark_api_notification_shown(&mut self, now: Instant) {
         self.last_api_notification_at = Some(now);
     }
+}
+
+fn sidebar_split_per_mille(split: f32) -> u16 {
+    if !split.is_finite() {
+        return 500;
+    }
+    (split.clamp(0.1, 0.9) * 1000.0).round() as u16
 }
 
 fn sanitized_notification_text(value: &str, max_chars: usize) -> Option<String> {

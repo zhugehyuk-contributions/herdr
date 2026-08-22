@@ -304,7 +304,19 @@ mod tests {
         assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
         assert_eq!(
             frame_digest(&frame),
-            "a7c21fa42305a41231c7ae254f264f6ef923f46301d8fc4cd35ab6dfdd651b6b"
+            // Re-recorded for the herdr-mx sidebar renderer after the upstream v0.7.4 merge
+            // (upstream's hash characterizes their sidebar; the layout was hand-verified).
+            //
+            // Re-recorded again for the upstream v0.8.2 merge. Verified before re-recording by
+            // dumping every rendered row on both sides: exactly ONE of the 20 rows differs, the
+            // tab bar, and only in label padding —
+            //   pre : "│ 1        logs    +"
+            //   post: "│   1       logs   +"
+            // which is upstream's "desktop tab labels are now centered in their tabs" (#2570,
+            // docs/next/CHANGELOG.md 0.8.2). The sidebar rows, both pane bodies, the hyperlink
+            // table and the cursor are byte-identical, and the mobile twin of this test did not
+            // move at all.
+            "7c5912257138a110b8842f3cc1da728d73f11bbc836329967729f786bfb1d254"
         );
     }
 

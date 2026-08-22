@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCreateParams,
-    WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
+    WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceReorderParams,
     WorkspaceReportMetadataParams, WorkspaceTarget,
 };
 use crate::app::App;
@@ -330,6 +330,31 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    /// #19: move a workspace to `insert_index` within this server's workspace list. Mirrors the
+    /// monolithic drag-reorder: `AppState::move_workspace` marks the session dirty so the order
+    /// persists. Returns the updated `workspace.list` so a caller that does not re-poll still sees
+    /// the new order; the client uses an Immediate refresh policy after the request regardless.
+    pub(super) fn handle_workspace_reorder(
+        &mut self,
+        id: String,
+        params: WorkspaceReorderParams,
+    ) -> String {
+        let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        if self.state.workspaces.get(index).is_none() {
+            return workspace_not_found(id, &params.workspace_id);
+        }
+        let insert_index = params.insert_index.min(self.state.workspaces.len());
+        self.state.move_workspace(index, insert_index);
+        encode_success(
+            id,
+            ResponseResult::WorkspaceList {
+                workspaces: self.workspace_list_info(),
+            },
+        )
+    }
+
     fn workspace_list_info(&self) -> Vec<crate::api::schema::WorkspaceInfo> {
         self.state
             .workspaces
@@ -470,6 +495,67 @@ mod tests {
         assert_eq!(success.id, "req");
         assert_eq!(app.state.request_remove_linked_worktree, None);
         assert!(app.state.workspaces.is_empty());
+    }
+
+    // #19: workspace.reorder moves a workspace to the requested index, persists (move_workspace
+    // marks the session dirty), and returns the reordered list.
+    #[test]
+    fn api_workspace_reorder_moves_workspace_and_returns_new_order() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![
+            Workspace::test_new("a"),
+            Workspace::test_new("b"),
+            Workspace::test_new("c"),
+        ];
+        let third_id = app.state.workspaces[2].id.clone();
+
+        // Move the third workspace to the front.
+        let response = app.handle_workspace_reorder(
+            "req".into(),
+            WorkspaceReorderParams {
+                workspace_id: third_id.clone(),
+                insert_index: 0,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.id, "req");
+        assert_eq!(app.state.workspaces[0].id, third_id);
+        assert_eq!(app.state.workspaces.len(), 3);
+    }
+
+    // #19: an unknown workspace id is rejected without touching the order.
+    #[test]
+    fn api_workspace_reorder_unknown_id_is_rejected() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
+        let original: Vec<_> = app.state.workspaces.iter().map(|w| w.id.clone()).collect();
+
+        let response = app.handle_workspace_reorder(
+            "req".into(),
+            WorkspaceReorderParams {
+                workspace_id: "does-not-exist".into(),
+                insert_index: 0,
+            },
+        );
+
+        assert!(response.contains("workspace_not_found"));
+        let after: Vec<_> = app.state.workspaces.iter().map(|w| w.id.clone()).collect();
+        assert_eq!(original, after);
     }
 
     #[test]

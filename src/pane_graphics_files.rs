@@ -143,6 +143,9 @@ impl Drop for Generation {
 }
 
 #[cfg(unix)]
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 pub(crate) fn validate_direct_source(path: &Path, expected_len: usize) -> io::Result<()> {
     let source = path.parent().ok_or_else(invalid_path)?;
     let generation = source.parent().ok_or_else(invalid_path)?;
@@ -352,6 +355,9 @@ fn invalid(message: &str) -> io::Error {
 }
 
 #[cfg(unix)]
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 fn invalid_path() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,

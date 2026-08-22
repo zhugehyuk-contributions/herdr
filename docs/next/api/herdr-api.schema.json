@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "protocol": 20,
+  "protocol": 21,
   "schema_version": 1,
   "schemas": {
     "error_response": {
@@ -1068,6 +1068,22 @@
           ],
           "type": "object"
         },
+        "WorkspaceGitInfo": {
+          "description": "Present when the workspace's checkout is a git repo even WITHOUT worktree-space\nmembership (from the workspace's cached git metadata) — the signal client menus\nneed to offer worktree actions on a plain git workspace.",
+          "properties": {
+            "is_linked_worktree": {
+              "type": "boolean"
+            },
+            "repo_key": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_key",
+            "is_linked_worktree"
+          ],
+          "type": "object"
+        },
         "WorkspaceInfo": {
           "properties": {
             "active_tab_id": {
@@ -1076,8 +1092,25 @@
             "agent_status": {
               "$ref": "#/schemas/event/$defs/AgentStatus"
             },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "focused": {
               "type": "boolean"
+            },
+            "git": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/WorkspaceGitInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "herdr-mx: present when the workspace's checkout is a git repo even WITHOUT worktree-space\nmembership — the signal client menus need to offer worktree actions on a plain git workspace."
             },
             "label": {
               "type": "string"
@@ -3647,6 +3680,115 @@
           ],
           "type": "string"
         },
+        "RemoteAddParams": {
+          "properties": {
+            "keybindings": {
+              "$ref": "#/schemas/request/$defs/RemoteKeybindingsSnapshot",
+              "default": "local"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session": {
+              "description": "Optional session to attach to on the remote. Absent/empty/`\"default\"` = the remote's\ndefault session.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "RemoteKeybindingsSnapshot": {
+          "enum": [
+            "local",
+            "server"
+          ],
+          "type": "string"
+        },
+        "RemoteRemoveParams": {
+          "properties": {
+            "remote_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "remote_id"
+          ],
+          "type": "object"
+        },
+        "RemoteRenameParams": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "remote_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "remote_id",
+            "name"
+          ],
+          "type": "object"
+        },
+        "RemoteSetAutoUpdateParams": {
+          "properties": {
+            "auto_update": {
+              "type": "boolean"
+            },
+            "remote_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "remote_id",
+            "auto_update"
+          ],
+          "type": "object"
+        },
+        "RemoteSetEnabledParams": {
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "remote_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "remote_id",
+            "enabled"
+          ],
+          "type": "object"
+        },
+        "RemoteSetSessionParams": {
+          "description": "Point an existing remote at a different session. Absent/empty/`\"default\"` = the remote's\ndefault session.",
+          "properties": {
+            "remote_id": {
+              "type": "string"
+            },
+            "session": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "remote_id"
+          ],
+          "type": "object"
+        },
         "ServerLiveHandoffParams": {
           "properties": {
             "expected_protocol": {
@@ -4006,7 +4148,10 @@
                   ]
                 },
                 "pane_id": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "pane.agent_status_changed",
@@ -4014,8 +4159,7 @@
                 }
               },
               "required": [
-                "type",
-                "pane_id"
+                "type"
               ],
               "type": "object"
             },
@@ -4222,6 +4366,25 @@
             "workspace_id",
             "label"
           ],
+          "type": "object"
+        },
+        "WorkspaceReorderParams": {
+          "description": "is an insert position into the list as it stands *before* the move (0..=len), matching the\nmonolithic `AppState::move_workspace` contract. Clamped server-side.",
+          "properties": {
+            "insert_index": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id",
+            "insert_index"
+          ],
+          "title": "19: move `workspace_id` so it sits at `insert_index` in the server's workspace list. The index",
           "type": "object"
         },
         "WorkspaceReportMetadataParams": {
@@ -4494,6 +4657,22 @@
         {
           "properties": {
             "method": {
+              "const": "server.ui_settings",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "server.agent_manifests",
               "type": "string"
             },
@@ -4511,6 +4690,134 @@
           "properties": {
             "method": {
               "const": "server.reload_agent_manifests",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "remote.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "remote.add",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RemoteAddParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "remote.remove",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RemoteRemoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "remote.rename",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RemoteRenameParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "remote.set_enabled",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RemoteSetEnabledParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "remote.set_auto_update",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RemoteSetAutoUpdateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "remote.set_session",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RemoteSetSessionParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "session.list",
               "type": "string"
             },
             "params": {
@@ -4723,6 +5030,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.reorder",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceReorderParams"
             }
           },
           "required": [
@@ -6158,6 +6481,13 @@
             "launch_pending": {
               "type": "boolean"
             },
+            "manual_label": {
+              "description": "herdr-mx #58: the pane's MANUAL rename (`terminal.manual_label`) — the \"pane name\" the\nsidebar shows, distinct from `name` (the agent name). Carried so the client-rendered\nmulti-remote sidebar can show it. Additive + optional.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "name": {
               "type": [
                 "string",
@@ -6189,6 +6519,13 @@
             },
             "tab_id": {
               "type": "string"
+            },
+            "tab_label": {
+              "description": "herdr-mx #58: the display name of the TAB this pane is in (`Tab::display_name()`), so the\nmulti-remote client can group panes into tabs and render tab names. Additive + optional.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "terminal_id": {
               "type": "string"
@@ -8621,6 +8958,94 @@
           ],
           "type": "string"
         },
+        "RemoteDefinitionSnapshot": {
+          "properties": {
+            "auto_update": {
+              "type": "boolean"
+            },
+            "disabled": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "keybindings": {
+              "$ref": "#/schemas/success_response/$defs/RemoteKeybindingsSnapshot",
+              "default": "local"
+            },
+            "name": {
+              "type": "string"
+            },
+            "session": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "$ref": "#/schemas/success_response/$defs/RemoteTargetSnapshot"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "target"
+          ],
+          "type": "object"
+        },
+        "RemoteKeybindingsSnapshot": {
+          "enum": [
+            "local",
+            "server"
+          ],
+          "type": "string"
+        },
+        "RemoteTargetSnapshot": {
+          "oneOf": [
+            {
+              "properties": {
+                "args": {
+                  "description": "ssh options that precede the destination (e.g. `-L`, `-J`, `-p`, `-o`). Empty for a\nbare-host target. `#[serde(default)]` makes legacy snapshots (only `target`)\ndeserialize to an empty vec; `skip_serializing_if` keeps bare targets serializing\nbyte-identical to today (no `args` key on disk).",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "target": {
+                  "description": "The ssh destination (`user@host`, host alias, `ssh://…`). Used as the dedup/identity\nkey, the socket-path key, and the display name. For a full ssh spec this is the last\npositional token (the destination); for a bare token it is the token itself.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "ssh",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "target"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "session": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "local",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "ResponseResult": {
           "oneOf": [
             {
@@ -8728,6 +9153,124 @@
               "required": [
                 "type",
                 "workspaces"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "remotes": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/RemoteDefinitionSnapshot"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "remote_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "remotes"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "remote": {
+                  "$ref": "#/schemas/success_response/$defs/RemoteDefinitionSnapshot"
+                },
+                "type": {
+                  "const": "remote_added",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "remote"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "remote_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "remote_removed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "remote_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "remote": {
+                  "$ref": "#/schemas/success_response/$defs/RemoteDefinitionSnapshot"
+                },
+                "type": {
+                  "const": "remote_renamed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "remote"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "remote": {
+                  "$ref": "#/schemas/success_response/$defs/RemoteDefinitionSnapshot"
+                },
+                "type": {
+                  "const": "remote_enabled_changed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "remote"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "sessions": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/SessionInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "session_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "sessions"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "settings": {
+                  "$ref": "#/schemas/success_response/$defs/UiSettingsInfo"
+                },
+                "type": {
+                  "const": "ui_settings",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "settings"
               ],
               "type": "object"
             },
@@ -9811,6 +10354,33 @@
           ],
           "type": "object"
         },
+        "SessionInfo": {
+          "properties": {
+            "default": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "running": {
+              "type": "boolean"
+            },
+            "session_dir": {
+              "type": "string"
+            },
+            "socket_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "default",
+            "running",
+            "socket_path",
+            "session_dir"
+          ],
+          "type": "object"
+        },
         "SessionSnapshot": {
           "properties": {
             "agents": {
@@ -9927,6 +10497,64 @@
           ],
           "type": "object"
         },
+        "UiSettingsInfo": {
+          "properties": {
+            "sidebar_default_width": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sidebar_max_width": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sidebar_min_width": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sidebar_section_split_per_mille": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sidebar_width": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "sidebar_width",
+            "sidebar_default_width",
+            "sidebar_min_width",
+            "sidebar_max_width",
+            "sidebar_section_split_per_mille"
+          ],
+          "type": "object"
+        },
+        "WorkspaceGitInfo": {
+          "description": "Present when the workspace's checkout is a git repo even WITHOUT worktree-space\nmembership (from the workspace's cached git metadata) — the signal client menus\nneed to offer worktree actions on a plain git workspace.",
+          "properties": {
+            "is_linked_worktree": {
+              "type": "boolean"
+            },
+            "repo_key": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_key",
+            "is_linked_worktree"
+          ],
+          "type": "object"
+        },
         "WorkspaceInfo": {
           "properties": {
             "active_tab_id": {
@@ -9935,8 +10563,25 @@
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
             },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "focused": {
               "type": "boolean"
+            },
+            "git": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/WorkspaceGitInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "herdr-mx: present when the workspace's checkout is a git repo even WITHOUT worktree-space\nmembership — the signal client menus need to offer worktree actions on a plain git workspace."
             },
             "label": {
               "type": "string"

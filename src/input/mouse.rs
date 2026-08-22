@@ -29,6 +29,9 @@ impl HostGeometry {
         })
     }
 
+    // herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+    // (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+    #[allow(dead_code)]
     #[cfg(unix)]
     pub(crate) fn current() -> Option<Self> {
         let size = crossterm::terminal::window_size().ok()?;

@@ -1,0 +1,782 @@
+<title>herdr mobile</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap">
+<style>
+  :root {
+    --bg: #0a0a0a;            /* drafting table */
+    --ink: #101010;           /* screen bg */
+    --ink-2: #161616;
+    --ink-3: #1d1d1d;
+    --line: #282828;
+    --line-soft: #1f1f1f;
+    --fg: #f0efec;            /* warm-biased white — the only "color" */
+    --fg-soft: #b3b2ae;
+    --dim: #7d7d7a;
+    --dim-2: #575755;
+    --off: #3f3f3d;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 14px;
+    line-height: 1.55;
+    padding: 48px 32px 80px;
+  }
+  ::selection { background: rgba(240,239,236,.22); }
+
+  .wrap { max-width: 1280px; margin: 0 auto; }
+
+  /* ── header ─────────────────────────────── */
+  .eyebrow {
+    font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 14px;
+  }
+  .eyebrow b { color: var(--fg); font-weight: 500; }
+  h1 {
+    font-size: clamp(30px, 5vw, 44px); font-weight: 700; letter-spacing: -.02em;
+    text-wrap: balance;
+  }
+  h1 .cursor {
+    display: inline-block; width: .55em; height: 1em; margin-left: 6px;
+    background: var(--fg); vertical-align: text-bottom;
+    animation: blink 1.2s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .cursor, .dot.working { animation: none !important; }
+  }
+  .tagline { color: var(--fg-soft); margin-top: 10px; max-width: 64ch; }
+  .tagline em { color: var(--fg); font-style: normal; font-weight: 700; }
+  .hier {
+    margin-top: 16px; font-size: 12px; color: var(--fg-soft);
+    background: var(--ink-2); border: 1px solid var(--line-soft); border-radius: 8px;
+    padding: 12px 16px; display: inline-flex; flex-direction: column; gap: 4px;
+  }
+  .hier .lb { color: var(--dim-2); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; margin-right: 10px; }
+  .hier b { color: var(--fg); font-weight: 700; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+  .chip {
+    font-size: 11px; color: var(--dim); border: 1px solid var(--line);
+    padding: 4px 10px; border-radius: 3px; background: var(--ink-2);
+  }
+  .chip b { color: var(--fg-soft); font-weight: 500; }
+
+  section { margin-top: 64px; }
+  .sec-label {
+    font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--dim);
+    border-bottom: 1px solid var(--line-soft); padding-bottom: 10px; margin-bottom: 24px;
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  .sec-label span:last-child { letter-spacing: 0; text-transform: none; color: var(--dim-2); }
+
+  /* ── artboard rail ──────────────────────── */
+  .rail-clip { overflow-x: auto; padding-bottom: 18px; }
+  .rail { display: flex; align-items: flex-start; gap: 0; width: max-content; }
+  .board { width: 316px; flex: none; }
+  .step {
+    display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px;
+  }
+  .step .no { color: var(--fg); font-size: 12px; font-weight: 700; }
+  .step .no.lg {
+    background: var(--fg); color: var(--ink); padding: 0 5px; border-radius: 3px;
+  }
+  .step .nm { font-size: 13px; font-weight: 700; letter-spacing: .02em; }
+  .step .sub { font-size: 11px; color: var(--dim); }
+  .joint {
+    flex: none; width: 44px; display: flex; align-items: center; justify-content: center;
+    color: var(--dim-2); font-size: 16px; padding-top: 300px; user-select: none;
+  }
+  .joint.alt { color: var(--fg-soft); font-size: 13px; }
+  .note {
+    margin-top: 14px; font-size: 11px; line-height: 1.7; color: var(--dim);
+    border-left: 2px solid var(--line); padding-left: 12px;
+  }
+  .note code { color: var(--fg-soft); font-family: var(--mono); }
+  .note .k { color: var(--fg); font-weight: 700; }
+  .note b { color: var(--fg-soft); }
+
+  /* ── phone frame ────────────────────────── */
+  .phone {
+    width: 316px; height: 660px; background: var(--ink);
+    border: 1px solid #333; border-radius: 42px; padding: 10px;
+    box-shadow: 0 0 0 1px #000, 0 24px 60px rgba(0,0,0,.55);
+  }
+  .screen {
+    position: relative; height: 100%; border-radius: 32px; overflow: hidden;
+    background: var(--ink); display: flex; flex-direction: column;
+  }
+  .statusbar {
+    flex: none; height: 40px; display: flex; align-items: center;
+    justify-content: space-between; padding: 8px 22px 0; font-size: 11px;
+    color: var(--fg-soft);
+  }
+  .notch {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    width: 96px; height: 24px; border-radius: 12px; background: #000; z-index: 3;
+  }
+  .homebar {
+    flex: none; height: 22px; display: flex; align-items: center; justify-content: center;
+  }
+  .homebar i { width: 110px; height: 4px; border-radius: 2px; background: var(--off); }
+
+  .appbar {
+    flex: none; display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px 10px; border-bottom: 1px solid var(--line-soft);
+  }
+  .appbar .logo { color: var(--fg); font-weight: 700; font-size: 15px; letter-spacing: -.02em; }
+  .appbar .ttl { font-weight: 700; font-size: 14px; }
+  .appbar .crumb { color: var(--dim); font-size: 11px; }
+  .appbar .sp { flex: 1; }
+  .icnbtn {
+    width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 6px;
+    display: flex; align-items: center; justify-content: center; color: var(--fg-soft);
+  }
+  .icnbtn svg { width: 15px; height: 15px; }
+  .back { color: var(--fg-soft); font-size: 13px; display: flex; align-items: center; gap: 4px; }
+  .appbar .meta { font-size: 10.5px; color: var(--dim); }
+
+  .body { flex: 1; overflow: hidden; padding: 12px 12px 0; display: flex; flex-direction: column; gap: 8px; }
+
+  .rowcard {
+    background: var(--ink-2); border: 1px solid var(--line-soft); border-radius: 8px;
+    padding: 12px 12px 11px; display: flex; flex-direction: column; gap: 7px;
+  }
+  .rowcard.active { border-color: rgba(240,239,236,.35); }
+  .rowcard.alert { border-color: rgba(240,239,236,.6); background: #1a1a1a; }
+  .r1 { display: flex; align-items: center; gap: 8px; }
+  .r1 .nm { font-weight: 700; font-size: 13px; }
+  .r1 .sp { flex: 1; }
+  .r1 .chev { color: var(--dim-2); }
+  .meta { font-size: 10.5px; color: var(--dim); }
+  .meta b { color: var(--fg-soft); font-weight: 500; }
+  .pid {
+    flex: none; font-size: 10px; color: var(--fg-soft); border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 6px; background: var(--ink);
+  }
+  .pid.idle { color: var(--dim); }
+
+  /* status without hue: fill / ring / dim / weight */
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dot.ok { background: var(--fg-soft); }
+  .dot.working { background: var(--fg); animation: pulse 1.4s ease-in-out infinite; }
+  .dot.blocked { background: transparent; border: 2px solid var(--fg); width: 8px; height: 8px; }
+  .dot.off { background: var(--off); }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; }
+  .bdg {
+    font-size: 10px; padding: 2px 7px; border-radius: 3px;
+    border: 1px solid var(--line); color: var(--dim);
+  }
+  .bdg.hi  { color: var(--fg); border-color: rgba(240,239,236,.45); }
+  .bdg.inv { background: var(--fg); color: var(--ink); border-color: var(--fg); font-weight: 700; }
+  .bdg.dim { color: var(--dim); }
+
+  .fab {
+    position: absolute; right: 18px; bottom: 92px;
+    background: var(--fg); color: var(--ink); font-weight: 700; font-size: 12px;
+    padding: 11px 16px; border-radius: 10px; display: flex; gap: 7px; align-items: center;
+    box-shadow: 0 10px 26px rgba(0,0,0,.55); z-index: 2;
+  }
+
+  .listlabel {
+    font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--dim-2);
+    padding: 4px 2px 0;
+  }
+  .listlabel.tab { color: var(--dim); display: flex; align-items: center; gap: 8px; }
+  .listlabel.tab::after { content: ""; flex: 1; height: 1px; background: var(--line-soft); }
+  .listlabel .st { color: var(--fg-soft); }
+  .listlabel .st.b {
+    background: var(--fg); color: var(--ink); padding: 1px 7px; border-radius: 3px; font-weight: 700;
+  }
+  .listlabel .st.d { color: var(--dim-2); }
+
+  /* bottom nav — nodes | agents */
+  .bottomnav {
+    flex: none; display: flex; border-top: 1px solid var(--line-soft);
+    background: var(--ink); padding: 8px 20px 2px; gap: 8px;
+  }
+  .bn {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+    font-size: 10px; color: var(--dim-2); padding: 4px 0;
+  }
+  .bn svg { width: 17px; height: 17px; }
+  .bn.on { color: var(--fg); }
+  .bn .cnt {
+    position: absolute; margin-left: 26px; margin-top: -4px;
+    background: var(--fg); color: var(--ink); font-size: 9px; font-weight: 700;
+    border-radius: 8px; padding: 0 5px; line-height: 14px;
+  }
+
+  /* sheet */
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.6); z-index: 2; }
+  .sheet {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+    background: var(--ink-2); border: 1px solid var(--line); border-bottom: 0;
+    border-radius: 20px 20px 0 0; padding: 14px 16px 34px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .grab { width: 40px; height: 4px; border-radius: 2px; background: var(--off); margin: 0 auto 2px; }
+  .sheet h3 { font-size: 14px; font-weight: 700; }
+  .field label { display: block; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin-bottom: 5px; }
+  .input {
+    background: var(--ink); border: 1px solid var(--line); border-radius: 7px;
+    padding: 10px 11px; font-size: 12.5px; color: var(--fg); font-family: var(--mono);
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+  .input .ph { color: var(--dim-2); }
+  .input.focus { border-color: rgba(240,239,236,.6); box-shadow: 0 0 0 2px rgba(240,239,236,.1); }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg span { flex: 1; text-align: center; font-size: 11px; padding: 8px 0; color: var(--dim); }
+  .seg .on { background: var(--fg); color: var(--ink); font-weight: 700; }
+  .switchrow { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--fg-soft); }
+  .sw { width: 36px; height: 20px; border-radius: 10px; background: var(--off); position: relative; flex: none; }
+  .sw.on { background: var(--fg); }
+  .sw i { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--ink); }
+  .sw.on i { left: auto; right: 2px; }
+  .probe {
+    display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--fg-soft);
+    border: 1px solid rgba(240,239,236,.3); border-radius: 7px; padding: 8px 11px;
+  }
+  .probe b { color: var(--fg); font-weight: 700; }
+  .cta {
+    background: var(--fg); color: var(--ink); font-weight: 700; font-size: 13px;
+    text-align: center; padding: 12px; border-radius: 9px;
+  }
+
+  /* terminal screen */
+  .panechips { flex: none; display: flex; gap: 6px; padding: 10px 12px 0; }
+  .pchip {
+    font-size: 11px; padding: 5px 10px; border-radius: 5px 5px 0 0;
+    color: var(--dim); background: #1a1a1a; border: 1px solid var(--line-soft); border-bottom: 0;
+  }
+  .pchip.on { background: var(--fg); color: var(--ink); font-weight: 700; }
+  .term {
+    flex: 1; background: #0d0d0d; margin: 0 12px; border: 1px solid var(--line-soft);
+    border-radius: 0 8px 8px 8px; padding: 12px; font-size: 10.5px; line-height: 1.62;
+    overflow: hidden; white-space: pre-wrap; word-break: break-all;
+  }
+  .p { color: var(--fg); font-weight: 700; }
+  .c { color: var(--fg); }
+  .d { color: var(--dim); }
+  .w { color: var(--fg-soft); }
+  .err { color: var(--fg); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+  .agentline {
+    flex: none; margin: 8px 12px 0; display: flex; align-items: center; gap: 8px;
+    font-size: 10.5px; color: var(--dim);
+    background: var(--ink-2); border: 1px solid var(--line-soft); border-radius: 7px; padding: 7px 10px;
+  }
+  .agentline b { color: var(--fg); font-weight: 700; }
+  .keysrow { flex: none; display: flex; gap: 6px; padding: 8px 12px 0; }
+  .key {
+    flex: 1; text-align: center; font-size: 10.5px; color: var(--fg-soft);
+    background: var(--ink-3); border: 1px solid var(--line); border-radius: 6px; padding: 7px 0;
+  }
+  .inputbar { flex: none; display: flex; gap: 8px; padding: 8px 12px 6px; align-items: center; }
+  .inputbar .input { flex: 1; }
+  .send {
+    width: 38px; height: 38px; flex: none; border-radius: 8px; background: var(--fg);
+    color: var(--ink); display: flex; align-items: center; justify-content: center; font-weight: 700;
+  }
+
+  /* pairing */
+  .pairwrap { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 0 24px; text-align: center; }
+  .qrframe {
+    width: 190px; height: 190px; border-radius: 14px; border: 1px dashed rgba(240,239,236,.4);
+    display: flex; align-items: center; justify-content: center; position: relative;
+    background: rgba(240,239,236,.03);
+  }
+  .qr { display: grid; grid-template-columns: repeat(9, 12px); grid-auto-rows: 12px; gap: 2px; }
+  .qr i { background: var(--off); border-radius: 1px; }
+  .qr i.on { background: var(--fg); }
+  .pairhint { font-size: 11px; color: var(--dim); line-height: 1.7; }
+  .pairhint code { color: var(--fg); }
+  .manual { font-size: 11px; color: var(--fg-soft); text-decoration: underline; text-underline-offset: 3px; }
+
+  /* ── architecture / plan ─────────────────── */
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
+  .panel {
+    background: var(--ink-2); border: 1px solid var(--line-soft); border-radius: 10px; padding: 20px;
+  }
+  .panel h3 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--fg); margin-bottom: 14px; font-weight: 700; }
+  .panel pre {
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.7; color: var(--fg-soft);
+    overflow-x: auto;
+  }
+  .panel pre .hl { color: var(--fg); font-weight: 700; }
+  .panel pre .dm { color: var(--dim-2); }
+  .panel ul { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+  .panel li { font-size: 12px; color: var(--fg-soft); display: flex; gap: 10px; }
+  .panel li .m { color: var(--fg); font-weight: 700; flex: none; width: 30px; }
+  .panel li p { color: var(--dim); font-size: 11px; margin-top: 2px; }
+  .panel li code { color: var(--fg); }
+
+  footer { margin-top: 56px; font-size: 11px; color: var(--dim-2); display: flex; gap: 16px; flex-wrap: wrap; }
+</style>
+
+<div class="wrap">
+  <div class="eyebrow"><b>herdr-mx</b> · mobile client · v5 · 소스 실측 기반 · 2026-08-22</div>
+  <h1>herdr mobile<span class="cursor"></span></h1>
+  <p class="tagline">herdr와 <em>똑같은 구조</em>를 폰으로. 리모트를 노드로 추가하면 각 노드의 스페이스가 보이고, 스페이스 안의 <em>pane 하나하나가 터미널</em>이다. <em>agents</em>는 pane들 위의 논리 뷰.</p>
+  <div class="hier">
+    <span><span class="lb">physical</span>remote ▸ space ▸ <b>pane (= terminal)</b> <span style="color:var(--dim-2)">— tab은 pane 그룹핑</span></span>
+    <span><span class="lb">logical&nbsp;&nbsp;</span>agents = pane들의 상태 오버레이 <b>(별도 뷰)</b> <span style="color:var(--dim-2)">— herdr 사이드바 대응</span></span>
+    <span><span class="lb">surface&nbsp;&nbsp;</span>pane 뷰 = <b>ClientLaunchMode::TerminalAttach</b> (이미 존재) — zoom 아님 <span style="color:var(--dim-2)">(zoom은 Tab 공유·세션 영속 → 폰이 데스크톱을 줌시킴)</span></span>
+  </div>
+  <div class="chips">
+    <span class="chip">role <b>herdr client for mobile</b> — 기존 client → server 구조 그대로</span>
+    <span class="chip">stack <b>Expo · React Native</b> · repo <b>herdr-mx/mobile/</b></span>
+    <span class="chip">transport <b>embedded ssh (native module)</b> — 기존 브리지 2종 무수정 재사용</span>
+    <span class="chip">frames <b>bincode v2 셀 그리드</b> — ANSI 아님 → <b>xterm.js 불필요</b></span>
+    <span class="chip">server <b>수정 5건</b> (전부 국소) — 게이트는 transport가 아니라 attach 정리</span>
+  </div>
+
+  <section>
+    <div class="sec-label"><span>Drill-down — 01 pair → 02 nodes → 03 add remote → 04 spaces → 05 panes → 06 terminal&nbsp;&nbsp;·&nbsp;&nbsp;07 agents = 논리 뷰 (bottom nav)</span><span>가로 스크롤 →</span></div>
+    <div class="rail-clip"><div class="rail">
+
+      <!-- ── 01 PAIR ─────────────────────────── -->
+      <div class="board">
+        <div class="step"><span class="no">01</span><span class="nm">scan</span><span class="sub">add remote 편의 · 첫 실행</span></div>
+        <div class="phone"><div class="screen">
+          <div class="notch"></div>
+          <div class="statusbar"><span>9:41</span><span>􀙇 􀛨</span></div>
+          <div class="pairwrap">
+            <div class="qrframe"><div class="qr">
+              <i class="on"></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i class="on"></i>
+              <i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i>
+              <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i><i class="on"></i>
+              <i></i><i></i><i></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i>
+              <i class="on"></i><i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i>
+              <i></i><i class="on"></i><i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i><i></i><i></i>
+              <i class="on"></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i>
+              <i class="on"></i><i></i><i class="on"></i><i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i><i class="on"></i>
+              <i class="on"></i><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i>
+            </div></div>
+            <div class="pairhint">데스크톱 herdr 사이드바에서<br>노드(local/remote) 우클릭 → <code>show qr</code><br>스캔하면 add remote가 미리 채워진다</div>
+            <span class="manual">수동으로 추가</span>
+          </div>
+          <div class="homebar"><i></i></div>
+        </div></div>
+        <div class="note">
+          QR 발급 = <span class="k">herdr client 기능</span> (사이드바 컨텍스트 메뉴 신규) — <b>서버 기능 아님</b><br>
+          페이로드 = {name, ssh target, session…} → 03 시트 프리필<br>
+          인증은 ssh 그대로 (데스크톱 <code>--remote</code>와 동일) — 신규 페어링 프로토콜 없음
+        </div>
+      </div>
+
+      <div class="joint">→</div>
+
+      <!-- ── 02 NODES ────────────────────────── -->
+      <div class="board">
+        <div class="step"><span class="no">02</span><span class="nm">nodes</span><span class="sub">리모트 = 노드 리스트</span></div>
+        <div class="phone"><div class="screen">
+          <div class="notch"></div>
+          <div class="statusbar"><span>9:41</span><span>􀙇 􀛨</span></div>
+          <div class="appbar">
+            <span class="logo">herdr</span><span class="crumb">/ nodes</span>
+            <span class="sp"></span>
+            <span class="icnbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+          </div>
+          <div class="body">
+            <div class="listlabel">hub</div>
+            <div class="rowcard">
+              <div class="r1"><span class="dot ok"></span><span class="nm">fable-m5max</span><span class="sp"></span><span class="meta">local</span><span class="chev">›</span></div>
+              <div class="meta">4 spaces · 11 panes · <b>3 working</b></div>
+            </div>
+            <div class="listlabel">remotes</div>
+            <div class="rowcard active">
+              <div class="r1"><span class="dot working"></span><span class="nm">iq-64</span><span class="sp"></span><span class="chev">›</span></div>
+              <div class="meta">z@iq-64 · 4 spaces · 9 panes · <b>2 working · 1 blocked</b></div>
+            </div>
+            <div class="rowcard">
+              <div class="r1"><span class="dot ok"></span><span class="nm">work-m16</span><span class="sp"></span><span class="chev">›</span></div>
+              <div class="meta">z@macmini · 2 spaces · 3 panes · idle</div>
+            </div>
+            <div class="rowcard">
+              <div class="r1"><span class="dot blocked"></span><span class="nm">blade-4090</span><span class="sp"></span><span class="chev">›</span></div>
+              <div class="meta">reconnecting… · last seen 2m ago</div>
+            </div>
+            <div class="rowcard">
+              <div class="r1"><span class="dot off"></span><span class="nm">jump</span><span class="sp"></span><span class="meta">disabled</span></div>
+            </div>
+          </div>
+          <div class="fab">+ add remote</div>
+          <div class="bottomnav">
+            <span class="bn on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/></svg>nodes</span>
+            <span class="bn"><span class="cnt">1</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M6.7 7.4 10 10.2M17.3 7.4 14 10.2M6.7 16.6 10 13.8M17.3 16.6 14 13.8"/></svg>agents</span>
+          </div>
+          <div class="homebar"><i></i></div>
+        </div></div>
+        <div class="note">
+          폰 자체 remote registry — <b>multi-remote client와 동일 모델</b> (<code>RemoteRegistrySnapshot</code>)<br>
+          노드별 client+api 두 채널 연결 · 롤업 = spaces·panes 카운트 + agent 상태 합산<br>
+          bottom nav = <b>agents 논리 뷰</b> 진입
+        </div>
+      </div>
+
+      <div class="joint">→</div>
+
+      <!-- ── 03 ADD REMOTE ───────────────────── -->
+      <div class="board">
+        <div class="step"><span class="no">03</span><span class="nm">add remote</span><span class="sub">시트 · ssh 타깃 등록</span></div>
+        <div class="phone"><div class="screen">
+          <div class="notch"></div>
+          <div class="statusbar"><span>9:41</span><span>􀙇 􀛨</span></div>
+          <div class="appbar"><span class="logo">herdr</span><span class="crumb">/ nodes</span></div>
+          <div class="body">
+            <div class="rowcard"><div class="r1"><span class="dot ok"></span><span class="nm">fable-m5max</span></div></div>
+            <div class="rowcard"><div class="r1"><span class="dot working"></span><span class="nm">iq-64</span></div></div>
+          </div>
+          <div class="scrim"></div>
+          <div class="sheet">
+            <div class="grab"></div>
+            <h3>add remote</h3>
+            <div class="field"><label>name</label>
+              <div class="input">oudwood-512</div>
+            </div>
+            <div class="field"><label>ssh target</label>
+              <div class="input focus">mac@oudwood-512<span class="ph">|</span></div>
+            </div>
+            <div class="field"><label>keybindings</label>
+              <div class="seg"><span class="on">local</span><span>server</span></div>
+            </div>
+            <div class="switchrow"><span>auto-update to this client</span><span class="sw on"><i></i></span></div>
+            <div class="probe"><b>✓</b> reachable · herdr 0.34.1 · protocol 12 · 41ms</div>
+            <div class="cta">add node</div>
+          </div>
+          <div class="homebar"><i></i></div>
+        </div></div>
+        <div class="note">
+          <code class="k">remote.add</code> {name, target:{ssh}, keybindings, auto_update} — 01 QR 스캔 시 <b>프리필</b><br>
+          폰이 직접 ssh (embedded ssh) → <code>herdr remote-client-bridge</code> / <code>remote-api-bridge</code><br>
+          probe = 기존 브리지 프로브 그대로 · 프로토콜 mismatch면 auto-update 안내
+        </div>
+      </div>
+
+      <div class="joint">→</div>
+
+      <!-- ── 04 SPACES ───────────────────────── -->
+      <div class="board">
+        <div class="step"><span class="no">04</span><span class="nm">spaces</span><span class="sub">노드의 workspace 리스트</span></div>
+        <div class="phone"><div class="screen">
+          <div class="notch"></div>
+          <div class="statusbar"><span>9:41</span><span>􀙇 􀛨</span></div>
+          <div class="appbar">
+            <span class="back">‹ nodes</span>
+            <span class="ttl">iq-64</span><span class="dot working"></span>
+            <span class="sp"></span>
+            <span class="icnbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></span>
+          </div>
+          <div class="body">
+            <div class="rowcard active">
+              <div class="r1"><span class="nm">llmux</span><span class="sp"></span><span class="meta">4 panes</span><span class="chev">›</span></div>
+              <div class="meta">~/2lab.ai/llmux</div>
+              <div class="badges"><span class="bdg hi">● claude working</span><span class="bdg inv">◌ codex blocked</span></div>
+            </div>
+            <div class="rowcard">
+              <div class="r1"><span class="nm">herdr</span><span class="sp"></span><span class="meta">2 panes</span><span class="chev">›</span></div>
+              <div class="meta">~/2lab.ai/herdr</div>
+              <div class="badges"><span class="bdg">✓ build done</span></div>
+            </div>
+            <div class="rowcard">
+              <div class="r1"><span class="nm">eagle-eye</span><span class="sp"></span><span class="meta">1 pane</span><span class="chev">›</span></div>
+              <div class="meta">~/eagle-eye · worktree</div>
+              <div class="badges"><span class="bdg dim">idle</span></div>
+            </div>
+            <div class="rowcard">
+              <div class="r1"><span class="nm">soma-work</span><span class="sp"></span><span class="meta">2 panes</span><span class="chev">›</span></div>
+              <div class="meta">/opt/soma-work/dev</div>
+              <div class="badges"><span class="bdg hi">● 2 working</span></div>
+            </div>
+          </div>
+          <div class="homebar"><i></i></div>
+        </div></div>
+        <div class="note">
+          <code class="k">workspace.list</code> (해당 노드 bridge로 라우팅)<br>
+          카운트는 <b>pane 기준</b> · 상태 칩 = <code>events.subscribe</code> {pane.agent_status_changed}<br>
+          blocked = <b>반전 칩</b>(모노톤 최상위 강조) · worktree 뱃지 = provenance 필드
+        </div>
+      </div>
+
+      <div class="joint">→</div>
+
+      <!-- ── 05 PANES ────────────────────────── -->
+      <div class="board">
+        <div class="step"><span class="no">05</span><span class="nm">panes</span><span class="sub">스페이스의 pane = 터미널</span></div>
+        <div class="phone"><div class="screen">
+          <div class="notch"></div>
+          <div class="statusbar"><span>9:41</span><span>􀙇 􀛨</span></div>
+          <div class="appbar">
+            <span class="back">‹ iq-64</span>
+            <span class="ttl">llmux</span>
+            <span class="sp"></span>
+            <span class="icnbtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></span>
+          </div>
+          <div class="body">
+            <div class="listlabel tab">tab 1 · agents</div>
+            <div class="rowcard active">
+              <div class="r1"><span class="pid">1-1</span><span class="dot working"></span><span class="nm">claude</span><span class="sp"></span><span class="chev">›</span></div>
+              <div class="meta">└ <b>Running cargo nextest…</b> · 2m41s</div>
+            </div>
+            <div class="rowcard alert">
+              <div class="r1"><span class="pid">1-2</span><span class="dot blocked"></span><span class="nm">codex</span><span class="sp"></span><span class="bdg inv">blocked</span><span class="chev">›</span></div>
+              <div class="meta">└ <b>waiting for approval</b> — permission prompt · 4m</div>
+            </div>
+            <div class="rowcard">
+              <div class="r1"><span class="pid idle">1-3</span><span class="dot off"></span><span class="nm">shell</span><span class="sp"></span><span class="chev">›</span></div>
+              <div class="meta">└ ❯ _</div>
+            </div>
+            <div class="listlabel tab">tab 2 · logs</div>
+            <div class="rowcard">
+              <div class="r1"><span class="pid idle">2-1</span><span class="dot off"></span><span class="nm">tail</span><span class="sp"></span><span class="chev">›</span></div>
+              <div class="meta">└ tail -f llmux.log</div>
+            </div>
+          </div>
+          <div class="homebar"><i></i></div>
+        </div></div>
+        <div class="note">
+          <code class="k">tab.list</code> + <code class="k">pane.list</code> — tab은 섹션 헤더, <b>행 = pane</b> (herdr 동일 구조)<br>
+          pane id = herdr 표기 그대로 (<code>1-1</code>, <code>1-2</code>…) · 요약 줄 = <code>pane.read</code> {recent, lines:1}<br>
+          pane 탭하면 → 06 terminal
+        </div>
+      </div>
+
+      <div class="joint">→</div>
+
+      <!-- ── 06 TERMINAL ─────────────────────── -->
+      <div class="board">
+        <div class="step"><span class="no">06</span><span class="nm">terminal</span><span class="sub">pane 하나 = 터미널 하나</span></div>
+        <div class="phone"><div class="screen">
+          <div class="notch"></div>
+          <div class="statusbar"><span>9:41</span><span>􀙇 􀛨</span></div>
+          <div class="appbar">
+            <span class="back">‹ llmux</span>
+            <span class="ttl">1-1 · claude</span>
+            <span class="sp"></span>
+            <span class="meta">iq-64</span><span class="dot working"></span>
+          </div>
+          <div class="panechips"><span class="pchip on">1-1 claude</span><span class="pchip">1-2 codex</span><span class="pchip">1-3 shell</span></div>
+          <div class="term"><span class="p">❯</span> <span class="c">just check</span>
+<span class="d">cargo nextest run --locked …</span>
+<span class="w">    Starting</span> <span class="d">142 tests across 9 binaries</span>
+<span class="c">        PASS</span> <span class="d">[0.42s] api::schema round_trip</span>
+<span class="c">        PASS</span> <span class="d">[1.18s] remote::bridge probe_ok</span>
+<span class="w">──────────────────────────────</span>
+<span class="p">⏺</span> <span class="w">I'll fix the failing gate next —
+  reading src/api/server.rs:214</span>
+<span class="d">  ⎿ tool: Read(src/api/server.rs)</span>
+<span class="err">✗ clippy: unused import (1)</span>
+<span class="w">  editing… </span><span class="p">▍</span></div>
+          <div class="agentline"><span class="dot working"></span><b>claude</b> · working · 2m41s · esc to interrupt</div>
+          <div class="keysrow"><span class="key">esc</span><span class="key">⇥</span><span class="key">ctrl</span><span class="key">↑</span><span class="key">↓</span><span class="key">⌘V</span></div>
+          <div class="inputbar"><div class="input"><span class="ph">send input…</span></div><div class="send">↵</div></div>
+          <div class="homebar"><i></i></div>
+        </div></div>
+        <div class="note">
+          pane 탭 = <code class="k">AttachTerminal{terminal_id}</code> — 서버가 <code>render_terminal_virtual</code>로<br>
+          <b>그 pane만</b> 폰 크기로 렌더(AppState 우회, foreground 안 뺏음) <span class="k">headless.rs:2976</span><br>
+          입력 = <code class="k">InputEvents</code>(구조화 · 비-unix 클라이언트용, wire.rs:406) · 칩 전환엔 <b>S3 수정 필요</b>
+        </div>
+      </div>
+
+      <div class="joint alt">∥ 논리 뷰</div>
+
+      <!-- ── 07 AGENTS ───────────────────────── -->
+      <div class="board">
+        <div class="step"><span class="no lg">07</span><span class="nm">agents</span><span class="sub">pane들의 논리 뷰 · herdr 사이드바</span></div>
+        <div class="phone"><div class="screen">
+          <div class="notch"></div>
+          <div class="statusbar"><span>9:41</span><span>􀙇 􀛨</span></div>
+          <div class="appbar">
+            <span class="logo">herdr</span><span class="crumb">/ agents</span>
+            <span class="sp"></span>
+            <span class="meta">all nodes</span>
+          </div>
+          <div class="body">
+            <div class="listlabel tab"><span class="st b">blocked · 1</span></div>
+            <div class="rowcard alert">
+              <div class="r1"><span class="dot blocked"></span><span class="nm">codex</span><span class="sp"></span><span class="pid idle">1-2</span><span class="chev">›</span></div>
+              <div class="meta">iq-64 / llmux · <b>waiting for approval</b> · 4m</div>
+            </div>
+            <div class="listlabel tab"><span class="st">● working · 3</span></div>
+            <div class="rowcard">
+              <div class="r1"><span class="dot working"></span><span class="nm">claude</span><span class="sp"></span><span class="pid idle">1-1</span><span class="chev">›</span></div>
+              <div class="meta">iq-64 / llmux · Running cargo nextest… · 2m41s</div>
+            </div>
+            <div class="rowcard">
+              <div class="r1"><span class="dot working"></span><span class="nm">claude</span><span class="sp"></span><span class="pid idle">1-1</span><span class="chev">›</span></div>
+              <div class="meta">fable-m5max / zbrain · writing mockup html · 12s</div>
+            </div>
+            <div class="rowcard">
+              <div class="r1"><span class="dot working"></span><span class="nm">codex</span><span class="sp"></span><span class="pid idle">2-1</span><span class="chev">›</span></div>
+              <div class="meta">fable-m5max / soma-work · reviewing PR #91 · 1m03s</div>
+            </div>
+            <div class="listlabel tab"><span class="st d">✓ done · 2</span></div>
+            <div class="rowcard">
+              <div class="r1"><span class="dot ok"></span><span class="nm">build</span><span class="sp"></span><span class="pid idle">1-2</span><span class="chev">›</span></div>
+              <div class="meta">iq-64 / herdr · just check green · 5m ago</div>
+            </div>
+            <div class="rowcard">
+              <div class="r1"><span class="dot ok"></span><span class="nm">claude</span><span class="sp"></span><span class="pid idle">1-1</span><span class="chev">›</span></div>
+              <div class="meta">work-m16 / gtimeline · deploy done · 22m ago</div>
+            </div>
+          </div>
+          <div class="bottomnav">
+            <span class="bn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/></svg>nodes</span>
+            <span class="bn on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M6.7 7.4 10 10.2M17.3 7.4 14 10.2M6.7 16.6 10 13.8M17.3 16.6 14 13.8"/></svg>agents</span>
+          </div>
+          <div class="homebar"><i></i></div>
+        </div></div>
+        <div class="note">
+          <b>물리 트리를 걷지 않는다</b> — 전 노드 <code class="k">agent.list</code> 합산, blocked 최상단 정렬<br>
+          라이브 갱신 = <code class="k">events.subscribe</code> {pane.agent_status_changed}<br>
+          행 탭 → 해당 pane의 06 terminal로 <b>딥링크</b> (herdr 사이드바 클릭과 동일 의미)
+        </div>
+      </div>
+
+    </div></div>
+  </section>
+
+  <section>
+    <div class="sec-label"><span>Verified architecture — herdr 소스 실측 (feat/multi-remote-client)</span><span>모든 주장에 file:line</span></div>
+    <div class="grid2">
+      <div class="panel">
+        <h3>실제 구조</h3>
+        <pre>
+ <span class="hl">herdr client</span>
+   │  ① 화면 채널 <span class="dm">unix socket 0600 · 네트워크 리스너 없음</span>
+   │     <span class="dm">bincode v2 + u32-LE 길이접두 · PROTOCOL_VERSION=14</span>
+   │     <span class="dm">원격 = ssh fork →</span> herdr remote-client-bridge
+   │  ② 제어 채널 <span class="dm">newline JSON · 요청 1개당 연결 1개</span>
+   │     <span class="dm">원격 = ssh fork →</span> herdr remote-api-bridge
+   ▼
+ <span class="hl">herdr server</span> <span class="dm">(PTY 소유)</span>
+   <span class="hl">공유</span>  AppState 1개 — workspaces·tabs·panes·<span class="hl">zoom</span>·mode·view
+         <span class="hl">effective_size</span> = foreground 클라이언트 크기
+                          <span class="dm">→ 모든 PTY 크기를 구동</span>
+   <span class="hl">개별</span>  클라이언트별 size·encoding·delta baseline·
+         graphics cache·surface_mode·mode(App|TerminalAttach)
+
+ <span class="dm">렌더 = 공유 AppState 1개를 클라이언트 수만큼 각자 크기로 N회</span>
+ <span class="dm">(테스트가 이미 증명: headless.rs:5705 desktop 120x40 + phone 80x24)</span></pre>
+      </div>
+      <div class="panel">
+        <h3>이미 있어서 공짜 (서버 수정 0)</h3>
+        <ul>
+          <li><span class="m">✓</span><div><b>클라이언트별 프레임 크기</b> — 1x1까지 허용<p><code>clients.rs:204</code> render_targets · <code>headless.rs:5705</code> 테스트 · <code>client_transport.rs:29</code></p></div></li>
+          <li><span class="m">✓</span><div><b>모바일 TUI 크롬이 이미 구현됨</b> — 폭 ≤ 임계값이면 자동 전환<p>1047줄 <code>ui/mobile.rs</code>: 모바일 헤더 + 워크스페이스/탭/에이전트 스위처 · <code>ui.rs:288</code> · 기본 64</p></div></li>
+          <li><span class="m">✓</span><div><b>1-pane 모드가 이미 있음</b> — <code>TerminalAttach</code><p>AppState 우회 렌더 <code>headless.rs:2976</code> · foreground 안 뺏음 <code>headless.rs:2170</code> · 그 pane 리사이즈 락</p></div></li>
+          <li><span class="m">✓</span><div><b>비-unix 클라이언트용 구조화 입력</b><p><code>ClientMessage::InputEvents</code> <code>wire.rs:406</code> — 서버 arm은 Windows 게이트 아님 <code>headless.rs:2232</code></p></div></li>
+          <li><span class="m">✓</span><div><b>ssh 브리지 2종 무수정 재사용</b> — 순수 바이트 펌프<p><code>remote/unix.rs:480</code> · 원격 데몬 지연 기동 포함 <code>:504</code></p></div></li>
+          <li><span class="m">✓</span><div><b>코덱 참조 구현이 레포 안에 있음</b><p><code>tests/server_headless.rs:154-250</code> — 프레이밍 + bincode varint를 평문으로 손구현</p></div></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label"><span>반박된 가정 3건 — 계획을 바꾼 실측</span><span>3/3 refuted, confidence high</span></div>
+    <div class="grid2">
+      <div class="panel">
+        <h3>✗ "mobile mode = zoom 재사용"</h3>
+        <ul>
+          <li><span class="m">why</span><div><code>Tab.zoomed</code>는 <b>Tab에 달린 공유 bool</b> — 클라이언트별이 아님<p><code>workspace/tab.rs:42</code> · <code>ClientConnection</code>엔 zoom 필드 없음 <code>clients.rs:24</code></p></div></li>
+          <li><span class="m">→</span><div>폰이 줌하면 <b>데스크톱도 줌되고, 세션 스냅샷이 더러워지고, 서버 재시작 후에도 남는다</b><p><code>persist/snapshot.rs:388</code> · <code>restore.rs:635</code> · <code>actions.rs:1561</code> mark_session_dirty</p></div></li>
+          <li><span class="m">→</span><div><code>pane.zoom</code>은 먼저 <b>전역 포커스를 옮기고</b>, 단일 pane 탭에선 <b>거부</b>한다<p><code>actions.rs:1528</code> focus 먼저 · <code>actions.rs:1533</code> SinglePane 거부</p></div></li>
+          <li><span class="m">fix</span><div>zoom 대신 <b>TerminalAttach</b>를 pane 뷰 표면으로 쓴다 (위 ✓ 참조)</div></li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>✗ "폰이 붙어도 데스크톱은 그대로"</h3>
+        <ul>
+          <li><span class="m">why</span><div>App 클라이언트는 <b>연결되는 순간</b> foreground를 가져간다 (입력 전이 아니라 connect 시점)<p><code>headless.rs:2170</code> 무조건 대입</p></div></li>
+          <li><span class="m">→</span><div><code>effective_size</code> = 그 클라이언트 크기 <b>그대로</b> (min/max/교집합 없음) → 전 PTY 리사이즈<p><code>headless.rs:788</code> · <code>ui/panes.rs:110-226</code> · <b>백그라운드 탭까지</b> <code>ui.rs:265</code></p></div></li>
+          <li><span class="m">→</span><div>비-foreground로 남으면 데스크톱 크기 PTY를 <b>좌상단 크롭</b>해서 본다 (리플로우 아님)<p><code>pane/terminal.rs:1143</code></p></div></li>
+          <li><span class="m">fix</span><div>폰은 App으로 붙지 않는다 — <b>TerminalAttach만</b> 사용(연결·입력·리사이즈 전부 foreground 우회). 단 attach는 그 pane PTY를 폰 크기로 고정 <code>headless.rs:2040</code></div></li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>✗ "브리지 재사용 = 클라이언트 재사용"</h3>
+        <ul>
+          <li><span class="m">why</span><div>herdr는 <b>바이너리 전용 크레이트</b> — <code>src/lib.rs</code> 없음, <code>mod protocol</code> private<p><code>main.rs:69</code> · Cargo.toml에 <code>[lib]</code> 없음</p></div></li>
+          <li><span class="m">→</span><div>원격 절반(브리지)은 진짜 무수정 재사용이지만, <b>클라이언트 절반은 재구현</b>이다<p><code>main.rs:437</code> 디스패치 · <code>remote/unix.rs:1940</code> 커맨드 형태</p></div></li>
+          <li><span class="m">→</span><div>제어 채널은 여전히 필요 — 클라이언트 프로토콜엔 <b>"액션 실행" 메시지가 없다</b><p><code>wire.rs:328-427</code> 12개 변형 전부 확인 · <code>pane.zoom</code>·<code>workspace.focus</code>는 API 전용</p></div></li>
+          <li><span class="m">fix</span><div><b>두 채널 다 쓴다</b> — 터미널은 클라이언트 프로토콜, 내비게이션은 JSON API</div></li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>API 단독은 왜 안 되나</h3>
+        <ul>
+          <li><span class="m">1</span><div>출력 푸시가 <b>죽은 코드</b> — <code>EventKind::PaneOutputChanged</code>는 선언만 있고 <b>emit 사이트 0개</b><p>schema.rs:604 선언 · <code>grep</code> 결과 스키마 외 매칭 없음 · 구독 enum에도 없음</p></div></li>
+          <li><span class="m">2</span><div><code>pane.read</code>의 <code>revision</code>이 <b>0으로 하드코딩</b> → 변경 토큰 없이 전체 문자열 diff<p><code>app/api/panes.rs:638</code></p></div></li>
+          <li><span class="m">3</span><div>반환값에 <b>커서가 없다</b> — 터미널이 아니라 스냅샷<p><code>app/api/panes.rs:629</code> 필드 전부 확인</p></div></li>
+          <li><span class="m">4</span><div>연결 1개당 요청 1개 → 폴링마다 <b>ssh exec 채널 1개</b><p><code>api/server.rs:145</code> · <code>api/client.rs:57</code></p></div></li>
+          <li><span class="m">→</span><div>결론: API 단독 = 쓸만한 <b>읽기 전용 모니터</b>(M1로 출시 가치 있음), 터미널은 못 된다</div></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label"><span>Work plan — 서버(Rust) 5건 · 모바일(RN) 5건</span><span>전부 국소 수정, 재설계 없음</span></div>
+    <div class="grid2">
+      <div class="panel">
+        <h3>서버 수정 (herdr-mx, Rust)</h3>
+        <ul>
+          <li><span class="m">S1</span><div><b>attach 재부착 누수 수정</b> — <span class="hl">M2의 차단 요소</span><p><code>attach_terminal_client</code>가 <code>client.mode</code>를 덮어쓰면서 <b>이전 terminal의 owner·resize 락을 해제하지 않는다</b> (<code>headless.rs:2016-2044</code>, 해제는 <code>remove_client</code> <code>:1160</code>뿐). 폰에서 pane 전환하면 이전 pane 크기가 영구 동결. 국소 수정.</p></div></li>
+          <li><span class="m">S2</span><div><b><code>InputEvents</code>를 attach pane으로 라우팅</b><p><code>ClientInput</code>은 <code>apply_terminal_attach_input</code>으로 단락(<code>:2208</code>)하는데 <code>ClientInputEvents</code>엔 그 분기가 없어 앱 입력 경로로 샌다(<code>:2232</code>). 구조화 입력 + 1-pane 조합의 필수 수정.</p></div></li>
+          <li><span class="m">S3</span><div><b>읽기 전용 attach</b> (락·리사이즈 없음)<p>현재 attach는 배타적 — 2번째는 takeover 없으면 거부, takeover는 기존 클라이언트를 <code>ServerShutdown</code>으로 축출(<code>:1991-2013</code>). 폰이 데스크톱과 같은 pane을 보려면 비소유 경로가 필요. 없으면 takeover UX로 대체 가능.</p></div></li>
+          <li><span class="m">S4</span><div><b>프로토콜 버전 호환 범위</b> — <span class="hl">출시 전 필수</span><p><code>check_client_version</code>이 <b>양방향 완전일치</b>(<code>wire.rs:1115</code>, 현재 14). 앱스토어 바이너리는 서버가 15로 올라가는 순간 전부 벽돌. min/max 범위 필요.</p></div></li>
+          <li><span class="m">S5</span><div><b>foreground 옵트아웃 플래그</b> — App 표면을 쓸 때만<p>폰이 TerminalAttach만 쓰면 불필요(이미 우회). 나중에 herdr 자체 모바일 크롬(<code>ui/mobile.rs</code>)을 폰에서 쓰고 싶어지면 이게 선행 조건 + per-client <code>view</code>/<code>mode</code> 분리(<code>state.rs:1899</code>)라는 <b>깊은 작업</b>이 딸려온다. <b>초기 범위에서 제외.</b></p></div></li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>모바일 (herdr-mx/mobile, Expo RN)</h3>
+        <ul>
+          <li><span class="m">M1</span><div><b>native ssh 모듈</b> (iOS/Android) — 두 설계 공통 바닥<p>ssh 세션 1개 + exec 채널 N개. 데스크톱은 ControlMaster가 없어 요청마다 ssh 프로세스를 뜨우는데, <b>모바일이 오히려 더 나은 형태</b>가 된다(채널 다중화).</p></div></li>
+          <li><span class="m">M2</span><div><b>TS 와이어 코덱</b><p>u32-LE 길이접두 · bincode v2 varint(&lt;251=1B, 251=u16LE, 252=u32LE) · <b>raw deflate</b>(<code>inflateRaw</code>, zlib 아님) · FNV-1a 체크섬 + <code>RequestFullFrame</code> 복구 · packed-u32 색상 / u16 modifier 표. 참조 구현 = <code>tests/server_headless.rs:154</code>.</p></div></li>
+          <li><span class="m">M3</span><div><b>셀 그리드 렌더러</b> — <span class="hl">xterm.js 불필요</span><p>와이어가 이미 <code>FrameData{cells,width,height,cursor}</code> 셀 그리드다(<code>wire.rs:514</code>). ANSI가 아니라 <b>서버가 렌더한 화면</b>이라 RN 뷰/Skia로 직접 그린다. orca가 xterm webview를 쓴 건 orca 서버가 ANSI를 보내기 때문 — herdr에선 그 단계가 없다.</p></div></li>
+          <li><span class="m">M4</span><div><b>터치 → <code>ClientInputEvent</code></b><p>Key/Mouse/Paste 구조화 전송. 터치 픽셀을 <b>자기가 신고한 grid 좌표계</b>의 (column,row)로 변환 — 서버가 그 좌표로 히트테스트한다. 붙여넣기는 <code>MAX_INPUT_PAYLOAD</code> 아래로 청킹(초과 시 드롭이 아니라 <b>연결 종료</b>).</p></div></li>
+          <li><span class="m">M5</span><div><b>내비게이션 = JSON API</b><p><code>remote.*</code>/<code>workspace.list</code>/<code>tab.list</code>/<code>pane.list</code>/<code>agent.list</code> + <code>events.subscribe</code>(서버 100ms 폴). 리스트 3계층 + agents 논리 뷰는 전부 여기서 나온다. RN 네이티브 리스트로 그림 — herdr의 TUI 크롬을 쓰지 않는다.</p></div></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label"><span>Milestones — 각 단계가 단독으로 쓸모 있게</span></div>
+    <div class="grid2">
+      <div class="panel">
+        <h3>순서</h3>
+        <ul>
+          <li><span class="m">M1</span><div><b>읽기 전용 모니터 — 서버 수정 0</b><p>RN 스캐폴드 + native ssh + JSON API만. nodes→spaces→panes + agents 뷰 라이브, pane 미리보기는 <code>pane.read</code> 폴링. <b>이 단계만으로 출시 가치가 있다</b>(폰에서 에이전트 상태 감시).</p></div></li>
+          <li><span class="m">M2</span><div><b>터미널 — 서버 S1·S2 선행</b><p>와이어 코덱 + <code>TerminalAttach</code> + 셀 렌더러 + <code>InputEvents</code>. pane 하나가 진짜 터미널이 된다. S1 없이는 pane 전환이 이전 pane을 동결시킨다.</p></div></li>
+          <li><span class="m">M3</span><div><b>공존 — S3·S4</b><p>읽기 전용 attach(또는 takeover UX 확정) + 버전 호환 범위. 여기서부터 데스크톱과 폰이 같은 서버에 안전하게 공존한다.</p></div></li>
+          <li><span class="m">M4</span><div><b>add remote UX + 배포</b><p>데스크톱 사이드바 우클릭 <code>show qr</code>(herdr client 기능) → 폰 add remote 프리필 · 알림(blocked/done) · fastlane TestFlight(Teum 계정 재사용) + Android APK.</p></div></li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>받아들이는 비용 · 남은 결정</h3>
+        <ul>
+          <li><span class="m">cost</span><div>폰이 붙는 순간 <b>retained-PTY 고속 경로가 양쪽 다 꺼진다</b> — 렌더 타깃이 정확히 1개일 때만 매칭 <code>headless.rs:2705</code></div></li>
+          <li><span class="m">cost</span><div>attach 중인 pane의 PTY는 <b>폰 크기로 고정</b>되고 데스크톱은 그 pane을 크롭해서 본다 <code>headless.rs:2040</code> — S3로 완화</div></li>
+          <li><span class="m">cost</span><div>모바일엔 <b>원격 프로비저닝이 불가</b>(바이너리 시딩은 로컬 바이너리/번들/curl 셋 중 하나 필요) — herdr 선설치 요구 + 명확한 실패 메시지로 처리</div></li>
+          <li><span class="m">?</span><div><b>같은 pane을 폰·데스크톱이 동시에</b> — 읽기전용 attach(S3)를 만들 것인가, takeover UX로 갈 것인가</div></li>
+          <li><span class="m">?</span><div><b>herdr 자체 모바일 크롬</b>(<code>ui/mobile.rs</code> 1047줄)을 나중에 쓸 것인가 — 쓰려면 S5 + per-client view/mode 분리라는 깊은 작업</div></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>evidence: herdr feat/multi-remote-client @73f6f3ac — 7영역 병렬 트레이스 + 3주장 반박검증 (3/3 refuted)</span>
+    <span>·</span>
+    <span>channels: client protocol(bincode v2, PROTOCOL_VERSION=14) + socket-api(JSON) — 둘 다 unix socket, 원격은 ssh 브리지</span>
+    <span>·</span>
+    <span>palette/type: monotone — #101010 grayscale ramp · emphasis by inversion · JetBrains Mono</span>
+  </footer>
+</div>

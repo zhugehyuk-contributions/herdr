@@ -4,6 +4,7 @@ pub mod agents;
 pub mod common;
 pub mod events;
 pub mod integrations;
+pub mod mx;
 pub mod panes;
 pub mod plugins;
 pub mod response;
@@ -17,6 +18,7 @@ pub use agents::*;
 pub use common::*;
 pub use events::*;
 pub use integrations::*;
+pub use mx::*;
 pub use panes::*;
 pub use plugins::*;
 pub use response::*;
@@ -51,10 +53,28 @@ pub enum Method {
     ServerLiveHandoff(ServerLiveHandoffParams),
     #[serde(rename = "server.reload_config")]
     ServerReloadConfig(EmptyParams),
+    #[serde(rename = "server.ui_settings")]
+    ServerUiSettings(EmptyParams),
     #[serde(rename = "server.agent_manifests")]
     ServerAgentManifests(EmptyParams),
     #[serde(rename = "server.reload_agent_manifests")]
     ServerReloadAgentManifests(EmptyParams),
+    #[serde(rename = "remote.list")]
+    RemoteList(EmptyParams),
+    #[serde(rename = "remote.add")]
+    RemoteAdd(RemoteAddParams),
+    #[serde(rename = "remote.remove")]
+    RemoteRemove(RemoteRemoveParams),
+    #[serde(rename = "remote.rename")]
+    RemoteRename(RemoteRenameParams),
+    #[serde(rename = "remote.set_enabled")]
+    RemoteSetEnabled(RemoteSetEnabledParams),
+    #[serde(rename = "remote.set_auto_update")]
+    RemoteSetAutoUpdate(RemoteSetAutoUpdateParams),
+    #[serde(rename = "remote.set_session")]
+    RemoteSetSession(RemoteSetSessionParams),
+    #[serde(rename = "session.list")]
+    SessionList(EmptyParams),
     #[serde(rename = "notification.show")]
     NotificationShow(NotificationShowParams),
     #[serde(rename = "client.window_title.set")]
@@ -81,6 +101,8 @@ pub enum Method {
     WorkspaceReportMetadata(WorkspaceReportMetadataParams),
     #[serde(rename = "workspace.close")]
     WorkspaceClose(WorkspaceTarget),
+    #[serde(rename = "workspace.reorder")]
+    WorkspaceReorder(WorkspaceReorderParams),
     #[serde(rename = "worktree.list")]
     WorktreeList(WorktreeListParams),
     #[serde(rename = "worktree.create")]

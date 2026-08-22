@@ -370,11 +370,21 @@ impl App {
             return None;
         }
         let pane = self.pane_info(ws_idx, pane_id)?;
+        // #58: the display name of the tab this pane lives in, so the client can group panes into
+        // tabs and render tab names.
+        let tab_label = ws
+            .tabs
+            .iter()
+            .find(|tab| tab.panes.contains_key(&pane_id))
+            .map(|tab| tab.display_name());
         Some(crate::api::schema::AgentInfo {
             terminal_id: pane.terminal_id,
             name: terminal.agent_name.clone(),
+            // #58: carry the pane's manual rename so the client-rendered sidebar can show "pane name".
+            manual_label: terminal.manual_label.clone(),
             agent: pane.agent,
             title: pane.title,
+            tab_label,
             terminal_title: pane.terminal_title,
             terminal_title_stripped: pane.terminal_title_stripped,
             display_agent: pane.display_agent,

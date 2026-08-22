@@ -34,6 +34,8 @@ herdr status server
 herdr status client
 ```
 
+`herdr status` 还会打印一个 `sessions:` 表格,列出 herdr 配置目录下的每个会话(运行中和已停止的都包括),显示各会话的协议、兼容性和版本。当上面 `server:` 块所指的服务器就在其中时,用 `*` 标记它;不在其中时(`HERDR_SOCKET_PATH` 指向会话目录树之外),标题会去掉 `(* = active)`,不去承诺一个并不存在的标记。整个表格共用一份探测预算,所以运行中但不响应的会话会显示为 `unknown`,而不会把命令卡住。
+
 API schema 命令:
 
 ```bash
@@ -81,13 +83,15 @@ compinit
 ```bash
 herdr server
 herdr server stop
+herdr server live-handoff
+herdr live-handoff [--session <name>] [--json]
 herdr server reload-config
 herdr server agent-manifests [--json]
 herdr server update-agent-manifests [--json]
 herdr server reload-agent-manifests
 ```
 
-`herdr server` 显式运行无界面服务器,适合被监管或服务式的部署。`reload-config` 在不重启窗格的情况下应用可重载设置。`agent-manifests` 显示生效的智能体检测清单来源、缓存的远程版本和最近的远程更新结果。`update-agent-manifests` 立即拉取远程清单更新,重载到运行中的服务器,并打印更新后的清单状态;要原始状态响应就加 `--json`。`reload-agent-manifests` 在编辑本地覆盖后,把智能体检测清单重载到运行中的服务器。
+`herdr server` 显式运行无界面服务器,适合被监管或服务式的部署。`reload-config` 在不重启窗格的情况下应用可重载设置。`agent-manifests` 显示生效的智能体检测清单来源、缓存的远程版本和最近的远程更新结果。`update-agent-manifests` 立即拉取远程清单更新,重载到运行中的服务器,并打印更新后的清单状态;要原始状态响应就加 `--json`。`reload-agent-manifests` 在编辑本地覆盖后,把智能体检测清单重载到运行中的服务器。 `herdr server live-handoff` 把运行中服务器的实时窗格交接给由当前二进制启动的新服务器。`herdr live-handoff` 是它的顶层形式:先列出即将处理的会话,再对每个运行中的会话逐个执行同样的交接,最后打印 `N ok, N skipped, N failed` 汇总。以应用模式(`herdr --no-session`)运行的会话无法做实时交接,计为跳过而不是失败。只有真的有会话失败时才以非零码退出;`--session <name>` 指向不存在的会话时以 2 退出。`--session <name>` 只针对该会话,而环境里的会话上下文(`HERDR_SESSION`、`HERDR_SOCKET_PATH`)不会缩小范围,所以在窗格里运行它仍然覆盖整台机器。
 
 ## 通知
 

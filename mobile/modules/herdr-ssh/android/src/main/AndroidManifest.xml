@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Not from orca. The module dials a TCP socket; without this the app-level manifest merge is
+       the only thing granting it, and an Expo app that never made an HTTP request would not have. -->
+  <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

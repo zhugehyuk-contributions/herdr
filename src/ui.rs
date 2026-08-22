@@ -27,9 +27,10 @@ use self::dialogs::{
     render_open_existing_worktree_overlay, render_remove_worktree_overlay, render_rename_overlay,
 };
 use self::keybind_help::render_keybind_help_overlay;
+pub(crate) use self::menus::render_global_launcher_menu;
 use self::menus::{
-    render_context_menu, render_copy_mode_overlay, render_global_launcher_menu,
-    render_navigate_overlay, render_prefix_overlay, render_resize_overlay,
+    render_context_menu, render_copy_mode_overlay, render_navigate_overlay, render_prefix_overlay,
+    render_resize_overlay,
 };
 use self::mobile::{
     compute_mobile_header_hit_areas, is_mobile_width, mobile_switcher_max_scroll_for_height,
@@ -40,7 +41,7 @@ use self::navigator::render_navigator_overlay;
 pub(crate) use self::onboarding::onboarding_welcome_continue_rect;
 use self::onboarding::render_onboarding_overlay;
 pub(crate) use self::panes::popup_pane_rects;
-use self::panes::{render_empty, render_popup_pane, resize_popup_pane};
+use self::panes::{compute_pane_infos, render_empty, render_popup_pane, resize_popup_pane};
 pub(crate) use self::release_notes::{
     product_announcement_display_lines, release_notes_close_button_rect,
     release_notes_display_lines, release_notes_wrapped_line_count, PRODUCT_ANNOUNCEMENT_MODAL_SIZE,
@@ -52,9 +53,8 @@ pub(crate) use self::scrollbar::{
     scrollbar_offset_from_row, scrollbar_thumb_grab_offset, should_show_scrollbar,
 };
 use self::settings::render_settings_overlay;
-#[cfg(test)]
-pub(crate) use self::sidebar::workspace_drop_indicator_row;
-use self::sidebar::{render_sidebar, render_sidebar_collapsed};
+pub(crate) use self::sidebar::render_sidebar;
+pub(crate) use self::sidebar::render_sidebar_collapsed;
 use self::status::{
     copy_feedback_rect, render_config_diagnostic, render_copy_feedback, render_toast_notification,
     toast_notification_rect,
@@ -65,29 +65,54 @@ pub(crate) use self::tab_surface::{
 use self::tabs::render_tab_bar;
 pub(crate) use self::{
     dialogs::{
-        confirm_close_button_rects, confirm_close_popup_rect, new_linked_worktree_button_rects,
-        new_linked_worktree_inner_rect, open_existing_worktree_button_rects,
-        open_existing_worktree_inner_rect, open_existing_worktree_max_visible_rows,
-        open_existing_worktree_visible_start, remove_worktree_button_rects,
-        remove_worktree_popup_rect, rename_button_rects,
+        add_remote_button_rects, add_remote_popup_rect, client_menu_popup_rect_at,
+        client_menu_row_rect, confirm_close_button_rects, confirm_close_popup_rect,
+        confirm_close_workspace_button_rects, confirm_close_workspace_popup_rect,
+        confirm_delete_worktree_popup_rect, new_linked_worktree_button_rects,
+        new_linked_worktree_inner_rect, new_session_button_rects, new_session_popup_rect,
+        new_workspace_picker_button_rects, new_workspace_picker_popup_rect,
+        new_workspace_picker_row_rect, new_worktree_popup_rect,
+        open_existing_worktree_button_rects, open_existing_worktree_inner_rect,
+        open_existing_worktree_max_visible_rows, open_existing_worktree_visible_start,
+        remote_manage_confirm_button_rects, remote_manage_confirm_popup_rect,
+        remote_manage_popup_rect, remote_manage_row_rect, remove_worktree_button_rects,
+        remove_worktree_popup_rect, rename_button_rects, rename_workspace_button_rects,
+        rename_workspace_popup_rect, render_add_remote_overlay, render_client_menu_overlay,
+        render_confirm_close_workspace_overlay, render_confirm_delete_worktree_overlay,
+        render_new_session_overlay, render_new_workspace_picker_overlay,
+        render_new_worktree_overlay, render_remote_manage_overlay, render_rename_workspace_overlay,
+        render_session_picker_overlay, render_worktree_picker_overlay, session_picker_popup_rect,
+        session_picker_row_rect, worktree_picker_popup_rect, AddRemoteFieldView,
+        AddRemoteOverlayView, ClientMenuRowView, ClientMenuView, DestinationView,
+        RemoteManageRowView, RemoteStateGlyph, SessionPickerRowView, WorktreePickerRowView,
     },
     settings::{
         settings_button_rects, settings_popup_height, settings_show_primary_action,
         SETTINGS_POPUP_WIDTH,
     },
     sidebar::{
-        agent_entry_gap, agent_entry_height_in_body, agent_panel_body_rect, agent_panel_entries,
-        agent_panel_scroll_for_target, agent_panel_scroll_metrics, agent_panel_scrollbar_rect,
-        agent_panel_toggle_rect, all_agent_panel_entries, collapsed_sidebar_sections,
-        collapsed_sidebar_toggle_rect, compute_workspace_card_areas, expanded_sidebar_sections,
-        expanded_sidebar_toggle_rect, normalized_workspace_scroll, sidebar_section_divider_rect,
-        workspace_drop_slots, workspace_group_chevron_rect, workspace_list_entries,
-        workspace_list_entries_expanded, workspace_list_rect, workspace_list_scroll_metrics,
-        workspace_list_scrollbar_rect, workspace_parent_group_state, AgentPanelEntry,
-        WorkspaceListEntry,
+        agent_panel_body_rect, agent_panel_entries, agent_panel_entry_row_count,
+        agent_panel_scope_toggle_rect, agent_panel_scroll_for_target, agent_panel_scroll_metrics,
+        agent_panel_scrollbar_rect, agent_panel_toggle_rect, all_agent_panel_entries,
+        collapsed_sidebar_sections, collapsed_sidebar_toggle_rect, compute_workspace_card_areas,
+        compute_workspace_list_areas_full, expanded_sidebar_sections, expanded_sidebar_toggle_rect,
+        normalized_workspace_scroll, sidebar_section_divider_rect, workspace_drop_slots,
+        workspace_group_chevron_rect, workspace_list_entries, workspace_list_entries_expanded,
+        workspace_list_rect, workspace_list_scroll_metrics, workspace_list_scrollbar_rect,
+        workspace_parent_group_state, AgentPanelEntry, HostBannerArea, WorkspaceListEntry,
     },
 };
-
+// Test-only geometry oracles: after the #53 view-geometry refactor the production render/hit-test
+// path reads these rects from the view, so the helpers are referenced only by unit tests (in other
+// modules via `crate::ui::*`). Gated so they don't trip `dead_code`/`unused_imports` in the binary.
+#[cfg(test)]
+pub(crate) use self::{
+    dialogs::{
+        add_remote_inner_rect, client_menu_inner_rect_at, new_workspace_picker_inner_rect,
+        remote_manage_inner_rect,
+    },
+    sidebar::{host_drop_indicator_row, workspace_drop_indicator_row},
+};
 pub(crate) use self::{
     keybind_help::keybind_help_lines,
     mobile::{
@@ -104,6 +129,15 @@ use crate::app::{AppState, Mode};
 use crate::terminal::TerminalRuntimeRegistry;
 
 const COLLAPSED_WIDTH: u16 = 4; // num + space + dot + separator
+
+// Braille spinner frames — smooth rotation
+const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Map spinner_tick (incremented every frame at ~60fps) to a spinner frame.
+/// We want ~8 updates/sec so divide by 8.
+pub(super) fn spinner_frame(tick: u32) -> &'static str {
+    SPINNERS[(tick as usize / 8) % SPINNERS.len()]
+}
 
 /// Compute view geometry and reconcile pane sizes.
 /// Called before render to separate mutation from drawing.
@@ -153,6 +187,87 @@ pub(crate) fn compute_view_without_resizing_panes(
         false,
         crate::kitty_graphics::HostCellSize::default(),
     );
+}
+
+pub(crate) fn compute_embedded_content_view_with_cell_size(
+    app: &mut AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    area: Rect,
+    resize_panes: bool,
+    cell_size: crate::kitty_graphics::HostCellSize,
+) {
+    let has_tabs = app.active.and_then(|i| app.workspaces.get(i)).is_some();
+    let (tab_bar_rect, terminal_area) = if has_tabs && area.height > 1 {
+        let [tab_bar_rect, terminal_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+        (tab_bar_rect, terminal_area)
+    } else {
+        (Rect::default(), area)
+    };
+
+    let tab_bar_view = app
+        .active
+        .and_then(|i| app.workspaces.get(i))
+        .map(|ws| {
+            compute_tab_bar_view(
+                ws,
+                tab_bar_rect,
+                app.tab_scroll,
+                app.tab_scroll_follow_active,
+                app.mouse_capture,
+            )
+        })
+        .unwrap_or_default();
+    app.tab_scroll = tab_bar_view.scroll;
+
+    let split_borders = app
+        .active
+        .and_then(|i| app.workspaces.get(i))
+        .map(|ws| ws.layout.splits(terminal_area))
+        .unwrap_or_default();
+
+    let pane_infos = compute_pane_infos(
+        app,
+        terminal_runtimes,
+        terminal_area,
+        resize_panes,
+        cell_size,
+    );
+    if resize_panes {
+        resize_background_tab_panes_to_area(app, terminal_runtimes, terminal_area, cell_size);
+    }
+
+    let toast_hit_area = app
+        .toast
+        .as_ref()
+        .map(|toast| {
+            toast_notification_rect(
+                terminal_area,
+                toast,
+                app.config_diagnostic.is_some(),
+                toast.position.unwrap_or(app.toast_config.herdr.position),
+            )
+        })
+        .unwrap_or_default();
+
+    app.view = crate::app::ViewState {
+        layout: ViewLayout::Desktop,
+        sidebar_rect: Rect::default(),
+        workspace_card_areas: Vec::new(),
+        divider_rows: Vec::new(),
+        host_banner_areas: Vec::new(),
+        tab_bar_rect,
+        tab_hit_areas: tab_bar_view.tab_hit_areas,
+        tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
+        tab_scroll_right_hit_area: tab_bar_view.scroll_right_hit_area,
+        new_tab_hit_area: tab_bar_view.new_tab_hit_area,
+        terminal_area,
+        mobile_header_rect: Rect::default(),
+        mobile_menu_hit_area: Rect::default(),
+        toast_hit_area,
+        pane_infos,
+        split_borders,
+    };
 }
 
 fn resize_background_tab_panes_to_area(
@@ -308,6 +423,8 @@ fn compute_view_internal(
         layout: ViewLayout::Desktop,
         sidebar_rect: sidebar_area,
         workspace_card_areas,
+        divider_rows: Vec::new(),
+        host_banner_areas: Vec::new(),
         tab_bar_rect,
         tab_hit_areas: tab_bar_view.tab_hit_areas,
         tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
@@ -371,6 +488,8 @@ fn compute_mobile_view(
         layout: ViewLayout::Mobile,
         sidebar_rect: Rect::default(),
         workspace_card_areas: Vec::new(),
+        divider_rows: Vec::new(),
+        host_banner_areas: Vec::new(),
         tab_bar_rect: Rect::default(),
         tab_hit_areas: Vec::new(),
         tab_scroll_left_hit_area: Rect::default(),
@@ -398,10 +517,38 @@ pub fn render_with_runtime_registry(
     terminal_runtimes: &TerminalRuntimeRegistry,
     frame: &mut Frame,
 ) {
-    let tab_bar_area = app.view.tab_bar_rect;
+    let sidebar_area = app.view.sidebar_rect;
     let terminal_area = app.view.terminal_area;
 
-    render_navigation_chrome(app, terminal_runtimes, frame);
+    if app.view.layout == ViewLayout::Mobile {
+        render_mobile_header(app, terminal_runtimes, frame, app.view.mobile_header_rect);
+    } else if sidebar_area.width > 0 {
+        if app.sidebar_collapsed {
+            render_sidebar_collapsed(app, frame, sidebar_area);
+        } else {
+            render_sidebar(app, terminal_runtimes, frame, sidebar_area);
+        }
+    }
+    render_content_and_overlays(app, terminal_runtimes, frame, terminal_area, true);
+}
+
+pub(crate) fn render_embedded_content_with_runtime_registry(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    frame: &mut Frame,
+) {
+    render_content_and_overlays(app, terminal_runtimes, frame, app.view.terminal_area, false);
+}
+
+fn render_content_and_overlays(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    frame: &mut Frame,
+    terminal_area: Rect,
+    include_global_surfaces: bool,
+) {
+    let tab_bar_area = app.view.tab_bar_rect;
+
     if app.view.layout != ViewLayout::Mobile {
         render_tab_bar(app, frame, tab_bar_area);
     }
@@ -454,26 +601,13 @@ pub fn render_with_runtime_registry(
             render_open_existing_worktree_overlay(app, frame, frame.area())
         }
         Mode::ConfirmRemoveWorktree => render_remove_worktree_overlay(app, frame, frame.area()),
-        Mode::GlobalMenu => render_global_launcher_menu(app, frame),
+        Mode::GlobalMenu if include_global_surfaces => {
+            render_global_launcher_menu(app, frame, app.global_menu_rect())
+        }
+        Mode::GlobalMenu => {}
         Mode::KeybindHelp => render_keybind_help_overlay(app, frame),
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),
         Mode::Terminal => {}
-    }
-}
-
-fn render_navigation_chrome(
-    app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
-    frame: &mut Frame,
-) {
-    if app.view.layout == ViewLayout::Mobile {
-        render_mobile_header(app, terminal_runtimes, frame, app.view.mobile_header_rect);
-    } else if app.view.sidebar_rect.width > 0 {
-        if app.sidebar_collapsed {
-            render_sidebar_collapsed(app, frame, app.view.sidebar_rect);
-        } else {
-            render_sidebar(app, terminal_runtimes, frame, app.view.sidebar_rect);
-        }
     }
 }
 
@@ -569,7 +703,7 @@ fn rects_overlap(a: Rect, b: Rect) -> bool {
         && b.y < a.y.saturating_add(a.height)
 }
 
-fn dim_background(frame: &mut Frame, area: Rect) {
+pub(crate) fn dim_background(frame: &mut Frame, area: Rect) {
     let buf = frame.buffer_mut();
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {

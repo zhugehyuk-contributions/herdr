@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use crate::detect::{Agent, AgentState};
 use crate::layout::PaneId;
-use crate::terminal::{TerminalId, TerminalState};
+use crate::terminal::{TerminalId, TerminalState, WorkingDuration};
 
 use super::{Tab, Workspace};
 
@@ -11,24 +12,39 @@ pub struct PaneDetail {
     pub pane_id: PaneId,
     pub tab_idx: usize,
     pub tab_label: String,
-    pub label: String,
     pub pane_label: Option<String>,
+    pub label: String,
+    // Terminal titles feed the API surface (AgentInfo); the mx segments sidebar does not render
+    // them, so nothing reads these here yet (upstream-merge follow-up: title tokens).
+    #[allow(dead_code)]
     pub terminal_title: Option<String>,
+    #[allow(dead_code)]
     pub terminal_title_stripped: Option<String>,
     pub agent_label: String,
     pub agent_kind_label: Option<String>,
+    #[allow(dead_code)]
     pub agent: Option<Agent>,
     pub state: AgentState,
     pub seen: bool,
     pub last_agent_state_change_seq: Option<u64>,
     pub state_labels: HashMap<String, String>,
+    pub working_duration: Option<WorkingDuration>,
     pub tokens: HashMap<String, String>,
 }
 
 impl Tab {
-    fn pane_details(
+    pub fn has_working_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
+        self.panes.values().any(|pane| {
+            terminals
+                .get(&pane.attached_terminal_id)
+                .is_some_and(|terminal| terminal.state == AgentState::Working)
+        })
+    }
+
+    pub(crate) fn pane_details_at(
         &self,
         terminals: &HashMap<TerminalId, TerminalState>,
+        now: Instant,
         tab_idx: usize,
         tab_label: &str,
     ) -> Vec<PaneDetail> {
@@ -52,10 +68,8 @@ impl Tab {
                     pane_id: *id,
                     tab_idx,
                     tab_label: tab_label.to_string(),
+                    pane_label: terminal.manual_label.clone(),
                     label: agent_label.clone(),
-                    pane_label: terminal
-                        .effective_title()
-                        .or_else(|| terminal.manual_label.clone()),
                     terminal_title: terminal.terminal_title.clone(),
                     terminal_title_stripped: terminal.terminal_title_stripped(),
                     agent_label,
@@ -65,6 +79,7 @@ impl Tab {
                     seen: pane.seen,
                     last_agent_state_change_seq: terminal.last_agent_state_change_seq,
                     state_labels: presentation.state_labels,
+                    working_duration: terminal.working_duration_at(now),
                     tokens: terminal.metadata_tokens.values(),
                 })
             })
@@ -100,6 +115,14 @@ impl Workspace {
     }
 
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
+        self.pane_details_at(terminals, Instant::now())
+    }
+
+    pub(crate) fn pane_details_at(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+        now: Instant,
+    ) -> Vec<PaneDetail> {
         let multi_tab = self.tabs.len() > 1;
         self.tabs
             .iter()
@@ -108,7 +131,8 @@ impl Workspace {
                 let tab_label = self
                     .tab_display_name(tab_idx)
                     .unwrap_or_else(|| (tab_idx + 1).to_string());
-                tab.pane_details(terminals, tab_idx, &tab_label).into_iter()
+                tab.pane_details_at(terminals, now, tab_idx, &tab_label)
+                    .into_iter()
             })
             .map(|mut detail| {
                 if multi_tab {

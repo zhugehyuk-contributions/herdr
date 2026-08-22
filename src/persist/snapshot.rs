@@ -21,11 +21,23 @@ pub struct SessionSnapshot {
     pub active: Option<usize>,
     pub selected: usize,
     #[serde(default)]
+    pub agent_panel_scope: crate::app::state::AgentPanelScope,
+    #[serde(default)]
     pub sidebar_width: Option<u16>,
     #[serde(default)]
     pub sidebar_section_split: Option<f32>,
     #[serde(default)]
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    #[serde(default)]
+    pub remote_registry: crate::remote_registry::RemoteRegistrySnapshot,
+    /// #37: cumulative pane-id alias map (original spawn-time raw → current raw) carried across a
+    /// live handoff. An agent's `HERDR_PANE_ID` env is fixed at spawn; each handoff re-allocates
+    /// pane ids, so without persisting the prior aliases the original id stops resolving after the
+    /// SECOND id-changing handoff and every `pane.report_agent` then fails (`pane_not_found`),
+    /// dropping authoritative state. Persisting + composing this map keeps the original id resolving
+    /// across any number of handoffs. `#[serde(default)]` → older snapshots restore as today.
+    #[serde(default)]
+    pub pane_id_aliases: std::collections::HashMap<u32, u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -179,11 +191,17 @@ struct RawSessionSnapshot {
     #[serde(default)]
     selected: usize,
     #[serde(default)]
+    agent_panel_scope: crate::app::state::AgentPanelScope,
+    #[serde(default)]
     sidebar_width: Option<u16>,
     #[serde(default)]
     sidebar_section_split: Option<f32>,
     #[serde(default)]
     collapsed_space_keys: std::collections::HashSet<String>,
+    #[serde(default)]
+    remote_registry: crate::remote_registry::RemoteRegistrySnapshot,
+    #[serde(default)]
+    pane_id_aliases: std::collections::HashMap<u32, u32>,
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -196,9 +214,12 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
             .collect::<Result<Vec<_>, _>>()?,
         active: raw.active,
         selected: raw.selected,
+        agent_panel_scope: raw.agent_panel_scope,
         sidebar_width: raw.sidebar_width,
         sidebar_section_split: raw.sidebar_section_split,
         collapsed_space_keys: raw.collapsed_space_keys,
+        remote_registry: raw.remote_registry,
+        pane_id_aliases: raw.pane_id_aliases,
     })
 }
 
@@ -258,9 +279,12 @@ pub fn capture(
     terminal_runtimes: &TerminalRuntimeRegistry,
     active: Option<usize>,
     selected: usize,
+    agent_panel_scope: crate::app::state::AgentPanelScope,
     sidebar_width: u16,
     sidebar_section_split: f32,
     collapsed_space_keys: std::collections::HashSet<String>,
+    remote_registry: crate::remote_registry::RemoteRegistrySnapshot,
+    pane_id_aliases: &std::collections::HashMap<u32, crate::layout::PaneId>,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
@@ -270,9 +294,17 @@ pub fn capture(
             .collect(),
         active,
         selected,
+        agent_panel_scope,
         sidebar_width: Some(sidebar_width),
         sidebar_section_split: Some(sidebar_section_split),
         collapsed_space_keys,
+        remote_registry,
+        // #37: lower the app's live alias map (orig spawn raw -> current PaneId) to the wire form
+        // here, so every caller passes its `pane_id_aliases` directly instead of re-deriving this.
+        pane_id_aliases: pane_id_aliases
+            .iter()
+            .map(|(orig, current)| (*orig, current.raw()))
+            .collect(),
     }
 }
 
@@ -538,9 +570,12 @@ mod tests {
             terminal_runtimes,
             state.active,
             state.selected,
+            state.agent_panel_scope,
             state.sidebar_width,
             state.sidebar_section_split,
             state.collapsed_space_keys.clone(),
+            state.remote_registry.clone(),
+            &state.pane_id_aliases,
         )
     }
 
@@ -598,13 +633,16 @@ mod tests {
     #[test]
     fn round_trip_empty_session() {
         let snap = SessionSnapshot {
+            pane_id_aliases: std::collections::HashMap::new(),
             version: SNAPSHOT_VERSION,
             workspaces: vec![],
             active: None,
             selected: 0,
+            agent_panel_scope: Default::default(),
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            remote_registry: crate::remote_registry::RemoteRegistrySnapshot::default(),
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored = parse_snapshot(&json).unwrap();
@@ -612,6 +650,59 @@ mod tests {
         assert_eq!(restored.active, None);
         assert_eq!(restored.sidebar_width, Some(26));
         assert_eq!(restored.sidebar_section_split, Some(0.5));
+    }
+
+    #[test]
+    fn old_snapshot_defaults_remote_registry_to_empty() {
+        let json = serde_json::json!({
+            "version": SNAPSHOT_VERSION,
+            "workspaces": [],
+            "active": null,
+            "selected": 0
+        })
+        .to_string();
+
+        let restored = parse_snapshot(&json).unwrap();
+
+        assert!(restored.remote_registry.remotes.is_empty());
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_remote_registry_definitions_only() {
+        let snap = SessionSnapshot {
+            pane_id_aliases: std::collections::HashMap::new(),
+            version: SNAPSHOT_VERSION,
+            workspaces: vec![],
+            active: None,
+            selected: 0,
+            agent_panel_scope: crate::app::state::AgentPanelScope::CurrentWorkspace,
+            sidebar_width: Some(26),
+            sidebar_section_split: Some(0.5),
+            collapsed_space_keys: std::collections::HashSet::new(),
+            remote_registry: crate::remote_registry::RemoteRegistrySnapshot {
+                remotes: vec![crate::remote_registry::RemoteDefinitionSnapshot {
+                    id: "remote-x".into(),
+                    name: "x".into(),
+                    target: crate::remote_registry::RemoteTargetSnapshot::Ssh {
+                        target: "user@x".into(),
+                        args: Vec::new(),
+                    },
+                    session: None,
+                    keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Local,
+                    disabled: false,
+                    auto_update: false,
+                }],
+            },
+        };
+
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(!json.contains("connection_state"));
+        assert!(!json.contains("socket"));
+
+        let restored = parse_snapshot(&json).unwrap();
+
+        assert_eq!(restored.remote_registry.remotes.len(), 1);
+        assert_eq!(restored.remote_registry.remotes[0].name, "x");
     }
 
     #[test]
@@ -663,6 +754,7 @@ mod tests {
         );
 
         let snap = SessionSnapshot {
+            pane_id_aliases: std::collections::HashMap::new(),
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("wproj".to_string()),
                 custom_name: Some("pi-mono".to_string()),
@@ -689,10 +781,12 @@ mod tests {
             }],
             active: Some(0),
             selected: 0,
+            agent_panel_scope: Default::default(),
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
             version: SNAPSHOT_VERSION,
+            remote_registry: crate::remote_registry::RemoteRegistrySnapshot::default(),
         };
 
         let json = serde_json::to_string_pretty(&snap).unwrap();
@@ -1224,6 +1318,7 @@ mod tests {
         );
 
         let snap = SessionSnapshot {
+            pane_id_aliases: std::collections::HashMap::new(),
             version: SNAPSHOT_VERSION,
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("test-ws".to_string()),
@@ -1251,9 +1346,11 @@ mod tests {
             }],
             active: Some(0),
             selected: 0,
+            agent_panel_scope: Default::default(),
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            remote_registry: crate::remote_registry::RemoteRegistrySnapshot::default(),
         };
 
         let json = serde_json::to_string(&snap).unwrap();

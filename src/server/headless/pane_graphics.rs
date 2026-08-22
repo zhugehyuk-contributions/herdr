@@ -470,7 +470,7 @@ impl HeadlessServer {
 
         let render_targets = render_targets(&self.clients, self.foreground_client_id);
         let mut app_view_size = None;
-        for (_, terminal_size, _, _, mode) in &render_targets {
+        for (_, terminal_size, _, _, mode, _) in &render_targets {
             if !matches!(mode, ClientConnectionMode::App) {
                 continue;
             }
@@ -483,7 +483,7 @@ impl HeadlessServer {
         let mut deferred = false;
         let mut prepared = Vec::new();
 
-        for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
+        for (client_id, (cols, rows), cell_size, _is_foreground, mode, _) in render_targets {
             if !matches!(mode, ClientConnectionMode::App) {
                 continue;
             }

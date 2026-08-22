@@ -15,7 +15,73 @@ static INIT: Once = Once::new();
 static CLEANUP_GUARD: OnceLock<CleanupGuard> = OnceLock::new();
 const WATCHDOG_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const RUNTIME_OWNER_MARKER: &str = ".herdr-test-owner-pid";
-pub const CURRENT_PROTOCOL: u32 = 20;
+pub const CURRENT_PROTOCOL: u32 = 21;
+
+/// Length of the wire-ABI prelude (`src/protocol/abi.rs` `WIRE_ABI_PRELUDE_LEN`).
+pub const WIRE_ABI_PRELUDE_LEN: usize = 28;
+
+/// The 28 prelude bytes every client must send before its `Hello`, read out of the generated
+/// corpus.
+///
+/// Hand-rolling them is not an option: the block ends in a sha256 over the production wire types
+/// (`abi::wire_schema_fingerprint`), which no test can derive by hand — and hard-coding the digest
+/// would put a second, silently-stale copy of the ABI in the test suite. `fixtures.json` is
+/// generated from `WirePrelude::local().encode()` and kept current by `fixtures_are_current`, so
+/// reading it here means these tests speak the same ABI the server enforces, or fail loudly.
+pub fn wire_abi_prelude() -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/next/protocol/fixtures.json");
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let document: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|err| panic!("{} is not valid JSON: {err}", path.display()));
+    let hex = document["vectors"]
+        .as_array()
+        .expect("fixtures.json has a vectors array")
+        .iter()
+        .find(|vector| vector["name"] == "wire_abi_prelude")
+        .and_then(|vector| vector["framed_hex"].as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "{} has no wire_abi_prelude vector; regenerate it with \
+                 HERDR_UPDATE_WIRE_FIXTURES=1",
+                path.display()
+            )
+        })
+        .to_owned();
+    assert!(hex.len().is_multiple_of(2), "prelude hex has an odd length");
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("valid hex"))
+        .collect();
+    assert_eq!(bytes.len(), WIRE_ABI_PRELUDE_LEN);
+    bytes
+}
+
+/// Sends the wire-ABI prelude. Must precede the `Hello` frame on every client connection.
+pub fn send_wire_abi_prelude(stream: &mut UnixStream) -> Result<(), String> {
+    stream
+        .write_all(&wire_abi_prelude())
+        .map_err(|e| format!("write wire-ABI prelude: {e}"))?;
+    stream.flush().map_err(|e| format!("flush prelude: {e}"))
+}
+
+/// Reads the server's prelude and asserts it is the one this build speaks.
+///
+/// Consuming it is not optional: it sits ahead of the `Welcome` frame, so a reader that skipped it
+/// would take the magic for a length prefix.
+pub fn expect_wire_abi_prelude(stream: &mut UnixStream) -> Result<(), String> {
+    let mut buf = [0u8; WIRE_ABI_PRELUDE_LEN];
+    stream
+        .read_exact(&mut buf)
+        .map_err(|e| format!("read server wire-ABI prelude: {e}"))?;
+    if buf.as_slice() != wire_abi_prelude().as_slice() {
+        return Err(format!(
+            "server announced a different wire ABI than this test speaks: {:02x?}",
+            buf
+        ));
+    }
+    Ok(())
+}
 
 pub fn register_spawned_herdr_pid(pid: Option<u32>) {
     let Some(pid) = pid else {
@@ -172,6 +238,23 @@ pub fn decode_varint_u32(payload: &[u8], offset: usize) -> Result<(u32, usize), 
     }
 }
 
+/// issue #13: frames are deflate-wrapped in `ServerMessage::Compressed` (variant 11). Given a read
+/// `(variant, payload_after_variant)`, return the effective frame `(variant, payload)` — inflating
+/// the inner message when compressed, or passing through otherwise. Lets frame-reading tests stay
+/// variant-based without each re-implementing inflate.
+pub fn inflate_compressed_frame(variant: u32, payload: &[u8]) -> (u32, Vec<u8>) {
+    if variant != 11 {
+        return (variant, payload.to_vec());
+    }
+    // payload is a bincode `Vec<u8>`: varint length, then the deflate bytes.
+    let (len, consumed) = decode_varint_u32(payload, 0).expect("compressed payload length");
+    let bytes = &payload[consumed..consumed + len as usize];
+    let raw = miniz_oxide::inflate::decompress_to_vec(bytes).expect("inflate compressed frame");
+    let (inner_variant, inner_consumed) =
+        decode_varint_u32(&raw, 0).expect("inner message variant");
+    (inner_variant, raw[inner_consumed..].to_vec())
+}
+
 fn encode_varint_enum(variant_idx: u32, fields: &[&[u8]]) -> Vec<u8> {
     let mut buf = encode_varint_u32(variant_idx);
     for field in fields {
@@ -226,6 +309,47 @@ pub fn client_handshake(
     cols: u16,
     rows: u16,
 ) -> Result<(u32, Option<String>), String> {
+    client_handshake_with(
+        stream,
+        version,
+        cols,
+        rows,
+        RENDER_ENCODING_SEMANTIC_FRAME,
+        CLIENT_LAUNCH_MODE_APP,
+    )
+}
+
+/// `RenderEncoding::SemanticFrame` (`src/protocol/wire.rs:55`).
+pub const RENDER_ENCODING_SEMANTIC_FRAME: u32 = 0;
+/// `RenderEncoding::TerminalAnsi` (`src/protocol/wire.rs:57`).
+pub const RENDER_ENCODING_TERMINAL_ANSI: u32 = 1;
+/// `ClientLaunchMode::App` (`src/protocol/wire.rs:82`).
+pub const CLIENT_LAUNCH_MODE_APP: u32 = 0;
+/// `ClientLaunchMode::TerminalAttach` (`src/protocol/wire.rs:84`).
+pub const CLIENT_LAUNCH_MODE_TERMINAL_ATTACH: u32 = 1;
+/// `ClientMessage::ObserveTerminal` wire tag, frozen by
+/// `client_message_wire_tags_preserve_protocol_15_order` (`src/protocol/wire.rs:1448`).
+pub const CLIENT_MESSAGE_OBSERVE_TERMINAL: u32 = 12;
+/// `ClientMessage::RetargetTerminal` (M6/B6). Appended at the enum tail; 0..13 are frozen by
+/// `client_message_wire_tags_preserve_protocol_15_order`.
+pub const CLIENT_MESSAGE_RETARGET_TERMINAL: u32 = 14;
+/// `TerminalSessionMode::Observe` — a UNIT variant, so it is one byte and nothing follows it.
+pub const TERMINAL_SESSION_MODE_OBSERVE: u32 = 0;
+/// `TerminalSessionMode::Control { takeover }` — the tag byte plus the bool.
+pub const TERMINAL_SESSION_MODE_CONTROL: u32 = 1;
+/// `ServerMessage::Terminal` variant index (`src/protocol/wire.rs:886`).
+pub const SERVER_MESSAGE_TERMINAL: u32 = 13;
+
+/// Handshake with an explicit render encoding and launch mode so terminal-ANSI clients (the
+/// mobile/observe surface) can be exercised, not just the semantic-frame default.
+pub fn client_handshake_with(
+    stream: &mut UnixStream,
+    version: u32,
+    cols: u16,
+    rows: u16,
+    requested_encoding: u32,
+    launch_mode: u32,
+) -> Result<(u32, Option<String>), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| e.to_string())?;
@@ -238,15 +362,18 @@ pub fn client_handshake(
             &encode_varint_u16(rows),
             &encode_varint_u32(8),  // cell_width_px
             &encode_varint_u32(16), // cell_height_px
-            &encode_varint_u32(0),  // RenderEncoding::SemanticFrame
-            &encode_varint_u32(0),  // ClientKeybindings::Server
-            &encode_varint_u32(0),  // ClientLaunchMode::App
+            &encode_varint_u32(requested_encoding),
+            &encode_varint_u32(0), // ClientSurfaceMode::FullApp
+            &encode_varint_u32(0), // ClientKeybindings::Server
+            &encode_varint_u32(launch_mode),
         ],
     );
+    send_wire_abi_prelude(stream)?;
     let framed = frame_message(&hello_payload);
     stream.write_all(&framed).map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())?;
 
+    expect_wire_abi_prelude(stream)?;
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
     let len = u32::from_le_bytes(len_buf) as usize;
@@ -257,6 +384,44 @@ pub fn client_handshake(
     let mut payload = vec![0u8; len];
     stream.read_exact(&mut payload).map_err(|e| e.to_string())?;
     decode_welcome(&payload)
+}
+
+/// Sends `ClientMessage::ObserveTerminal { target }` (read-only terminal stream).
+pub fn send_observe_terminal(stream: &mut UnixStream, target: &str) -> Result<(), String> {
+    let mut buf = encode_varint_u32(CLIENT_MESSAGE_OBSERVE_TERMINAL);
+    buf.extend_from_slice(&encode_varint_u32(target.len() as u32));
+    buf.extend_from_slice(target.as_bytes());
+    let framed = frame_message(&buf);
+    stream
+        .write_all(&framed)
+        .map_err(|e| format!("write observe: {e}"))?;
+    stream.flush().map_err(|e| format!("flush observe: {e}"))?;
+    Ok(())
+}
+
+/// `ClientMessage::RetargetTerminal { target, mode }` — moves an established terminal session
+/// without reconnecting (M6/B6). `takeover` is `None` for observe, `Some(_)` for control.
+pub fn send_retarget_terminal(
+    stream: &mut UnixStream,
+    target: &str,
+    takeover: Option<bool>,
+) -> Result<(), String> {
+    let mut buf = encode_varint_u32(CLIENT_MESSAGE_RETARGET_TERMINAL);
+    buf.extend_from_slice(&encode_varint_u32(target.len() as u32));
+    buf.extend_from_slice(target.as_bytes());
+    match takeover {
+        None => buf.extend_from_slice(&encode_varint_u32(TERMINAL_SESSION_MODE_OBSERVE)),
+        Some(takeover) => {
+            buf.extend_from_slice(&encode_varint_u32(TERMINAL_SESSION_MODE_CONTROL));
+            buf.push(u8::from(takeover));
+        }
+    }
+    let framed = frame_message(&buf);
+    stream
+        .write_all(&framed)
+        .map_err(|e| format!("write retarget: {e}"))?;
+    stream.flush().map_err(|e| format!("flush retarget: {e}"))?;
+    Ok(())
 }
 
 pub fn read_server_message(stream: &mut UnixStream) -> Result<(u32, Vec<u8>), String> {
@@ -336,8 +501,14 @@ pub fn wait_for_message_variant(
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         match read_server_message(stream) {
-            Ok((got, _)) if got == variant => return Ok(true),
-            Ok(_) => continue,
+            // issue #13: a compressed frame (variant 11) inflates to its inner variant; match on that
+            // so callers waiting for a Frame (1) still see a deflate-wrapped one.
+            Ok((got, payload)) => {
+                let (got, _) = inflate_compressed_frame(got, &payload);
+                if got == variant {
+                    return Ok(true);
+                }
+            }
             Err(_) => continue,
         }
     }

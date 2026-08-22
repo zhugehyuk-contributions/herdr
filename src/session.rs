@@ -17,7 +17,9 @@ const MIN_SOCKET_TIMEOUT: Duration = Duration::from_millis(1);
 
 static EXPLICIT_SESSION_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct SessionInfo {
     pub name: String,
     pub default: bool,

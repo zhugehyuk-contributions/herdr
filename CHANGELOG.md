@@ -90,6 +90,25 @@
 - Host terminal appearance is re-queried when focus returns, keeping automatic light and dark themes current. (#2416, #2417)
 - The bundled and installable Herdr agent skill now matches this stable release's CLI and lifecycle behavior. (#2847)
 - `pane send-keys` and `agent send-keys` now preserve Shift when sending `shift+tab`, allowing agent permission modes to be cycled programmatically. (#1561, thanks @keinstn and @tomohisa)
+## [0.8.0-mx.1] - 2026-08-14
+
+Ships upstream herdr 0.8.0 plus the mx layer — see [DIVERGENCE.md](DIVERGENCE.md) for the full standing diff. First mx release on the upstream 0.8.0 base (PROTOCOL_VERSION 20; upstream highlights — bottom tab bar, pane scrollbar toggle, `herdr --skill`, Grok/Antigravity session restore, workspace drag-reorder, Apache-2.0 relicense — are listed under [0.8.0] below).
+
+### Changed
+- Rebased the mx layer onto upstream herdr 0.8.0 (129 upstream commits since 0.7.5).
+- Adopted upstream's workspace drop-target drag-reorder subsystem; the mx client host-reorder preview now maps onto upstream drop targets, including packed worktree groups.
+- Kept mx wire compatibility across the merge: upstream wire-enum variants that were inserted mid-enum moved to the enum tail so existing mx peers keep their exact bincode tags, frozen by protocol-20 golden-byte tests.
+
+## [0.7.5-mx.1] - 2026-08-05
+
+First stable herdr-mx release. Ships upstream herdr 0.7.5 plus the mx layer — see [DIVERGENCE.md](DIVERGENCE.md) for the full standing diff.
+
+### Added
+- Added mixed remote headless server support: the thin client can manage secondary local or SSH-backed Herdr servers from the sidebar, persist the remote registry on the main server, show combined workspace and agent summaries, route workspace creation/focus to the selected server, and keep secondary disconnects isolated from the main session.
+
+### Fixed
+- Fixed mixed remote client sidebar wheel scrolling so overflowed remote spaces can be reached and clicked.
+- Fixed SSH-backed mixed remote sidebar actions timing out too aggressively, so clicking remote spaces can route focus over slower remote API bridges.
 
 ## [0.8.0] - 2026-08-03
 
@@ -393,6 +412,36 @@
 - Tab identity is now preserved across restored sessions.
 - Idle panes now poll their PTY less frequently, reducing CPU use while sessions are inactive.
 - Captured pane URL clicks, including plugin link handlers, now use Ctrl-click on macOS too because captured terminal mouse reports do not expose Cmd-click separately from plain click. (#307)
+
+## [0.6.10-mx.3] - 2026-06-12
+
+### Fixed
+- `herdr server live-handoff` now works from channel-suffixed builds (mx/preview): the CLI defaulted the handoff version expectation to the bare crate version (`0.6.10`), so the import side — which reports its full build version (`0.6.10-mx.N`) — rejected its own handoff with `handoff stream closed while reading line`. The default now uses the full build version. Older CLIs can work around it with `--expected-version <full version>`.
+
+## [0.6.10-mx.2] - 2026-06-12
+
+### Changed
+- Every released binary is now a multi-platform "fat" bundle: each asset carries the other three platforms (macOS/Linux × x86_64/aarch64) as compressed appended data, so a brew-, mise-, or directly-installed herdr-mx can seed a different-OS remote offline at exact version parity with `herdr --remote <host>` — no release download needed on the remote. Inspect with `herdr bundle list`. Assets grow from ~14 MB to ~30 MB.
+
+## [0.6.10-mx.1] - 2026-06-11
+
+First release of **herdr-mx** — a friendly downstream distribution of [herdr](https://github.com/ogulcancelik/herdr) that tracks every upstream release and adds a full **multi-remote client**. All credit for herdr itself goes upstream; herdr-mx exists so you can run multi-remote today, and retires the day it lands upstream. This release contains everything in upstream herdr v0.6.10, plus:
+
+### Added
+- Multi-remote client: manage secondary local or SSH-backed Herdr servers from one sidebar — combined workspace and agent summaries across hosts, workspace creation/focus routed to the selected server, per-host context menus (add space / disable / disconnect / rename), and secondary disconnects isolated from the main session.
+- Generic SSH add-remote with non-interactive auto-install and provisioning progress, including offline cross-OS seeding: an opt-in multi-platform "fat" build (`just bundle`) appends macOS and Linux binaries (x86_64 and aarch64; Linux as static musl) to the native binary as compressed, indexed data, so `herdr --remote <host>` seeds a different-OS host at exact version parity without a release download. Adds `herdr bundle list` and `herdr bundle pack`. (#11, #28, #32)
+- Per-remote auto-update-to-this-client toggle, live host version/protocol readout, and a one-click host-menu update that can force a reinstall. (#44, #61)
+- Semantic-frame delta streaming with compression for 30fps remote panes, last-frame-first switching, and accurate host-banner ping/throughput readouts. (#13)
+- Sidebar settings TUI with configurable agent segments, instant apply, and tab names in the multi-remote sidebar. (#58, #62)
+- Client sidebar interactions across hosts: keyboard navigation, drag reorder with preview, worktree parent chevron collapse, collapsed status-only mode, animated collapse, and a unified drag-to-move overlay framework for client menus. (#9, #19-#26, #47)
+
+### Fixed
+- Many-remote client performance: fleet-scale model-update renders coalesced to one per frame, sidebar shell caching, and hover painted as a per-frame overlay — attach and hover no longer drop below 1fps with many remotes. (#45, #46, #48, #53, #56)
+- Paint-first client cold start with no blocking round-trips before the first frame, and supervisor refreshes moved off the UI loop. (#42)
+- Clipboard images: pasted sandboxed/unreadable macOS screenshot locations now warn, staged image paths attach correctly, and interactive panes spawn as login shells so `~/.zprofile` loads. (#59)
+
+### Notes
+- Install via Homebrew with `brew install 2lab-ai/tap/herdr-mx`, or from GitHub releases. `herdr update` is intentionally disabled in mx builds — update with `brew upgrade herdr-mx` or a newer release. Report issues at https://github.com/2lab-ai/herdr-mx/issues, not upstream.
 
 ## [0.6.10] - 2026-06-11
 

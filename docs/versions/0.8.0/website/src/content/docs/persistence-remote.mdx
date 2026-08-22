@@ -86,13 +86,29 @@ herdr --remote workbox --handoff
 
 If you SSH into the server first and run `herdr` there, Herdr runs entirely on the server. That mode is useful and simple, but it cannot access your local desktop clipboard beyond normal terminal text paste.
 
-When your local and remote platforms match, Herdr can copy the current local binary for direct installs. For Homebrew, mise, and Nix installs, or when the platforms differ, it downloads the matching release asset for the current client version from `https://herdr.dev/latest.json`.
+When your local and remote platforms match, Herdr can copy the current local binary for direct installs. When the platforms differ, Herdr next checks whether the running binary is a multi-platform build that carries a binary for the remote platform (see below) and seeds that. Otherwise — including Homebrew, mise, and Nix installs — it downloads the matching release asset for the current client version from `https://herdr.dev/latest.json`. Herdr logs which source it used (`seeding <host> from ...`).
 
 For local builds or custom binaries, set `HERDR_REMOTE_BINARY` to a local file path before running remote attach.
 
 ```bash
 HERDR_REMOTE_BINARY=target/release/herdr herdr --remote workbox
 ```
+
+### Multi-platform builds: seed a different-OS host offline
+
+A normal build produces a binary for one OS/arch, so a from-source build can only seed a same-platform remote (otherwise it falls back to the release download, which needs network on the remote and matches a released version, not your branch build).
+
+`just bundle` produces one opt-in "fat" binary that still runs natively but carries the other supported platforms (macOS and Linux, on x86_64 and aarch64) as appended, compressed data. Linux is built as static musl, so the seeded host needs no matching libc. When you run `herdr --remote <host>` from a fat build and the remote is a different platform, Herdr extracts the matching binary from itself and installs it over SSH — frictionless, offline, and at the exact same version as your local build.
+
+```bash
+just bundle                       # needs cargo-zigbuild + Zig 0.15
+herdr bundle list                 # show which platforms a binary carries
+target/herdr-bundle --remote linux-box   # seeds the Linux host offline
+```
+
+Released, Homebrew, and Nix artifacts and `herdr update` are unchanged — the fat build is opt-in. If a fat build does not carry the remote's platform, Herdr falls back to the release download with a clear message.
+
+On macOS, appending data invalidates an existing code signature. The file still runs locally because the kernel honors the original signed code limit, but do not re-sign a packed binary or the appended payload is stripped.
 
 ## Remote named sessions
 

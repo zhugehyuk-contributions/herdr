@@ -7,6 +7,10 @@ on:
         description: Optional master commit SHA to publish
         required: false
         type: string
+  # herdr-mx: scheduled preview publishing is disabled on this downstream
+  # repo; master is an upstream mirror and mx releases ship via v*-mx.* tags.
+  # schedule:
+  #   - cron: "0 3 * * 3,5"
 
 permissions:
   contents: read

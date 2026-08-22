@@ -1,0 +1,10 @@
+;; macOS seatbelt profile used by the receipt to run the event hook with every socket denied.
+;;
+;; `(allow default)` keeps the hook's real work legal (exec sh + python3, read the plugin
+;; root, append to the queue under the state dir); `(deny network*)` removes sockets.
+;; Verified by hand before it was relied on: under this profile a connect() to 1.1.1.1:53
+;; fails with EPERM, and so does a connect() to an existing AF_UNIX socket -- so passing
+;; under it means the hook reached neither the network nor herdr's own API socket.
+(version 1)
+(allow default)
+(deny network*)

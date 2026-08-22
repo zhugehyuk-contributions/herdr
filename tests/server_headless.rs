@@ -179,15 +179,20 @@ fn client_handshake(
             &encode_varint_u32(8),  // cell_width_px
             &encode_varint_u32(16), // cell_height_px
             &encode_varint_u32(0),  // RenderEncoding::SemanticFrame
+            &encode_varint_u32(0),  // ClientSurfaceMode::FullApp
             &encode_varint_u32(0),  // ClientKeybindings::Server
             &encode_varint_u32(0),  // ClientLaunchMode::App
         ],
     );
+    // The wire-ABI prelude precedes the Hello frame (`src/protocol/abi.rs`); a connection that
+    // skips it is rejected before its Hello is ever decoded.
+    support::send_wire_abi_prelude(stream)?;
     let framed = frame_message(&hello_payload);
     stream.write_all(&framed).map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())?;
 
-    // Read the framed response.
+    // The server answers with its own prelude, then the framed response.
+    support::expect_wire_abi_prelude(stream)?;
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
     let len = u32::from_le_bytes(len_buf) as usize;

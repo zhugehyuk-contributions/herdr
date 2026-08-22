@@ -1,5 +1,7 @@
 use crate::config::{
-    Keybinds, NewTerminalCwdConfig, SoundConfig, TabBarPositionConfig, ToastConfig, ToastDelivery,
+    Keybinds, NewTerminalCwdConfig, SidebarAgentField, SidebarAgentsConfig, SidebarColorPreset,
+    SidebarItem, SidebarSpaceField, SidebarSpacesConfig, SoundConfig, TabBarPositionConfig,
+    ToastConfig, ToastDelivery,
 };
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Direction, Rect};
@@ -107,7 +109,43 @@ pub struct Palette {
     pub peach: Color,
 }
 
+/// Linearly blend two colors channel-wise at ratio `t` (item 7). Returns a faint mix used
+/// for the subtle hover surface. Only `Color::Rgb` pairs can blend; if either input is a
+/// non-`Rgb` color (e.g. the 16-color `terminal()` palette), fall back to `b` (the
+/// stronger/`surface_dim` side) so the result stays a safe, never-bold background.
+fn blend_color(a: Color, b: Color, t: f32) -> Color {
+    match (a, b) {
+        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+            let mix = |from: u8, to: u8| {
+                let from = from as f32;
+                let to = to as f32;
+                (from + (to - from) * t).round().clamp(0.0, 255.0) as u8
+            };
+            Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
+        }
+        _ => b,
+    }
+}
+
 impl Palette {
+    pub(crate) fn sidebar_color(&self, preset: SidebarColorPreset, default: Color) -> Color {
+        match preset {
+            SidebarColorPreset::Default => default,
+            SidebarColorPreset::Muted => self.overlay1,
+            SidebarColorPreset::Accent => self.accent,
+            SidebarColorPreset::Cool => self.teal,
+            SidebarColorPreset::Warm => self.peach,
+        }
+    }
+
+    /// Subtle hover background for sidebar rows/affordances (item 7). A faint lift between the
+    /// page background and the selection surface, so hover reads strictly weaker than
+    /// selected(`surface0`)/active(`surface_dim`)/drag(`surface1`). Theme-derived (no per-theme
+    /// table); non-`Rgb` palettes fall back to `surface_dim` (never bold). Hover NEVER bolds.
+    pub(crate) fn hover_bg(&self) -> Color {
+        blend_color(self.panel_bg, self.surface_dim, 0.5)
+    }
+
     /// Catppuccin Mocha — the default.
     pub fn catppuccin() -> Self {
         Self {
@@ -654,6 +692,144 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
+/// One per `HostBanner` entry in the workspace list (item 2). Empty in monolithic mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostBannerSpec {
+    pub display_name: String,
+    pub connection_state: HostBannerState,
+    pub space_count: usize,
+    /// Rolling average round-trip latency to this host in ms (issue #13), if measured.
+    pub latency_ms: Option<u32>,
+    /// Recent downstream frame throughput from this host in bytes/sec, if measured.
+    pub download_bps: Option<u64>,
+    /// #44: live provisioning progress LOG for this host (update or add/reconnect install), oldest
+    /// first. When non-empty, the sidebar reserves render-only sub-line rows under the banner —
+    /// completed stages dim, the last line gets the spinner; the banner row itself stays the only
+    /// hit target (height 1). Tail-capped at [`MAX_HOST_BANNER_SUB_LINES`] for layout.
+    pub progress_lines: Vec<String>,
+    /// #61: a TERMINAL update/provisioning outcome shown in the sub-lines in place of the in-flight
+    /// progress once an operation finishes — a positive "✓ updated …" on success or a (possibly
+    /// multiline) "✗ …" on failure, so completion is observable and not merely inferred from the
+    /// spinner disappearing. Success outcomes are short-lived (the client expires them on a timer);
+    /// provisioning failures persist until a retry clears them.
+    pub update_outcome: Option<HostUpdateOutcome>,
+}
+
+/// Cap on render-reserved sub-line rows under a host banner (progress log tail / outcome lines).
+pub const MAX_HOST_BANNER_SUB_LINES: usize = 4;
+
+impl HostBannerSpec {
+    /// #44/#61: how many render-only sub-line rows this banner reserves beneath it — the terminal
+    /// outcome's lines when set (it wins over in-flight progress), otherwise the progress-log tail.
+    /// The layout pass and the renderer agree on this single function so the reserved rows and the
+    /// drawn rows never drift.
+    pub fn sub_lines(&self) -> Vec<HostBannerSubLine> {
+        if let Some(outcome) = &self.update_outcome {
+            return outcome
+                .message
+                .lines()
+                .take(MAX_HOST_BANNER_SUB_LINES)
+                .map(|line| HostBannerSubLine {
+                    text: line.to_string(),
+                    kind: if outcome.success {
+                        HostBannerSubLineKind::Success
+                    } else {
+                        HostBannerSubLineKind::Failure
+                    },
+                })
+                .collect();
+        }
+        let skip = self
+            .progress_lines
+            .len()
+            .saturating_sub(MAX_HOST_BANNER_SUB_LINES);
+        let last = self.progress_lines.len().saturating_sub(1);
+        self.progress_lines
+            .iter()
+            .enumerate()
+            .skip(skip)
+            .map(|(idx, line)| HostBannerSubLine {
+                text: line.clone(),
+                kind: if idx == last {
+                    HostBannerSubLineKind::Active
+                } else {
+                    HostBannerSubLineKind::Done
+                },
+            })
+            .collect()
+    }
+
+    pub fn sub_line_count(&self) -> u16 {
+        self.sub_lines().len() as u16
+    }
+}
+
+/// One render-only row under a host banner: a finished stage (dim), the in-flight stage
+/// (spinner), or a terminal outcome line (green/red).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostBannerSubLine {
+    pub text: String,
+    pub kind: HostBannerSubLineKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostBannerSubLineKind {
+    /// A completed provisioning stage (dim, no spinner).
+    Done,
+    /// The in-flight stage (dim + spinner).
+    Active,
+    /// Terminal success line (green ✓ text).
+    Success,
+    /// Terminal failure line (red ✗ text).
+    Failure,
+}
+
+/// #61: a terminal one-click-update result surfaced on the host banner sub-line. `success` selects
+/// the glyph/colour (✓ green / ✗ red); `message` is the full line text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostUpdateOutcome {
+    pub message: String,
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostBannerState {
+    Connected,
+    Connecting,
+    Disconnected,
+    ProtocolMismatch,
+    Disabled,
+}
+
+/// Sidebar hover target (item 7). The agent variant is route-index keyed for the
+/// client path (route_idx survives recompose; pane_id does not) and pane_id keyed
+/// for the monolithic path (terminals are stable there).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SidebarHoverTarget {
+    Workspace {
+        ws_idx: usize,
+    },
+    AgentMono {
+        ws_idx: usize,
+        tab_idx: usize,
+        pane_id: crate::layout::PaneId,
+    },
+    AgentRoute {
+        route_idx: usize,
+    },
+    New,
+    Menu,
+    ScopeToggle,
+    Filter,
+    NewWorkspaceDestination {
+        row: u16,
+    },
+    HostBanner {
+        banner_idx: usize,
+    },
+    Divider,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -809,6 +985,8 @@ pub struct ViewState {
     pub layout: ViewLayout,
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
+    pub divider_rows: Vec<u16>,                            // item 4
+    pub host_banner_areas: Vec<crate::ui::HostBannerArea>, // item 2
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -1014,6 +1192,479 @@ pub enum AgentPanelSort {
     Priority,
 }
 
+/// herdr-mx: agent panel scope filter — which workspaces' agents the multi-remote
+/// client panel shows. Orthogonal to upstream's `AgentPanelSort` (ordering).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AgentPanelScope {
+    CurrentWorkspace,
+    #[default]
+    AllWorkspaces,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarLine {
+    First,
+    Second,
+    Extra(usize),
+}
+
+impl SidebarLine {
+    pub(crate) fn from_index(index: usize) -> Self {
+        match index {
+            0 => Self::First,
+            1 => Self::Second,
+            extra => Self::Extra(extra),
+        }
+    }
+
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Self::First => 0,
+            Self::Second => 1,
+            Self::Extra(index) => index,
+        }
+    }
+
+    pub(crate) fn label(self) -> String {
+        let number = self.index() + 1;
+        let suffix = match number % 100 {
+            11..=13 => "th",
+            _ => match number % 10 {
+                1 => "st",
+                2 => "nd",
+                3 => "rd",
+                _ => "th",
+            },
+        };
+        format!("{number}{suffix} line")
+    }
+}
+
+pub type SidebarSpacePreferences = SidebarSpacesConfig;
+pub type SidebarAgentPreferences = SidebarAgentsConfig;
+pub(crate) use crate::config::SidebarAgentField as SidebarAgentItem;
+pub(crate) use crate::config::SidebarSpaceField as SidebarSpaceItem;
+
+pub(crate) const SIDEBAR_SPACE_ITEMS: [SidebarSpaceItem; 4] = [
+    SidebarSpaceItem::Status,
+    SidebarSpaceItem::Name,
+    SidebarSpaceItem::Branch,
+    SidebarSpaceItem::BranchStatus,
+];
+
+impl SidebarSpaceField {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Status => "space status",
+            Self::Name => "space name",
+            Self::Branch => "space branch",
+            Self::BranchStatus => "space branch status",
+        }
+    }
+
+    pub(crate) fn default_index(self) -> u8 {
+        match self {
+            Self::Status => 0,
+            Self::Name => 1,
+            Self::Branch => 2,
+            Self::BranchStatus => 3,
+        }
+    }
+
+    pub(crate) fn enabled(self, preferences: &SidebarSpacePreferences) -> bool {
+        sidebar_space_entry(preferences, self).show
+    }
+
+    pub(crate) fn set_enabled(self, preferences: &mut SidebarSpacePreferences, enabled: bool) {
+        if let Some(entry) = sidebar_space_entry_mut(preferences, self) {
+            entry.show = enabled;
+        } else {
+            let line = self.default_line();
+            let entry = SidebarItem::new(self, enabled);
+            sidebar_space_line_mut(preferences, line).push(entry);
+        }
+    }
+
+    pub(crate) fn color(self, preferences: &SidebarSpacePreferences) -> SidebarColorPreset {
+        sidebar_space_entry(preferences, self).color
+    }
+
+    pub(crate) fn set_color(
+        self,
+        preferences: &mut SidebarSpacePreferences,
+        color: SidebarColorPreset,
+    ) {
+        if let Some(entry) = sidebar_space_entry_mut(preferences, self) {
+            entry.color = color;
+        } else {
+            let line = self.default_line();
+            let entry = SidebarItem {
+                color,
+                ..SidebarItem::visible(self)
+            };
+            sidebar_space_line_mut(preferences, line).push(entry);
+        }
+    }
+
+    pub(crate) fn line(self, preferences: &SidebarSpacePreferences) -> SidebarLine {
+        preferences
+            .lines
+            .iter()
+            .position(|line| line.iter().any(|entry| entry.field == self))
+            .map(SidebarLine::from_index)
+            .unwrap_or_else(|| self.default_line())
+    }
+
+    pub(crate) fn set_line(self, preferences: &mut SidebarSpacePreferences, line: SidebarLine) {
+        let entry = remove_sidebar_space_item(preferences, self)
+            .unwrap_or_else(|| SidebarItem::visible(self));
+        sidebar_space_line_mut(preferences, line).push(entry);
+    }
+
+    pub(crate) fn order(self, preferences: &SidebarSpacePreferences) -> u8 {
+        sidebar_space_line(preferences, self.line(preferences))
+            .iter()
+            .position(|entry| entry.field == self)
+            .map(|idx| idx as u8)
+            .unwrap_or_else(|| self.default_index())
+    }
+
+    pub(crate) fn set_order(self, preferences: &mut SidebarSpacePreferences, order: u8) {
+        let line = self.line(preferences);
+        let entry = remove_sidebar_space_item(preferences, self)
+            .unwrap_or_else(|| SidebarItem::visible(self));
+        let target = sidebar_space_line_mut(preferences, line);
+        let index = usize::from(order).min(target.len());
+        target.insert(index, entry);
+    }
+
+    fn default_line(self) -> SidebarLine {
+        match self {
+            Self::Status | Self::Name => SidebarLine::First,
+            Self::Branch | Self::BranchStatus => SidebarLine::Second,
+        }
+    }
+}
+
+pub(crate) fn ordered_sidebar_space_items(
+    preferences: &SidebarSpacePreferences,
+) -> Vec<SidebarSpaceItem> {
+    let mut items = Vec::new();
+    for line in &preferences.lines {
+        for entry in line {
+            if !items.contains(&entry.field) {
+                items.push(entry.field);
+            }
+        }
+    }
+    for item in SIDEBAR_SPACE_ITEMS {
+        if !items.contains(&item) {
+            items.push(item);
+        }
+    }
+    items
+}
+
+pub(crate) const SIDEBAR_AGENT_ITEMS: [SidebarAgentItem; 9] = [
+    SidebarAgentItem::AgentStatus,
+    SidebarAgentItem::PaneName,
+    SidebarAgentItem::TabName,
+    SidebarAgentItem::SpaceName,
+    SidebarAgentItem::Status,
+    SidebarAgentItem::Time,
+    SidebarAgentItem::CustomStatus,
+    SidebarAgentItem::RightAlignment,
+    SidebarAgentItem::AgentName,
+];
+
+impl SidebarAgentField {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::AgentStatus => "agent status",
+            Self::PaneName => "agent pane name",
+            Self::TabName => "agent tab name",
+            Self::SpaceName => "space name",
+            Self::Status => "status text",
+            Self::Time => "agent time",
+            Self::CustomStatus => "custom status",
+            Self::AgentName => "agent name",
+            Self::RightAlignment => "right-alignment",
+        }
+    }
+
+    pub(crate) fn default_index(self) -> u8 {
+        match self {
+            Self::AgentStatus => 0,
+            Self::PaneName => 1,
+            Self::TabName => 2,
+            Self::SpaceName => 3,
+            Self::Status => 4,
+            Self::Time => 5,
+            Self::CustomStatus => 6,
+            Self::RightAlignment => 7,
+            Self::AgentName => 8,
+        }
+    }
+
+    pub(crate) fn enabled(self, preferences: &SidebarAgentPreferences) -> bool {
+        sidebar_agent_entry(preferences, self).show
+    }
+
+    pub(crate) fn set_enabled(self, preferences: &mut SidebarAgentPreferences, enabled: bool) {
+        if let Some(entry) = sidebar_agent_entry_mut(preferences, self) {
+            entry.show = enabled;
+        } else {
+            let line = self.default_line();
+            let entry = SidebarItem::new(self, enabled);
+            sidebar_agent_line_mut(preferences, line).push(entry);
+        }
+    }
+
+    pub(crate) fn color(self, preferences: &SidebarAgentPreferences) -> SidebarColorPreset {
+        sidebar_agent_entry(preferences, self).color
+    }
+
+    pub(crate) fn set_color(
+        self,
+        preferences: &mut SidebarAgentPreferences,
+        color: SidebarColorPreset,
+    ) {
+        if let Some(entry) = sidebar_agent_entry_mut(preferences, self) {
+            entry.color = color;
+        } else {
+            let line = self.default_line();
+            let entry = SidebarItem {
+                color,
+                ..SidebarItem::visible(self)
+            };
+            sidebar_agent_line_mut(preferences, line).push(entry);
+        }
+    }
+
+    pub(crate) fn line(self, preferences: &SidebarAgentPreferences) -> SidebarLine {
+        preferences
+            .lines
+            .iter()
+            .position(|line| line.iter().any(|entry| entry.field == self))
+            .map(SidebarLine::from_index)
+            .unwrap_or_else(|| self.default_line())
+    }
+
+    pub(crate) fn set_line(self, preferences: &mut SidebarAgentPreferences, line: SidebarLine) {
+        let entry = remove_sidebar_agent_item(preferences, self)
+            .unwrap_or_else(|| SidebarItem::visible(self));
+        sidebar_agent_line_mut(preferences, line).push(entry);
+    }
+
+    pub(crate) fn order(self, preferences: &SidebarAgentPreferences) -> u8 {
+        let line = self.line(preferences);
+        sidebar_agent_line(preferences, line)
+            .iter()
+            .position(|entry| entry.field == self)
+            .map(|idx| idx as u8)
+            .unwrap_or_else(|| self.default_index())
+    }
+
+    pub(crate) fn set_order(self, preferences: &mut SidebarAgentPreferences, order: u8) {
+        let line = self.line(preferences);
+        let entry = remove_sidebar_agent_item(preferences, self)
+            .unwrap_or_else(|| SidebarItem::visible(self));
+        let target = sidebar_agent_line_mut(preferences, line);
+        let index = usize::from(order).min(target.len());
+        target.insert(index, entry);
+    }
+
+    fn default_line(self) -> SidebarLine {
+        match self {
+            Self::AgentStatus | Self::PaneName | Self::TabName | Self::SpaceName => {
+                SidebarLine::First
+            }
+            Self::Status
+            | Self::Time
+            | Self::CustomStatus
+            | Self::RightAlignment
+            | Self::AgentName => SidebarLine::Second,
+        }
+    }
+}
+
+pub(crate) fn ordered_sidebar_agent_items(
+    preferences: &SidebarAgentPreferences,
+) -> Vec<SidebarAgentItem> {
+    let mut items = Vec::new();
+    for line in &preferences.lines {
+        for entry in line {
+            if !items.contains(&entry.field) {
+                items.push(entry.field);
+            }
+        }
+    }
+    for item in SIDEBAR_AGENT_ITEMS {
+        if !items.contains(&item) {
+            items.push(item);
+        }
+    }
+    items
+}
+
+fn sidebar_space_line(
+    preferences: &SidebarSpacePreferences,
+    line: SidebarLine,
+) -> &[SidebarItem<SidebarSpaceField>] {
+    preferences
+        .lines
+        .get(line.index())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn sidebar_space_line_mut(
+    preferences: &mut SidebarSpacePreferences,
+    line: SidebarLine,
+) -> &mut Vec<SidebarItem<SidebarSpaceField>> {
+    while preferences.lines.len() <= line.index() {
+        preferences.lines.push(Vec::new());
+    }
+    &mut preferences.lines[line.index()]
+}
+
+fn sidebar_space_entry(
+    preferences: &SidebarSpacePreferences,
+    item: SidebarSpaceItem,
+) -> SidebarItem<SidebarSpaceField> {
+    preferences
+        .lines
+        .iter()
+        .flatten()
+        .find(|entry| entry.field == item)
+        .copied()
+        .unwrap_or_else(|| SidebarItem::new(item, false))
+}
+
+fn sidebar_space_entry_mut(
+    preferences: &mut SidebarSpacePreferences,
+    item: SidebarSpaceItem,
+) -> Option<&mut SidebarItem<SidebarSpaceField>> {
+    preferences
+        .lines
+        .iter_mut()
+        .flatten()
+        .find(|entry| entry.field == item)
+}
+
+fn remove_sidebar_space_item(
+    preferences: &mut SidebarSpacePreferences,
+    item: SidebarSpaceItem,
+) -> Option<SidebarItem<SidebarSpaceField>> {
+    for line in &mut preferences.lines {
+        if let Some(index) = line.iter().position(|entry| entry.field == item) {
+            return Some(line.remove(index));
+        }
+    }
+    None
+}
+
+fn sidebar_agent_line(
+    preferences: &SidebarAgentPreferences,
+    line: SidebarLine,
+) -> &[SidebarItem<SidebarAgentField>] {
+    preferences
+        .lines
+        .get(line.index())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn sidebar_agent_line_mut(
+    preferences: &mut SidebarAgentPreferences,
+    line: SidebarLine,
+) -> &mut Vec<SidebarItem<SidebarAgentField>> {
+    while preferences.lines.len() <= line.index() {
+        preferences.lines.push(Vec::new());
+    }
+    &mut preferences.lines[line.index()]
+}
+
+fn sidebar_agent_entry(
+    preferences: &SidebarAgentPreferences,
+    item: SidebarAgentItem,
+) -> SidebarItem<SidebarAgentField> {
+    preferences
+        .lines
+        .iter()
+        .flatten()
+        .find(|entry| entry.field == item)
+        .copied()
+        .unwrap_or_else(|| SidebarItem::new(item, false))
+}
+
+fn sidebar_agent_entry_mut(
+    preferences: &mut SidebarAgentPreferences,
+    item: SidebarAgentItem,
+) -> Option<&mut SidebarItem<SidebarAgentField>> {
+    preferences
+        .lines
+        .iter_mut()
+        .flatten()
+        .find(|entry| entry.field == item)
+}
+
+fn remove_sidebar_agent_item(
+    preferences: &mut SidebarAgentPreferences,
+    item: SidebarAgentItem,
+) -> Option<SidebarItem<SidebarAgentField>> {
+    for line in &mut preferences.lines {
+        if let Some(index) = line.iter().position(|entry| entry.field == item) {
+            return Some(line.remove(index));
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SidebarConfigGroup {
+    #[default]
+    Spaces,
+    Agents,
+    Host, // item 2
+}
+
+impl SidebarConfigGroup {
+    const ALL: [Self; 3] = [Self::Spaces, Self::Agents, Self::Host];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Spaces => "spaces",
+            Self::Agents => "agents",
+            Self::Host => "host", // item 2 (C3 refines)
+        }
+    }
+
+    pub(crate) fn settings_line_count(self, configured_line_count: usize) -> usize {
+        configured_line_count.max(match self {
+            Self::Spaces => 2,
+            Self::Agents => 3,
+            Self::Host => 5, // item 2 (C3 refines)
+        })
+    }
+
+    pub fn previous(self) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|group| *group == self)
+            .unwrap_or(0);
+        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    pub fn next(self) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|group| *group == self)
+            .unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Settings UI state
 // ---------------------------------------------------------------------------
@@ -1026,6 +1677,8 @@ pub enum SettingsSection {
     Sound,
     Toast,
     PaneLabels,
+    Sidebar,
+    Experiments,
     Integrations,
 }
 
@@ -1036,7 +1689,9 @@ impl SettingsSection {
         Self::Sound,
         Self::Toast,
         Self::PaneLabels,
+        Self::Sidebar,
         Self::Integrations,
+        Self::Experiments,
     ];
 
     pub fn label(self) -> &'static str {
@@ -1046,7 +1701,37 @@ impl SettingsSection {
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::PaneLabels => "pane labels",
+            Self::Sidebar => "sidebar",
+            Self::Experiments => "experiments",
             Self::Integrations => "integrations",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExperimentSetting {
+    PaneHistory,
+    SwitchAsciiInputSourceInPrefix,
+}
+
+impl ExperimentSetting {
+    pub(crate) const ALL: [Self; 2] = [Self::PaneHistory, Self::SwitchAsciiInputSourceInPrefix];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::PaneHistory => "pane screen history",
+            Self::SwitchAsciiInputSourceInPrefix => {
+                "switch to ascii input source in prefix (macOS)"
+            }
+        }
+    }
+
+    pub(crate) fn enabled(self, state: &AppState) -> bool {
+        match self {
+            Self::PaneHistory => state.pane_history_persistence_enabled(),
+            Self::SwitchAsciiInputSourceInPrefix => {
+                state.switch_ascii_input_source_in_prefix_enabled()
+            }
         }
     }
 }
@@ -1121,6 +1806,10 @@ pub struct SettingsState {
     pub section: SettingsSection,
     /// Selected item index within the current section.
     pub list: SelectionListState,
+    /// Active subgroup inside Settings > sidebar.
+    pub sidebar_config_group: SidebarConfigGroup,
+    /// Whether Settings > sidebar is editing line/order for the selected row.
+    pub sidebar_config_editing: bool,
     /// The palette before opening settings (for cancel/restore).
     pub original_palette: Option<Palette>,
     /// The theme name before opening settings.
@@ -1138,6 +1827,14 @@ pub(crate) enum DragTarget {
         source_id: crate::app::InputSourceId,
         source_ws_idx: usize,
         drop_target: Option<WorkspaceDropTarget>,
+    },
+    /// #19 (host half): an in-progress host (server) drag in the client-rendered sidebar.
+    /// `source_host_idx`/`insert_idx` index the ORDERED host/banner list (the visible-server
+    /// order). Client-local; the drop indicator is drawn only at host boundaries (banner rows
+    /// or the end of the list), never between two spaces.
+    HostReorder {
+        source_host_idx: usize,
+        insert_idx: Option<usize>,
     },
     TabReorder {
         source_id: crate::app::InputSourceId,
@@ -1414,6 +2111,7 @@ pub struct AppState {
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    pub remote_registry: crate::remote_registry::RemoteRegistrySnapshot,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1465,11 +2163,10 @@ pub struct AppState {
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
     pub agent_panel_sort: AgentPanelSort,
+    pub agent_panel_scope: AgentPanelScope,
     pub status_indicators: crate::config::StatusIndicatorStyle,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
-    pub sidebar_agents: crate::config::AgentsSidebarConfig,
-    pub sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub next_agent_state_change_seq: u64,
     /// Capture mouse input for Herdr's own mouse UI. When false, Herdr only
     /// captures mouse while the focused pane app requests mouse reporting.
@@ -1492,6 +2189,8 @@ pub struct AppState {
     pub tab_bar_right: Vec<TabBarStatusSegment>,
     pub tab_bar_right_separator: String,
     pub pane_history_persistence: bool,
+    pub sidebar_space: SidebarSpacePreferences,
+    pub sidebar_agent: SidebarAgentPreferences,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`. See `[experimental] reveal_hidden_cursor_for_cjk_ime`.
     pub reveal_hidden_cursor_for_cjk_ime: bool,
@@ -1517,6 +2216,23 @@ pub struct AppState {
     pub local_sound_playback: bool,
     pub toast_config: ToastConfig,
     pub keybinds: Keybinds,
+    /// Frame counter for spinner animations (wraps around).
+    pub spinner_tick: u32,
+    /// item 4: per-workspace local/remote flag, index-aligned with `workspaces`; empty in monolithic.
+    pub(crate) client_workspace_remote: Vec<bool>,
+    /// item 2: one per HostBanner entry; empty in monolithic.
+    pub host_banners: Vec<HostBannerSpec>,
+    /// item 2: index-aligned with `host_banners`; each value is the `ws_idx` of the remote
+    /// host group's first workspace, i.e. the workspace the banner is emitted immediately
+    /// before. Empty in monolithic. Derived once in `from_model` from `host_banner_specs()`,
+    /// so render geometry stays a pure read.
+    pub(crate) host_banner_rows: Vec<usize>,
+    /// items 2/4: divider labeled↔plain coordination flag; false in monolithic.
+    pub(crate) host_banner_active: bool,
+    /// item 2: host banner config.
+    pub sidebar_host: crate::config::model::SidebarHostConfig,
+    /// item 7: current sidebar hover target.
+    pub(crate) sidebar_hover: Option<SidebarHoverTarget>,
     /// UI color palette — all sidebar/UI colors centralized for theming.
     pub palette: Palette,
     /// Currently applied theme name (for settings UI).
@@ -1549,6 +2265,8 @@ pub struct AppState {
     pub(crate) plugin_commands_in_flight: usize,
     /// Highlight state for the bottom-right global launcher menu.
     pub global_menu: MenuListState,
+    /// Client-owned shells can append local actions while reusing the server menu renderer.
+    pub(crate) global_menu_extra_labels: Vec<&'static str>,
     /// Resolved host terminal default colors for theming embedded panes.
     pub host_terminal_theme: TerminalTheme,
     /// Last known foreground host terminal cell size in pixels.
@@ -1571,6 +2289,13 @@ impl AppState {
         self.pane_id_aliases.remove(&pane_id.raw());
     }
 
+    /// item 7: update the sidebar hover target, returning whether it changed.
+    pub(crate) fn set_sidebar_hover(&mut self, next: Option<SidebarHoverTarget>) -> bool {
+        let changed = self.sidebar_hover != next;
+        self.sidebar_hover = next;
+        changed
+    }
+
     pub fn sound_enabled(&self) -> bool {
         self.sound.enabled
     }
@@ -1581,6 +2306,14 @@ impl AppState {
 
     pub fn agent_border_labels_enabled(&self) -> bool {
         self.show_agent_labels_on_pane_borders
+    }
+
+    pub fn pane_history_persistence_enabled(&self) -> bool {
+        self.pane_history_persistence
+    }
+
+    pub fn switch_ascii_input_source_in_prefix_enabled(&self) -> bool {
+        self.switch_ascii_input_source_in_prefix
     }
 
     pub(crate) fn pane_exposes_host_cursor(
@@ -1757,13 +2490,12 @@ pub fn key_matches(
 }
 
 // ---------------------------------------------------------------------------
-// Test helpers
+// Lightweight state helpers
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
 impl AppState {
-    /// Create an AppState for testing — no channels, no PTYs.
-    pub fn test_new() -> Self {
+    /// Create an AppState for client-side shell rendering — no channels, no PTYs.
+    pub(crate) fn empty_for_client_rendering() -> Self {
         Self {
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
@@ -1798,6 +2530,7 @@ impl AppState {
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             collapsed_space_keys: std::collections::HashSet::new(),
+            remote_registry: crate::remote_registry::RemoteRegistrySnapshot::default(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -1815,6 +2548,8 @@ impl AppState {
                 layout: ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                divider_rows: Vec::new(),
+                host_banner_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -1859,10 +2594,9 @@ impl AppState {
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
             agent_panel_sort: AgentPanelSort::Spaces,
+            agent_panel_scope: AgentPanelScope::AllWorkspaces,
             status_indicators: crate::config::StatusIndicatorStyle::Dots,
             agent_view_override: None,
-            sidebar_agents: crate::config::AgentsSidebarConfig::default(),
-            sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
             next_agent_state_change_seq: 0,
             mouse_capture: true,
             copy_on_select: true,
@@ -1883,6 +2617,8 @@ impl AppState {
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
             pane_history_persistence: false,
+            sidebar_space: SidebarSpacePreferences::default(),
+            sidebar_agent: SidebarAgentPreferences::default(),
             reveal_hidden_cursor_for_cjk_ime: false,
             cjk_ime_agent_filter_configured: false,
             cjk_ime_agents: Vec::new(),
@@ -1901,6 +2637,13 @@ impl AppState {
             local_sound_playback: false,
             toast_config: ToastConfig::default(),
             keybinds: Keybinds::default(),
+            spinner_tick: 0,
+            client_workspace_remote: Vec::new(),
+            host_banners: Vec::new(),
+            host_banner_rows: Vec::new(),
+            host_banner_active: false,
+            sidebar_host: crate::config::model::SidebarHostConfig::default(),
+            sidebar_hover: None,
             palette: Palette::catppuccin(),
             theme_name: "catppuccin".to_string(),
             theme_runtime: ThemeRuntimeConfig {
@@ -1916,6 +2659,8 @@ impl AppState {
             settings: SettingsState {
                 section: SettingsSection::Theme,
                 list: SelectionListState::new(0),
+                sidebar_config_group: SidebarConfigGroup::default(),
+                sidebar_config_editing: false,
                 original_palette: None,
                 original_theme: None,
             },
@@ -1931,12 +2676,21 @@ impl AppState {
             next_plugin_command_log_id: 1,
             plugin_commands_in_flight: 0,
             global_menu: MenuListState::new(0),
+            global_menu_extra_labels: Vec::new(),
             host_terminal_theme: TerminalTheme::default(),
             host_cell_size: crate::kitty_graphics::HostCellSize::default(),
             host_mouse_pixels: None,
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+impl AppState {
+    /// Create an AppState for testing — no channels, no PTYs.
+    pub fn test_new() -> Self {
+        Self::empty_for_client_rendering()
     }
 
     /// Populate missing `TerminalState` entries for every pane so tests that
@@ -2290,6 +3044,132 @@ mod tests {
     use super::*;
     use crossterm::event::KeyEvent;
 
+    // Area 0 inert-shape guards: exercise the shared symbols landed for the remote/sidebar
+    // overhaul so the tree compiles and the shapes exist before any item fills them.
+
+    #[test]
+    fn client_workspace_remote_is_empty_in_monolithic() {
+        let app = AppState::test_new();
+        assert!(app.client_workspace_remote.is_empty());
+        assert!(app.host_banners.is_empty());
+        assert!(!app.host_banner_active);
+        assert_eq!(
+            app.sidebar_host,
+            crate::config::model::SidebarHostConfig::default()
+        );
+        assert!(app.sidebar_hover.is_none());
+    }
+
+    #[test]
+    fn set_sidebar_hover_reports_changes() {
+        let mut app = AppState::test_new();
+        // Each shared hover variant must be constructible (item 7 fills behavior later).
+        let targets = [
+            SidebarHoverTarget::Workspace { ws_idx: 0 },
+            SidebarHoverTarget::AgentMono {
+                ws_idx: 0,
+                tab_idx: 0,
+                pane_id: crate::layout::PaneId::alloc(),
+            },
+            SidebarHoverTarget::AgentRoute { route_idx: 0 },
+            SidebarHoverTarget::New,
+            SidebarHoverTarget::Menu,
+            SidebarHoverTarget::ScopeToggle,
+            SidebarHoverTarget::Filter,
+            SidebarHoverTarget::NewWorkspaceDestination { row: 0 },
+            SidebarHoverTarget::HostBanner { banner_idx: 0 },
+            SidebarHoverTarget::Divider,
+        ];
+        assert!(app.set_sidebar_hover(Some(targets[0])));
+        assert!(!app.set_sidebar_hover(Some(targets[0])));
+        assert!(app.set_sidebar_hover(None));
+    }
+
+    #[test]
+    fn palette_hover_bg_is_between_panel_bg_and_surface_dim() {
+        // Mocha (Rgb) blends to the channel-wise midpoint of panel_bg and surface_dim, and is
+        // distinct from both endpoints so hover reads weaker than selection but visible.
+        let mocha = Palette::catppuccin();
+        let (Color::Rgb(pr, pg, pb), Color::Rgb(sr, sg, sb)) = (mocha.panel_bg, mocha.surface_dim)
+        else {
+            panic!("mocha panel_bg/surface_dim should be Rgb");
+        };
+        let mid = |a: u8, b: u8| ((a as f32 + (b as f32 - a as f32) * 0.5).round()) as u8;
+        assert_eq!(
+            mocha.hover_bg(),
+            Color::Rgb(mid(pr, sr), mid(pg, sg), mid(pb, sb))
+        );
+        assert_ne!(mocha.hover_bg(), mocha.surface_dim);
+        assert_ne!(mocha.hover_bg(), mocha.panel_bg);
+
+        // The 16-color terminal() palette can't blend (non-Rgb), so hover_bg falls back to the
+        // surface_dim side: a safe, never-bold background (no panic).
+        let term = Palette::terminal();
+        assert_eq!(term.hover_bg(), term.surface_dim);
+    }
+
+    #[test]
+    fn blend_color_falls_back_to_b_for_non_rgb() {
+        // Non-Rgb on either side returns `b` unchanged.
+        assert_eq!(
+            blend_color(Color::Reset, Color::DarkGray, 0.5),
+            Color::DarkGray
+        );
+        assert_eq!(
+            blend_color(Color::Rgb(0, 0, 0), Color::Green, 0.5),
+            Color::Green
+        );
+        // Rgb pair blends channel-wise.
+        assert_eq!(
+            blend_color(Color::Rgb(0, 0, 0), Color::Rgb(10, 20, 30), 0.5),
+            Color::Rgb(5, 10, 15)
+        );
+    }
+
+    #[test]
+    fn host_banner_spec_shape_exists() {
+        let spec = HostBannerSpec {
+            display_name: "prod".into(),
+            connection_state: HostBannerState::Connected,
+            space_count: 2,
+            latency_ms: None,
+            download_bps: None,
+            progress_lines: Vec::new(),
+            update_outcome: None,
+        };
+        assert_eq!(spec.display_name, "prod");
+        assert_eq!(spec.space_count, 2);
+        // every connection-state variant exists (item 2 maps server state → these).
+        for state in [
+            HostBannerState::Connected,
+            HostBannerState::Connecting,
+            HostBannerState::Disconnected,
+            HostBannerState::ProtocolMismatch,
+            HostBannerState::Disabled,
+        ] {
+            assert_eq!(
+                HostBannerSpec {
+                    display_name: spec.display_name.clone(),
+                    connection_state: state,
+                    space_count: spec.space_count,
+                    latency_ms: None,
+                    download_bps: None,
+                    progress_lines: Vec::new(),
+                    update_outcome: None,
+                }
+                .connection_state,
+                state
+            );
+        }
+    }
+
+    #[test]
+    fn view_state_carries_divider_and_banner_channels() {
+        let app = AppState::test_new();
+        assert!(app.view.divider_rows.is_empty());
+        assert!(app.view.host_banner_areas.is_empty());
+    }
+
     #[test]
     fn pane_size_estimate_uses_headless_size_before_first_view() {
         let mut state = AppState::test_new();
@@ -2554,6 +3434,23 @@ mod tests {
             KeyCode::Char('b'),
             KeyModifiers::SHIFT,
         ));
+    }
+
+    #[test]
+    fn omitted_sidebar_items_are_treated_as_disabled() {
+        let spaces = SidebarSpacePreferences {
+            lines: vec![vec![SidebarItem::visible(SidebarSpaceItem::Name)]],
+        };
+        let agents = SidebarAgentPreferences {
+            lines: vec![vec![SidebarItem::visible(SidebarAgentItem::Status)]],
+        };
+
+        assert!(SidebarSpaceItem::Name.enabled(&spaces));
+        assert!(!SidebarSpaceItem::Branch.enabled(&spaces));
+        assert_eq!(SidebarSpaceItem::Branch.line(&spaces), SidebarLine::Second);
+        assert!(SidebarAgentItem::Status.enabled(&agents));
+        assert!(!SidebarAgentItem::Time.enabled(&agents));
+        assert_eq!(SidebarAgentItem::Time.line(&agents), SidebarLine::Second);
     }
 
     #[test]

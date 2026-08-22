@@ -53,6 +53,8 @@ pub struct WorkspaceInfo {
     pub workspace_id: String,
     pub number: usize,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     pub focused: bool,
     pub pane_count: usize,
     pub tab_count: usize,
@@ -63,6 +65,10 @@ pub struct WorkspaceInfo {
     pub tokens: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorkspaceWorktreeInfo>,
+    /// herdr-mx: present when the workspace's checkout is a git repo even WITHOUT worktree-space
+    /// membership — the signal client menus need to offer worktree actions on a plain git workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<super::mx::WorkspaceGitInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

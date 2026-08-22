@@ -32,13 +32,9 @@ async fn cold_redraw_advances_one_bounded_layer_after_each_send() {
         server.render_and_stream();
         let bytes = client_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(bytes.len() <= MAX_GRAPHICS_FRAME_SIZE + 4);
-        let frame = read_server_frame(bytes);
+        let graphics = read_server_frame_graphics(bytes);
         assert_eq!(
-            frame
-                .graphics
-                .windows(4)
-                .filter(|part| *part == b"a=t,")
-                .count(),
+            graphics.windows(4).filter(|part| *part == b"a=t,").count(),
             1
         );
         assert_eq!(
@@ -317,6 +313,7 @@ fn direct_eligibility_is_installed_with_the_client_connection() {
         render_encoding: RenderEncoding::SemanticFrame,
         keybindings: None,
         direct_attach_requested: false,
+        surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
         direct_graphics: true,
         writer,
     }));
@@ -794,16 +791,16 @@ async fn hidden_large_direct_frame_uploads_then_replays_placement_without_closin
 
     server.app.state.workspaces[0].switch_tab(background_tab);
     server.render_and_stream();
-    let frame = read_server_frame(
+    let graphics = read_server_frame_graphics(
         client_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("frame while upload is pending"),
     );
-    assert!(!frame.graphics.windows(4).any(|bytes| bytes == b"a=p,"));
+    assert!(!graphics.windows(4).any(|bytes| bytes == b"a=p,"));
 
     server.app.state.workspaces[0].switch_tab(0);
     server.render_and_stream();
-    let _hidden_again = read_server_frame(
+    let _hidden_again = read_server_frame_graphics(
         client_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("frame after hiding pending upload"),
@@ -820,12 +817,12 @@ async fn hidden_large_direct_frame_uploads_then_replays_placement_without_closin
 
     server.app.state.workspaces[0].switch_tab(background_tab);
     server.render_and_stream();
-    let frame = read_server_frame(
+    let frame_graphics = read_server_frame_graphics(
         client_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("placement replay after tab switch"),
     );
-    let graphics = String::from_utf8_lossy(&frame.graphics);
+    let graphics = String::from_utf8_lossy(&frame_graphics);
     assert!(graphics.contains("a=p,"), "{graphics:?}");
     assert!(graphics.contains(&format!("i={image_id}")), "{graphics:?}");
     assert!(!graphics.contains("a=t,"), "{graphics:?}");
@@ -963,12 +960,12 @@ async fn direct_frame_during_internal_redraw_uploads_without_placement() {
     assert!(server.app.pane_graphics.slots[&graphics_key(pane_id)].stream_is_active());
 
     server.render_and_stream();
-    let frame = read_server_frame(
+    let frame_graphics = read_server_frame_graphics(
         client_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("placement after redraw upload acknowledgement"),
     );
-    let graphics = String::from_utf8_lossy(&frame.graphics);
+    let graphics = String::from_utf8_lossy(&frame_graphics);
     assert!(graphics.contains("a=p,"), "{graphics:?}");
     assert!(graphics.contains(&format!("i={image_id}")), "{graphics:?}");
     assert!(!graphics.contains("a=t,"), "{graphics:?}");

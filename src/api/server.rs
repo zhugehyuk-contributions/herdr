@@ -385,8 +385,17 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::ServerStop(_) => "server.stop",
         Method::ServerLiveHandoff(_) => "server.live_handoff",
         Method::ServerReloadConfig(_) => "server.reload_config",
+        Method::ServerUiSettings(_) => "server.ui_settings",
         Method::ServerAgentManifests(_) => "server.agent_manifests",
         Method::ServerReloadAgentManifests(_) => "server.reload_agent_manifests",
+        Method::RemoteList(_) => "remote.list",
+        Method::RemoteAdd(_) => "remote.add",
+        Method::RemoteRemove(_) => "remote.remove",
+        Method::RemoteRename(_) => "remote.rename",
+        Method::RemoteSetEnabled(_) => "remote.set_enabled",
+        Method::RemoteSetAutoUpdate(_) => "remote.set_auto_update",
+        Method::RemoteSetSession(_) => "remote.set_session",
+        Method::SessionList(_) => "session.list",
         Method::NotificationShow(_) => "notification.show",
         Method::ClientWindowTitleSet(_) => "client.window_title.set",
         Method::ClientWindowTitleClear(_) => "client.window_title.clear",
@@ -400,6 +409,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::WorkspaceMoveBlock(_) => "workspace.move_block",
         Method::WorkspaceReportMetadata(_) => "workspace.report_metadata",
         Method::WorkspaceClose(_) => "workspace.close",
+        Method::WorkspaceReorder(_) => "workspace.reorder",
         Method::WorktreeList(_) => "worktree.list",
         Method::WorktreeCreate(_) => "worktree.create",
         Method::WorktreeOpen(_) => "worktree.open",
@@ -1395,6 +1405,57 @@ mod tests {
 
         drop(client);
 
+        let result = done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(result.is_ok());
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn all_agent_status_subscription_streams_matching_event_envelope() {
+        let (api_tx, _api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
+        let (mut client, server, _path) = local_stream_pair("api-all-agent-status");
+        client
+            .write_all(
+                br#"{"id":"sub_all","method":"events.subscribe","params":{"subscriptions":[{"type":"pane.agent_status_changed"}]}}"#,
+            )
+            .unwrap();
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let server_running = Arc::clone(&running);
+        let event_hub = EventHub::default();
+        let server_event_hub = event_hub.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let server_thread = std::thread::spawn(move || {
+            let result =
+                handle_connection(server, &api_tx, &server_event_hub, &server_running, None);
+            done_tx.send(result).unwrap();
+        });
+
+        let ack = read_line(&mut client);
+        let ack: serde_json::Value = serde_json::from_str(&ack).unwrap();
+        assert_eq!(ack["result"]["type"], "subscription_started");
+
+        event_hub.push(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::PaneAgentStatusChanged,
+            data: crate::api::schema::EventData::PaneAgentStatusChanged {
+                pane_id: "pane_1".into(),
+                workspace_id: "workspace_1".into(),
+                agent_status: crate::api::schema::AgentStatus::Working,
+                agent: Some("pi".into()),
+                title: None,
+                display_agent: None,
+                state_labels: std::collections::HashMap::new(),
+            },
+        });
+
+        let event = read_line(&mut client);
+        let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["event"], "pane_agent_status_changed");
+        assert_eq!(event["data"]["pane_id"], "pane_1");
+
+        running.store(false, Ordering::Relaxed);
         let result = done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(result.is_ok());
         server_thread.join().unwrap();

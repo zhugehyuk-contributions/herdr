@@ -1306,8 +1306,11 @@ impl AppState {
         };
         let order = entries
             .into_iter()
-            .map(|entry| match entry {
-                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => ws_idx,
+            .filter_map(|entry| match entry {
+                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
+                // item 4 / item 2: non-selectable layout rows are skipped by navigation.
+                crate::ui::WorkspaceListEntry::Divider { .. }
+                | crate::ui::WorkspaceListEntry::HostBanner { .. } => None,
             })
             .collect::<Vec<_>>();
         if order.is_empty() {
@@ -6125,6 +6128,72 @@ mod tests {
         assert_eq!(state.request_remove_linked_worktree, None);
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].display_name(), "selected");
+    }
+
+    // ---- item 4: navigation skips the space divider ----
+
+    fn mixed_workspaces(remote: &[bool]) -> AppState {
+        let names: Vec<String> = (0..remote.len()).map(|i| format!("ws{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut state = app_with_workspaces(&refs);
+        state.client_workspace_remote = remote.to_vec();
+        state
+    }
+
+    #[test]
+    fn visible_workspace_order_excludes_divider() {
+        let state = mixed_workspaces(&[false, false, true, true]);
+        let order = state.visible_workspace_order();
+        // Length equals the real workspace count (no divider-derived index).
+        assert_eq!(order.len(), state.workspaces.len());
+        // Local-then-remote order preserved.
+        assert_eq!(order, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn next_workspace_skips_divider() {
+        let mut state = mixed_workspaces(&[false, false, true, true]);
+        // From the last local space, next lands on the first remote space (not the divider).
+        state.switch_workspace(1);
+        state.next_workspace();
+        assert_eq!(state.active, Some(2));
+    }
+
+    #[test]
+    fn previous_workspace_skips_divider() {
+        let mut state = mixed_workspaces(&[false, false, true, true]);
+        // From the first remote space, previous lands on the last local space.
+        state.switch_workspace(2);
+        state.previous_workspace();
+        assert_eq!(state.active, Some(1));
+    }
+
+    #[test]
+    fn workspace_at_visible_position_numbers_only_real_spaces() {
+        let state = mixed_workspaces(&[false, false, true, true]);
+        // The divider has no number; position N maps to the Nth real space.
+        assert_eq!(state.workspace_at_visible_position(0), Some(0));
+        assert_eq!(state.workspace_at_visible_position(1), Some(1));
+        assert_eq!(state.workspace_at_visible_position(2), Some(2));
+        assert_eq!(state.workspace_at_visible_position(3), Some(3));
+        assert_eq!(state.workspace_at_visible_position(4), None);
+    }
+
+    #[test]
+    fn ensure_workspace_visible_terminates_with_divider_present() {
+        let mut state = mixed_workspaces(&[false, false, true, true]);
+        // A sidebar tall enough to hold every card plus the divider after scrolling. The
+        // divider in the entry stream must not prevent the loop from terminating and bringing
+        // the remote target into view.
+        state.view.sidebar_rect = ratatui::layout::Rect::new(0, 0, 30, 12);
+        state.mode = Mode::Navigate;
+        state.workspace_scroll = 3; // start scrolled away from the target
+        state.ensure_workspace_visible(3);
+        let cards = crate::ui::compute_workspace_card_areas(&state, state.view.sidebar_rect);
+        assert!(
+            cards.iter().any(|card| card.ws_idx == 3),
+            "target should be visible after ensure_workspace_visible: {cards:?}"
+        );
     }
 
     #[test]

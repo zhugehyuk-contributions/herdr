@@ -8,9 +8,7 @@ use ratatui::layout::Direction;
 use tokio::sync::{mpsc, Notify};
 
 use crate::events::AppEvent;
-use crate::layout::PaneId;
-#[cfg(test)]
-use crate::layout::TileLayout;
+use crate::layout::{PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
@@ -30,6 +28,20 @@ pub use self::{
     },
     tab::{NewPane, Tab},
 };
+
+/// #58: one tab's worth of a sidebar placeholder workspace — the panes (agent terminals) in that tab
+/// plus the tab's display name and number. The multi-remote client groups its summary agents by
+/// `tab_id` into these so the client-rendered sidebar can show tab names.
+pub(crate) struct SidebarPlaceholderTab {
+    pub custom_name: Option<String>,
+    pub number: usize,
+    pub pane_terminals: Vec<(TerminalId, bool)>,
+    /// #76: index into `pane_terminals` of the pane that holds focus in this tab (wired from
+    /// `agent.focused`), or `None` when no agent in the tab is focused. The agents-panel highlight
+    /// reads the placeholder layout's focused pane (`is_active_pane`), so without this the focus
+    /// always sits on the tab's last split pane instead of the summary-focused agent.
+    pub focused_pane: Option<usize>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorktreeSpaceMembership {
@@ -225,6 +237,121 @@ impl DerefMut for Workspace {
 }
 
 impl Workspace {
+    /// #58: build a placeholder workspace with one [`Tab`] per spec, so the multi-remote
+    /// client-rendered sidebar can show TAB NAMES — the renderer derives `tab_label` from each tab's
+    /// `display_name()` and gates the tab segment on `tabs.len() > 1` (see `pane_details_at`). A
+    /// single tab is the degenerate case. Panes are numbered globally across tabs; `active_tab`
+    /// selects the focused tab. No PTYs — view-only.
+    pub(crate) fn sidebar_placeholder_with_tabs(
+        id: String,
+        name: String,
+        branch: Option<String>,
+        tab_specs: Vec<SidebarPlaceholderTab>,
+        active_tab: usize,
+    ) -> Self {
+        let (events, _) = mpsc::channel(64);
+        let identity_cwd = PathBuf::from("/");
+        let mut tab_specs = tab_specs;
+        if tab_specs.is_empty() {
+            tab_specs.push(SidebarPlaceholderTab {
+                custom_name: None,
+                number: 1,
+                pane_terminals: vec![(TerminalId::alloc(), true)],
+                focused_pane: None,
+            });
+        }
+
+        let mut public_pane_numbers = HashMap::new();
+        let mut next_public_pane_number = 1usize;
+        let mut tabs = Vec::with_capacity(tab_specs.len());
+        for spec in tab_specs {
+            // #76: `spec.pane_terminals` is moved out below; read the focus index first (it is a
+            // `Copy` `Option<usize>`) so it survives the consumption of the spec's panes.
+            let focused_pane = spec.focused_pane;
+            let mut pane_terminals = spec.pane_terminals;
+            if pane_terminals.is_empty() {
+                pane_terminals.push((TerminalId::alloc(), true));
+            }
+
+            let (mut layout, root_id) = TileLayout::new();
+            let mut panes = HashMap::new();
+            // #76: record created pane ids in insertion order (root first, then each split) so the
+            // `focused_pane` index into `pane_terminals` maps back to the layout pane to focus.
+            let mut pane_ids = vec![root_id];
+
+            let (root_terminal_id, root_seen) = pane_terminals[0].clone();
+            let mut root_pane = PaneState::new(root_terminal_id);
+            root_pane.seen = root_seen;
+            panes.insert(root_id, root_pane);
+            public_pane_numbers.insert(root_id, next_public_pane_number);
+            next_public_pane_number += 1;
+
+            for (terminal_id, seen) in pane_terminals.into_iter().skip(1) {
+                // upstream v0.8.2 made `split_focused` test-only (production splits flow through
+                // `Tab` so a failed spawn can roll back). This path builds a layout from a
+                // snapshot, where no spawn can fail, so it uses the public primitive directly and
+                // keeps the same semantics: split the focused pane, then focus the new one.
+                let pane_id = layout
+                    .split_pane(layout.focused(), Direction::Vertical, 0.5)
+                    .expect("focused pane is in the layout");
+                layout.focus_pane(pane_id);
+                let mut pane = PaneState::new(terminal_id);
+                pane.seen = seen;
+                panes.insert(pane_id, pane);
+                public_pane_numbers.insert(pane_id, next_public_pane_number);
+                next_public_pane_number += 1;
+                pane_ids.push(pane_id);
+            }
+
+            // #76: `split_focused` leaves layout focus on the LAST split pane; move it onto the
+            // summary-focused agent's pane so the agents-panel highlight (`is_active_pane`) matches.
+            if let Some(idx) = focused_pane {
+                if let Some(&pane_id) = pane_ids.get(idx) {
+                    layout.focus_pane(pane_id);
+                }
+            }
+
+            tabs.push(Tab {
+                custom_name: spec.custom_name,
+                number: spec.number,
+                root_pane: root_id,
+                layout,
+                panes,
+                #[cfg(test)]
+                runtimes: HashMap::new(),
+                zoomed: false,
+                events: events.clone(),
+                render_notify: Arc::new(Notify::new()),
+                render_dirty: Arc::new(crate::render_signal::RenderSignal::new()),
+            });
+        }
+
+        let active_tab = active_tab.min(tabs.len().saturating_sub(1));
+        let (cached_git_space, cached_auto_label, cached_git_status_key) =
+            discover_workspace_git_identity(&identity_cwd);
+        Self {
+            id,
+            custom_name: Some(name),
+            identity_cwd: identity_cwd.clone(),
+            cached_identity_cwd: identity_cwd,
+            cached_auto_label,
+            cached_git_status_key,
+            cached_git_branch: branch,
+            cached_git_ahead_behind: None,
+            cached_git_space,
+            worktree_space: None,
+            public_pane_numbers,
+            next_public_pane_number,
+            next_public_tab_number: tabs.len() + 1,
+            tabs,
+            active_tab,
+            metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+            metadata_token_sequences: HashMap::new(),
+            #[cfg(test)]
+            test_runtimes: HashMap::new(),
+        }
+    }
+
     fn adjust_active_tab_after_removal(&mut self, removed_idx: usize) {
         if self.tabs.is_empty() {
             self.active_tab = 0;

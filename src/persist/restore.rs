@@ -122,15 +122,43 @@ pub fn handoff_pane_aliases(
     snapshot: &SessionSnapshot,
     workspaces: &[Workspace],
 ) -> HashMap<u32, PaneId> {
-    let mut aliases = HashMap::new();
+    // The fresh correspondence for THIS handoff: each snapshot-layout pane raw -> its newly
+    // allocated PaneId, in layout order.
+    let mut remap: HashMap<u32, PaneId> = HashMap::new();
     for (ws_snap, workspace) in snapshot.workspaces.iter().zip(workspaces) {
         for (tab_snap, tab) in ws_snap.tabs.iter().zip(&workspace.tabs) {
             let old_ids = collect_snapshot_pane_ids(&tab_snap.layout);
             let new_ids = tab.layout.pane_ids();
             for (old_id, new_id) in old_ids.into_iter().zip(new_ids) {
-                if old_id != new_id.raw() {
-                    aliases.insert(old_id, new_id);
-                }
+                remap.insert(old_id, new_id);
+            }
+        }
+    }
+    compose_handoff_aliases(&remap, &snapshot.pane_id_aliases)
+}
+
+/// #37: build the cumulative pane-id alias map for a handoff. `remap` is this handoff's
+/// snapshot-layout-raw -> new PaneId correspondence; `prior_aliases` is the alias map persisted in
+/// the snapshot (original spawn-time raw -> the pane's raw at snapshot time). An agent's
+/// `HERDR_PANE_ID` env is fixed at spawn, so to keep it resolving across MULTIPLE handoffs we must
+/// chain each prior original id forward through this handoff's remap — otherwise the original id
+/// drops out of the map after the second id-changing handoff and every `pane.report_agent` fails.
+fn compose_handoff_aliases(
+    remap: &HashMap<u32, PaneId>,
+    prior_aliases: &HashMap<u32, u32>,
+) -> HashMap<u32, PaneId> {
+    let mut aliases: HashMap<u32, PaneId> = HashMap::new();
+    // Direct hop: only panes whose id actually changed need an alias.
+    for (old_id, new_id) in remap {
+        if *old_id != new_id.raw() {
+            aliases.insert(*old_id, *new_id);
+        }
+    }
+    // Chain each prior original id forward: orig -> prev_raw (this handoff's `old_id`) -> new PaneId.
+    for (orig, prev_raw) in prior_aliases {
+        if let Some(new_id) = remap.get(prev_raw) {
+            if *orig != new_id.raw() {
+                aliases.insert(*orig, *new_id);
             }
         }
     }
@@ -936,6 +964,35 @@ mod tests {
     }
 
     #[test]
+    fn compose_handoff_aliases_chains_original_id_across_two_handoffs() {
+        // #37: an agent's HERDR_PANE_ID is fixed at spawn (orig=100). Handoff 1 mapped it to the
+        // pane that is now raw=1 (recorded in the snapshot's prior aliases). Handoff 2 re-allocates
+        // that pane to PaneId 7. The original id MUST chain forward so pane.report_agent keeps
+        // resolving — without the chain, orig=100 would be lost after this second handoff.
+        let remap: HashMap<u32, PaneId> = HashMap::from([(1u32, PaneId::from_raw(7))]);
+        let prior: HashMap<u32, u32> = HashMap::from([(100u32, 1u32)]);
+
+        let aliases = compose_handoff_aliases(&remap, &prior);
+        assert_eq!(aliases.get(&1), Some(&PaneId::from_raw(7)), "direct hop");
+        assert_eq!(
+            aliases.get(&100),
+            Some(&PaneId::from_raw(7)),
+            "original spawn id chains forward across the second handoff"
+        );
+    }
+
+    #[test]
+    fn compose_handoff_aliases_drops_prior_alias_for_vanished_pane() {
+        // #37: if the pane a prior alias pointed at is gone (not in this handoff's remap), the alias
+        // is dropped rather than resolving to the wrong pane.
+        let remap: HashMap<u32, PaneId> = HashMap::from([(2u32, PaneId::from_raw(9))]);
+        let prior: HashMap<u32, u32> = HashMap::from([(100u32, 1u32)]);
+        let aliases = compose_handoff_aliases(&remap, &prior);
+        assert!(!aliases.contains_key(&100));
+        assert_eq!(aliases.get(&2), Some(&PaneId::from_raw(9)));
+    }
+
+    #[test]
     fn capture_and_restore_node_round_trip() {
         let node = Node::Split {
             direction: Direction::Horizontal,
@@ -1171,6 +1228,7 @@ mod tests {
     async fn restore_carries_persisted_agent_session_metadata() {
         let cwd = std::env::current_dir().unwrap();
         let snapshot = SessionSnapshot {
+            pane_id_aliases: std::collections::HashMap::new(),
             version: super::super::snapshot::SNAPSHOT_VERSION,
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("workspace".into()),
@@ -1208,9 +1266,11 @@ mod tests {
             }],
             active: Some(0),
             selected: 0,
+            agent_panel_scope: Default::default(),
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
+            remote_registry: crate::remote_registry::RemoteRegistrySnapshot::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1301,9 +1361,12 @@ mod tests {
             }],
             active: Some(0),
             selected: 0,
+            agent_panel_scope: Default::default(),
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
+            remote_registry: Default::default(),
+            pane_id_aliases: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1408,9 +1471,12 @@ mod tests {
             }],
             active: Some(0),
             selected: 0,
+            agent_panel_scope: Default::default(),
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
+            remote_registry: Default::default(),
+            pane_id_aliases: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1519,9 +1585,12 @@ mod tests {
             }],
             active: Some(0),
             selected: 0,
+            agent_panel_scope: Default::default(),
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
+            remote_registry: Default::default(),
+            pane_id_aliases: std::collections::HashMap::new(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1691,6 +1760,7 @@ mod tests {
             }],
         };
         let snapshot = SessionSnapshot {
+            pane_id_aliases: std::collections::HashMap::new(),
             version: super::super::snapshot::SNAPSHOT_VERSION,
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("workspace".into()),
@@ -1713,9 +1783,11 @@ mod tests {
             }],
             active: Some(0),
             selected: 0,
+            agent_panel_scope: Default::default(),
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: Default::default(),
+            remote_registry: crate::remote_registry::RemoteRegistrySnapshot::default(),
         };
         (snapshot, history)
     }

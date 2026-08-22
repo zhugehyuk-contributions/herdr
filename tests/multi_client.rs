@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{mpsc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -140,6 +140,58 @@ fn spawn_server(config_home: &Path, runtime_dir: &Path, api_socket_path: &Path) 
     }
 }
 
+fn spawn_named_server(config_home: &Path, runtime_dir: &Path, session_name: &str) -> SpawnedHerdr {
+    fs::create_dir_all(config_home.join("herdr")).unwrap();
+    fs::create_dir_all(runtime_dir).unwrap();
+    register_runtime_dir(runtime_dir);
+    fs::write(
+        config_home.join("herdr/config.toml"),
+        "onboarding = false\n",
+    )
+    .unwrap();
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    cmd.arg("server");
+    cmd.arg("--session");
+    cmd.arg(session_name);
+    cmd.env("XDG_CONFIG_HOME", config_home);
+    cmd.env("XDG_RUNTIME_DIR", runtime_dir);
+    cmd.env_remove("HERDR_SOCKET_PATH");
+    cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
+    cmd.env("SHELL", "/bin/sh");
+    cmd.env_remove("HERDR_ENV");
+
+    let child = pair.slave.spawn_command(cmd).unwrap();
+    register_spawned_herdr_pid(child.process_id());
+    drop(pair.slave);
+
+    SpawnedHerdr {
+        _master: pair.master,
+        child,
+    }
+}
+
+fn session_socket_dir(config_home: &Path, session_name: &str) -> PathBuf {
+    let app_dir = if cfg!(debug_assertions) {
+        "herdr-dev"
+    } else {
+        "herdr"
+    };
+    config_home
+        .join(app_dir)
+        .join("sessions")
+        .join(session_name)
+}
+
 fn spawn_client_process(
     config_home: &Path,
     runtime_dir: &Path,
@@ -244,6 +296,150 @@ fn send_json_request(socket_path: &Path, request: &str) -> Value {
     reader.read_line(&mut response).unwrap();
 
     serde_json::from_str(&response).expect("response should be valid JSON")
+}
+
+fn workspace_list(socket_path: &Path) -> Value {
+    send_json_request(
+        socket_path,
+        r#"{"id":"workspace_list","method":"workspace.list","params":{}}"#,
+    )
+}
+
+fn workspace_count(socket_path: &Path) -> usize {
+    workspace_list(socket_path)
+        .pointer("/result/workspaces")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .expect("workspace.list should return a workspace array")
+}
+
+fn wait_for_workspace_count(socket_path: &Path, expected: usize, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if workspace_count(socket_path) == expected {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn spawn_pty_output_collector(master: &dyn MasterPty) -> mpsc::Receiver<String> {
+    let mut reader = master.try_clone_reader().expect("clone PTY reader");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    if tx
+                        .send(String::from_utf8_lossy(&buf[..n]).into_owned())
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Ok(_) => return,
+                Err(_) => return,
+            }
+        }
+    });
+    rx
+}
+
+fn wait_for_output_containing(
+    rx: &mpsc::Receiver<String>,
+    needles: &[&str],
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut raw_output = String::new();
+    let mut output = String::new();
+    while Instant::now() < deadline {
+        let slice = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(100));
+        match rx.recv_timeout(slice) {
+            Ok(chunk) => {
+                raw_output.push_str(&chunk);
+                output = strip_ansi_for_test(&raw_output);
+                if needles.iter().all(|needle| output.contains(needle)) {
+                    return true;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+        }
+    }
+    eprintln!(
+        "client PTY output did not contain {needles:?}. Captured output: {}",
+        output.escape_debug()
+    );
+    false
+}
+
+fn strip_ansi_for_test(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != 0x1b {
+            let ch = input[i..].chars().next().expect("valid UTF-8 char");
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+
+        i += 1;
+        if i >= bytes.len() {
+            break;
+        }
+        match bytes[i] {
+            b'[' => {
+                i += 1;
+                while i < bytes.len() {
+                    let byte = bytes[i];
+                    i += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            b']' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'P' | b'_' | b'^' | b'X' | b'G' => {
+                i += 1;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == 0x1b && bytes[i + 1] == b'\\' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn write_sgr_mouse_click(writer: &mut dyn Write, column: u16, row: u16) {
+    write!(writer, "\x1b[<0;{column};{row}M").expect("write SGR mouse click");
+    writer.flush().expect("flush SGR mouse click");
 }
 
 fn create_workspace_and_root_pane(socket_path: &Path, label: &str) -> (String, String) {
@@ -527,16 +723,20 @@ fn client_handshake(
             &encode_varint_u32(8),  // cell_width_px
             &encode_varint_u32(16), // cell_height_px
             &encode_varint_u32(0),  // RenderEncoding::SemanticFrame
+            &encode_varint_u32(0),  // ClientSurfaceMode::FullApp
             &encode_varint_u32(0),  // ClientKeybindings::Server
             &encode_varint_u32(0),  // ClientLaunchMode::App
         ],
     );
+    // The wire-ABI prelude precedes the Hello frame (`src/protocol/abi.rs`).
+    support::send_wire_abi_prelude(stream)?;
     stream
         .write_all(&frame_message(&hello_payload))
         .map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())?;
 
-    // Read ServerMessage::Welcome = variant 0
+    // The server's prelude, then ServerMessage::Welcome = variant 0
+    support::expect_wire_abi_prelude(stream)?;
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).map_err(|e| e.to_string())?;
     let len = u32::from_le_bytes(len_buf) as usize;
@@ -692,7 +892,8 @@ fn wait_for_frame(stream: &mut UnixStream, timeout: Duration) -> bool {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let slice = remaining.min(Duration::from_millis(75));
         match read_server_variant(stream, slice) {
-            Ok(1) => return true, // ServerMessage::Frame
+            // Frame (1), FrameDelta (9), or Compressed frame (11) — issue #13.
+            Ok(1) | Ok(9) | Ok(11) => return true,
             Ok(_) => {}
             Err(err) if is_timeout(&err) => {}
             Err(_) => return false,
@@ -713,17 +914,20 @@ fn wait_for_frame_matching_with_snapshots(
             .saturating_duration_since(Instant::now())
             .min(Duration::from_millis(80));
         match read_server_message_payload(stream, slice) {
-            Ok((1, frame_payload)) => {
-                let frame = decode_frame_payload(&frame_payload)?;
-                if snapshots.len() == 5 {
-                    snapshots.pop_front();
-                }
-                snapshots.push_back(frame_text(&frame));
-                if predicate(&frame) {
-                    return Ok((true, snapshots.into_iter().collect()));
+            Ok((variant, payload)) => {
+                // issue #13: inflate deflate-wrapped frames before decoding.
+                let (variant, payload) = support::inflate_compressed_frame(variant, &payload);
+                if variant == 1 {
+                    let frame = decode_frame_payload(&payload)?;
+                    if snapshots.len() == 5 {
+                        snapshots.pop_front();
+                    }
+                    snapshots.push_back(frame_text(&frame));
+                    if predicate(&frame) {
+                        return Ok((true, snapshots.into_iter().collect()));
+                    }
                 }
             }
-            Ok((_variant, _payload)) => {}
             Err(err) if is_timeout(&err) => {}
             Err(err) => return Err(err),
         }
@@ -850,6 +1054,11 @@ fn multi_client_effective_size_shrinks_when_smaller_client_joins() {
 }
 
 #[test]
+/// herdr-mx: the agent-label constants below (19 / 15 / 16) are this fork's geometry, not
+/// upstream v0.8.2's (16 / 10 / 11). The assertion is unchanged — a background client's render must
+/// not undo the foreground client's agent-panel scroll — but herdr-mx replaced upstream's
+/// token-row sidebar with the segments sidebar, so a 40-row client's last agent page holds 5 rows
+/// where upstream's holds 8. Measured against this build, not guessed.
 fn non_foreground_client_render_preserves_agent_panel_scroll() {
     let _lock = test_lock();
     let base = unique_test_dir();
@@ -877,7 +1086,7 @@ fn non_foreground_client_render_preserves_agent_panel_scroll() {
     let (reached_bottom, setup_frames) = wait_for_frame_matching_with_snapshots(
         &mut setup_client,
         Duration::from_secs(3),
-        |frame| agent_panel_starts_with(frame, "agent-16"),
+        |frame| agent_panel_starts_with(frame, "agent-19"),
     )
     .expect("setup frame decoding should succeed");
     assert!(
@@ -893,7 +1102,7 @@ fn non_foreground_client_render_preserves_agent_panel_scroll() {
     let mut probe = connect_raw_client(&client_socket, 106, 40);
     let (started_at_tall_limit, initial_frames) =
         wait_for_frame_matching_with_snapshots(&mut probe, Duration::from_secs(3), |frame| {
-            agent_panel_starts_with(frame, "agent-10")
+            agent_panel_starts_with(frame, "agent-15")
         })
         .expect("initial probe frame decoding should succeed");
     assert!(
@@ -906,7 +1115,7 @@ fn non_foreground_client_render_preserves_agent_panel_scroll() {
     send_client_input(&mut probe, wheel_down);
     let (scrolled, probe_frames) =
         wait_for_frame_matching_with_snapshots(&mut probe, Duration::from_secs(3), |frame| {
-            agent_panel_starts_with(frame, "agent-11")
+            agent_panel_starts_with(frame, "agent-16")
         })
         .expect("probe frame decoding should succeed");
     assert!(
@@ -1139,6 +1348,383 @@ fn multi_client_client_crash_sigkill_does_not_affect_server() {
 }
 
 #[test]
+fn mixed_local_remote_client_connects_main_and_secondary_streams() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let dev_socket_dir = session_socket_dir(&config_home, "dev");
+    let dev_api_socket = dev_socket_dir.join("herdr.sock");
+    let dev_client_socket = dev_socket_dir.join("herdr-client.sock");
+
+    let main_server = spawn_server(&config_home, &runtime_dir, &api_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+
+    let dev_server = spawn_named_server(&config_home, &runtime_dir, "dev");
+    wait_for_socket(&dev_api_socket, Duration::from_secs(10));
+    wait_for_file(&dev_client_socket, Duration::from_secs(10));
+
+    let add_remote = send_json_request(
+        &api_socket,
+        r#"{"id":"remote_add","method":"remote.add","params":{"name":"dev","target":"local:dev"}}"#,
+    );
+    if add_remote.get("error").is_some() {
+        panic!("remote.add failed: {add_remote}");
+    }
+
+    let main_log_path = server_log_path(&config_home);
+    let dev_log_path = dev_socket_dir.join("herdr-server.log");
+    let main_connected_before = count_log_occurrences(&main_log_path, "client connected");
+    let dev_connected_before = count_log_occurrences(&dev_log_path, "client connected");
+
+    let client = spawn_client_process(&config_home, &runtime_dir, &api_socket);
+    // Drain the client's PTY the way a real terminal does (matching the sibling mixed_* tests). An
+    // undrained PTY fills, the client's blocking stdout frame writes never return, and its
+    // single-threaded event loop freezes — so the Timer-driven secondary-stream connection asserted
+    // below never runs. Bind the receiver so the collector thread stays alive for the whole test.
+    let _client_output = spawn_pty_output_collector(client._master.as_ref());
+    assert!(
+        wait_for_log_occurrence_count(
+            &main_log_path,
+            "client connected",
+            main_connected_before + 1,
+            Duration::from_secs(10),
+        ),
+        "thin client should connect to the main client stream"
+    );
+    assert!(
+        wait_for_log_occurrence_count(
+            &dev_log_path,
+            "client connected",
+            dev_connected_before + 1,
+            Duration::from_secs(10),
+        ),
+        "thin client should connect to the local:dev client stream"
+    );
+
+    drop(client);
+    drop(dev_server);
+    cleanup_spawned_herdr(main_server, base);
+}
+
+#[test]
+fn mixed_local_remote_client_picker_creates_on_selected_secondary_and_main_survives_secondary_stop()
+{
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+    let dev_socket_dir = session_socket_dir(&config_home, "dev");
+    let dev_api_socket = dev_socket_dir.join("herdr.sock");
+    let dev_client_socket = dev_socket_dir.join("herdr-client.sock");
+
+    let main_server = spawn_server(&config_home, &runtime_dir, &api_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_file(&client_socket, Duration::from_secs(10));
+    create_workspace_and_root_pane(&api_socket, "main-visible");
+
+    let dev_server = spawn_named_server(&config_home, &runtime_dir, "dev");
+    wait_for_socket(&dev_api_socket, Duration::from_secs(10));
+    wait_for_file(&dev_client_socket, Duration::from_secs(10));
+    create_workspace_and_root_pane(&dev_api_socket, "dev-visible");
+
+    let add_remote = send_json_request(
+        &api_socket,
+        r#"{"id":"remote_add","method":"remote.add","params":{"name":"dev","target":"local:dev"}}"#,
+    );
+    if add_remote.get("error").is_some() {
+        panic!("remote.add failed: {add_remote}");
+    }
+
+    let main_count_before = workspace_count(&api_socket);
+    let dev_count_before = workspace_count(&dev_api_socket);
+
+    let main_log_path = server_log_path(&config_home);
+    let dev_log_path = dev_socket_dir.join("herdr-server.log");
+    let main_connected_before = count_log_occurrences(&main_log_path, "client connected");
+    let dev_connected_before = count_log_occurrences(&dev_log_path, "client connected");
+
+    let client = spawn_client_process(&config_home, &runtime_dir, &api_socket);
+    let client_output = spawn_pty_output_collector(client._master.as_ref());
+    assert!(
+        wait_for_log_occurrence_count(
+            &main_log_path,
+            "client connected",
+            main_connected_before + 1,
+            Duration::from_secs(10),
+        ),
+        "thin client should connect to the main client stream"
+    );
+    assert!(
+        wait_for_log_occurrence_count(
+            &dev_log_path,
+            "client connected",
+            dev_connected_before + 1,
+            Duration::from_secs(10),
+        ),
+        "thin client should connect to the local:dev client stream"
+    );
+    assert!(
+        wait_for_output_containing(
+            &client_output,
+            &["main-visible", "dev-visible"],
+            Duration::from_secs(10),
+        ),
+        "mixed client sidebar should show workspace labels from main and local:dev"
+    );
+
+    // 80x24 host: the server sidebar places the footer/`new` affordance at the
+    // bottom of the workspace section, y=11 (SGR row 12). Clicking it opens the
+    // destination picker, now a FOOTER-ANCHORED ratatui popup that floats over the
+    // live content (item 1 / Area 3) — it opens UPWARD from the footer instead of
+    // dead-centered. `anchor_area` spans the host top down to the footer row
+    // (80x11), so for two destinations the popup is 44x7 at (0,4), inner rect
+    // (1,5,42,5), with the "new workspace" header on inner row 0, the " create on"
+    // sub-label on inner row 1, and the destination rows starting two lines below —
+    // so the second destination ("dev", row index 1) renders at y=8 (SGR row 9),
+    // spanning the inner width [1,43).
+    let mut client_writer = client._master.take_writer().expect("open PTY writer");
+    write_sgr_mouse_click(client_writer.as_mut(), 2, 12);
+    // The blit diff (and `strip_ansi_for_test`, which drops cursor-positioning escapes)
+    // only preserves contiguously-emitted glyph runs, so assert on the picker's
+    // `create` button/sub-label run and the `›`-marked selected destination row.
+    assert!(
+        wait_for_output_containing(
+            &client_output,
+            &["create", "› local"],
+            Duration::from_secs(5)
+        ),
+        "clicking new in all-server mode should open the destination picker"
+    );
+    write_sgr_mouse_click(client_writer.as_mut(), 21, 9);
+
+    assert!(
+        wait_for_workspace_count(
+            &dev_api_socket,
+            dev_count_before + 1,
+            Duration::from_secs(10)
+        ),
+        "choosing dev in the destination picker should create a workspace on local:dev"
+    );
+    assert_eq!(
+        workspace_count(&api_socket),
+        main_count_before,
+        "choosing dev must not create the new workspace on main"
+    );
+
+    drop(dev_server);
+
+    let main_after_dev_stop = send_json_request(
+        &api_socket,
+        r#"{"id":"main_after_dev_stop","method":"workspace.create","params":{"label":"main-after-dev-stop"}}"#,
+    );
+    assert!(
+        main_after_dev_stop.get("error").is_none(),
+        "main API should stay usable after stopping secondary: {main_after_dev_stop}"
+    );
+    assert!(
+        ping_socket(&api_socket).contains("pong"),
+        "main server should keep responding after stopping secondary"
+    );
+
+    drop(client);
+    cleanup_spawned_herdr(main_server, base);
+}
+
+#[test]
+fn mixed_client_clicking_remote_workspace_focuses_and_displays_remote_content() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+    let dev_socket_dir = session_socket_dir(&config_home, "dev");
+    let dev_api_socket = dev_socket_dir.join("herdr.sock");
+    let dev_client_socket = dev_socket_dir.join("herdr-client.sock");
+
+    let main_server = spawn_server(&config_home, &runtime_dir, &api_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_file(&client_socket, Duration::from_secs(10));
+    let (_main_workspace_id, main_pane_id) =
+        create_workspace_and_root_pane(&api_socket, "main-visible");
+
+    let dev_server = spawn_named_server(&config_home, &runtime_dir, "dev");
+    wait_for_socket(&dev_api_socket, Duration::from_secs(10));
+    wait_for_file(&dev_client_socket, Duration::from_secs(10));
+    let (_dev_workspace_id, dev_pane_id) =
+        create_workspace_and_root_pane(&dev_api_socket, "dev-visible");
+
+    let main_marker = format!("MAIN_CLICK_CONTENT_{}", std::process::id());
+    let dev_marker = format!("REMOTE_CLICK_CONTENT_{}", std::process::id());
+    pane_send_input(
+        &api_socket,
+        &main_pane_id,
+        &format!("printf '{main_marker}\\n'"),
+    );
+    pane_send_input(
+        &dev_api_socket,
+        &dev_pane_id,
+        &format!("printf '{dev_marker}\\n'"),
+    );
+    assert!(
+        pane_read_recent_contains(
+            &api_socket,
+            &main_pane_id,
+            &main_marker,
+            Duration::from_secs(5)
+        ),
+        "main pane should contain marker before launching mixed client"
+    );
+    assert!(
+        pane_read_recent_contains(
+            &dev_api_socket,
+            &dev_pane_id,
+            &dev_marker,
+            Duration::from_secs(5)
+        ),
+        "remote pane should contain marker before launching mixed client"
+    );
+
+    let add_remote = send_json_request(
+        &api_socket,
+        r#"{"id":"remote_add","method":"remote.add","params":{"name":"dev","target":"local:dev"}}"#,
+    );
+    if add_remote.get("error").is_some() {
+        panic!("remote.add failed: {add_remote}");
+    }
+
+    let main_log_path = server_log_path(&config_home);
+    let dev_log_path = dev_socket_dir.join("herdr-server.log");
+    let main_connected_before = count_log_occurrences(&main_log_path, "client connected");
+    let dev_connected_before = count_log_occurrences(&dev_log_path, "client connected");
+    let dev_focus_before = count_log_occurrences(&dev_log_path, "client:workspace-focus");
+
+    let client = spawn_client_process(&config_home, &runtime_dir, &api_socket);
+    let client_output = spawn_pty_output_collector(client._master.as_ref());
+    let mut client_writer = client._master.take_writer().expect("open PTY writer");
+
+    assert!(
+        wait_for_log_occurrence_count(
+            &main_log_path,
+            "client connected",
+            main_connected_before + 1,
+            Duration::from_secs(10),
+        ),
+        "thin client should connect to the main client stream"
+    );
+    assert!(
+        wait_for_log_occurrence_count(
+            &dev_log_path,
+            "client connected",
+            dev_connected_before + 1,
+            Duration::from_secs(10),
+        ),
+        "thin client should connect to the local:dev client stream"
+    );
+    assert!(
+        wait_for_output_containing(
+            &client_output,
+            &["main-visible", "dev-visible", &main_marker],
+            Duration::from_secs(10),
+        ),
+        "mixed client should render main content and both workspace labels before clicking"
+    );
+
+    let mut displayed_remote = false;
+    for sgr_row in 2..=11 {
+        write_sgr_mouse_click(client_writer.as_mut(), 2, sgr_row);
+        if wait_for_output_containing(&client_output, &[&dev_marker], Duration::from_millis(400)) {
+            displayed_remote = true;
+            break;
+        }
+    }
+
+    assert!(
+        displayed_remote,
+        "clicking a visible remote workspace row should switch the mixed client content to the remote frame"
+    );
+    assert!(
+        wait_for_log_occurrence_count(
+            &dev_log_path,
+            "client:workspace-focus",
+            dev_focus_before + 1,
+            Duration::from_secs(5),
+        ),
+        "clicking the remote workspace row should route workspace.focus to the remote API"
+    );
+
+    drop(client);
+    drop(dev_server);
+    cleanup_spawned_herdr(main_server, base);
+}
+
+#[test]
+fn mixed_client_menu_uses_server_launcher_surface() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+
+    let main_server = spawn_server(&config_home, &runtime_dir, &api_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_file(&client_socket, Duration::from_secs(10));
+
+    let main_log_path = server_log_path(&config_home);
+    let main_connected_before = count_log_occurrences(&main_log_path, "client connected");
+
+    let client = spawn_client_process(&config_home, &runtime_dir, &api_socket);
+    let client_output = spawn_pty_output_collector(client._master.as_ref());
+    let mut client_writer = client._master.take_writer().expect("open PTY writer");
+
+    assert!(
+        wait_for_log_occurrence_count(
+            &main_log_path,
+            "client connected",
+            main_connected_before + 1,
+            Duration::from_secs(10),
+        ),
+        "thin client should connect to the main client stream"
+    );
+    assert!(
+        wait_for_output_containing(&client_output, &["new", "menu"], Duration::from_secs(10)),
+        "client-owned footer should render before any secondary remote exists"
+    );
+
+    // Footer menu is right-aligned inside the original 26-column sidebar's
+    // workspace section.
+    write_sgr_mouse_click(client_writer.as_mut(), 24, 12);
+    assert!(
+        wait_for_output_containing(
+            &client_output,
+            &[
+                "settings",
+                "keybinds",
+                "reload config",
+                "detach",
+                "add remote"
+            ],
+            Duration::from_secs(5)
+        ),
+        "clicking menu should open the original server launcher menu"
+    );
+
+    let list = send_json_request(
+        &api_socket,
+        r#"{"id":"remote_list","method":"remote.list","params":{}}"#,
+    );
+    assert_eq!(list["result"]["remotes"].as_array().unwrap().len(), 0);
+
+    drop(client);
+    cleanup_spawned_herdr(main_server, base);
+}
+
+#[test]
 fn multi_client_rapid_connect_disconnect_stress_10_cycles() {
     let _lock = test_lock();
     let base = unique_test_dir();
@@ -1172,4 +1758,80 @@ fn multi_client_rapid_connect_disconnect_stress_10_cycles() {
     );
 
     cleanup_spawned_herdr(server, base);
+}
+
+/// End-to-end (issue #11, #2): a full ssh add-remote spec flows through the real `remote.add`
+/// API, captures its options, names + dedups off the destination, and round-trips via
+/// `remote.list`. `remote.add` is registry-only (no ssh connection), so this is deterministic.
+#[test]
+fn remote_add_accepts_full_ssh_spec_and_dedups_by_destination_plus_options() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+
+    let main_server = spawn_server(&config_home, &runtime_dir, &api_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+
+    // Full ssh spec: leading `ssh` stripped, flags captured, destination = last positional.
+    let add = send_json_request(
+        &api_socket,
+        r#"{"id":"a","method":"remote.add","params":{"target":"ssh -L 9000:localhost:9000 -J jump iq-64"}}"#,
+    );
+    assert!(
+        add.get("error").is_none(),
+        "remote.add full spec failed: {add}"
+    );
+    let remote = &add["result"]["remote"];
+    assert_eq!(
+        remote["name"], "iq-64",
+        "name should default to the destination"
+    );
+    assert_eq!(remote["target"]["type"], "ssh");
+    assert_eq!(remote["target"]["target"], "iq-64");
+    assert_eq!(
+        remote["target"]["args"],
+        serde_json::json!(["-L", "9000:localhost:9000", "-J", "jump"]),
+        "ssh options must persist"
+    );
+
+    // remote.list reflects the persisted spec.
+    let list = send_json_request(
+        &api_socket,
+        r#"{"id":"l","method":"remote.list","params":{}}"#,
+    );
+    let remotes = list["result"]["remotes"].as_array().unwrap();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0]["target"]["target"], "iq-64");
+    assert_eq!(
+        remotes[0]["target"]["args"],
+        serde_json::json!(["-L", "9000:localhost:9000", "-J", "jump"])
+    );
+
+    // The identical spec is a duplicate target (dedup keys off destination + options).
+    let dup = send_json_request(
+        &api_socket,
+        r#"{"id":"d","method":"remote.add","params":{"target":"ssh -L 9000:localhost:9000 -J jump iq-64"}}"#,
+    );
+    assert!(
+        dup.get("error").is_some(),
+        "identical full spec should be rejected: {dup}"
+    );
+
+    // A bare host to the same destination is a distinct connection (no options): accepted, and it
+    // persists with no `args` key (bare targets stay byte-identical to the legacy on-disk form).
+    let bare = send_json_request(
+        &api_socket,
+        r#"{"id":"b","method":"remote.add","params":{"name":"plain","target":"iq-64"}}"#,
+    );
+    assert!(bare.get("error").is_none(), "bare host add failed: {bare}");
+    assert_eq!(bare["result"]["remote"]["target"]["target"], "iq-64");
+    assert_eq!(
+        bare["result"]["remote"]["target"]["args"],
+        Value::Null,
+        "bare target must not serialize an args key"
+    );
+
+    cleanup_spawned_herdr(main_server, base);
 }

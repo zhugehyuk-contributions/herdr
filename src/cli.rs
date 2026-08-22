@@ -24,8 +24,10 @@ macro_rules! println {
 
 mod agent;
 mod api;
+mod bundle;
 mod completion;
 mod integration;
+mod live_handoff;
 mod notification;
 mod pane;
 mod plugin;
@@ -108,8 +110,10 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
             };
             exit_code
         }
+        "live-handoff" => live_handoff::run_live_handoff_command(&args[2..])?,
         "api" => api::run_api_command(&args[2..])?,
         "status" => status::run_status_command(&args[2..])?,
+        "bundle" => bundle::run_bundle_command(&args[2..])?,
         "completion" | "completions" => completion::run_completion_command(&args[2..])?,
         "config" => run_config_command(&args[2..])?,
         "channel" => run_channel_command(&args[2..])?,
@@ -565,13 +569,12 @@ fn terminal_session_control(args: &[String]) -> std::io::Result<i32> {
         Err(code) => return Ok(code),
     };
 
-    crate::client::run_terminal_session_control(
-        options.target,
-        options.takeover,
-        options.cols,
-        options.rows,
-    )?;
-    Ok(0)
+    // herdr-mx: upstream's terminal session streams are built on the upstream client's
+    // handshake/encoding internals, which this fork's multi-remote client replaced.
+    // Porting observe/control onto the mx client is tracked as an upstream-merge follow-up.
+    let _ = options;
+    eprintln!("herdr: terminal session control is not yet supported in herdr-mx");
+    Ok(1)
 }
 
 fn terminal_session_observe(args: &[String]) -> std::io::Result<i32> {
@@ -585,10 +588,15 @@ fn terminal_session_observe(args: &[String]) -> std::io::Result<i32> {
         Err(code) => return Ok(code),
     };
 
-    crate::client::run_terminal_session_observe(options.target, options.cols, options.rows)?;
-    Ok(0)
+    // herdr-mx: see terminal_session_control — same follow-up.
+    let _ = options;
+    eprintln!("herdr: terminal session observe is not yet supported in herdr-mx");
+    Ok(1)
 }
 
+// Parsed but unused until terminal session observe/control are ported onto the mx client
+// (upstream-merge follow-up; see terminal_session_control).
+#[allow(dead_code)]
 struct TerminalSessionOptions {
     target: String,
     cols: u16,
@@ -820,6 +828,17 @@ pub(super) fn server_not_running_error(err: &std::io::Error) -> bool {
     matches!(
         err.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// True when a bounded request hit its own deadline: a socket send/recv timeout
+/// surfaces as `WouldBlock` on unix and `TimedOut` on Windows, and both mean the
+/// peer accepted us and then said nothing. Shared so every bounded caller
+/// (status probes, live handoff) classifies the wedged case identically.
+pub(super) fn probe_timed_out(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
     )
 }
 

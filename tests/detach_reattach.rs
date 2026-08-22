@@ -482,8 +482,8 @@ fn reattach_after_detach_shows_current_state() {
     while Instant::now() < deadline {
         match read_server_message(&mut stream_b) {
             Ok((variant, _payload)) => {
-                if variant == 1 {
-                    // ServerMessage::Frame
+                if variant == 1 || variant == 9 || variant == 11 {
+                    // ServerMessage::Frame / FrameDelta / Compressed frame (issue #13)
                     received_frame = true;
                     break;
                 }
@@ -594,7 +594,8 @@ fn processes_survive_during_and_after_detach() {
     while Instant::now() < deadline {
         match read_server_message(&mut stream_b) {
             Ok((variant, _)) => {
-                if variant == 1 {
+                if variant == 1 || variant == 9 || variant == 11 {
+                    // Frame / FrameDelta / Compressed frame (issue #13)
                     received_frame = true;
                     break;
                 }
@@ -928,7 +929,8 @@ fn output_accumulated_while_detached_visible_on_reattach() {
     while Instant::now() < deadline {
         match read_server_message(&mut stream_b) {
             Ok((variant, _)) => {
-                if variant == 1 {
+                if variant == 1 || variant == 9 || variant == 11 {
+                    // Frame / FrameDelta / Compressed frame (issue #13)
                     received_frame = true;
                     break;
                 }

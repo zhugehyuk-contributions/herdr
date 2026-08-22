@@ -138,6 +138,48 @@ fn named_sessions_use_separate_servers_and_workspace_state() {
         .unwrap()
         .ends_with("/sessions/beta"));
 
+    let status_json = run_named_cli_json(
+        &config_home,
+        &runtime_dir,
+        &["--session", "alpha", "status", "--json"],
+    );
+    let status_sessions = status_json["sessions"].as_array().unwrap();
+    let status_alpha = status_sessions
+        .iter()
+        .find(|session| session["name"] == "alpha")
+        .unwrap();
+    let status_beta = status_sessions
+        .iter()
+        .find(|session| session["name"] == "beta")
+        .unwrap();
+    let status_default = status_sessions
+        .iter()
+        .find(|session| session["name"] == "default")
+        .unwrap();
+    assert_eq!(status_alpha["running"], true, "status: {status_json}");
+    assert_eq!(status_beta["running"], true, "status: {status_json}");
+    assert_eq!(status_alpha["active"], true, "status: {status_json}");
+    assert_eq!(status_beta["active"], false, "status: {status_json}");
+    assert_eq!(status_alpha["compatible"], true, "status: {status_json}");
+    assert_eq!(status_beta["compatible"], true, "status: {status_json}");
+    assert_eq!(status_alpha["protocol"], CURRENT_PROTOCOL);
+    assert_eq!(status_default["running"], false, "status: {status_json}");
+    assert_eq!(status_default["compatible"], serde_json::Value::Null);
+
+    let status_human = run_named_cli(
+        &config_home,
+        &runtime_dir,
+        &["--session", "alpha", "status"],
+    );
+    assert!(status_human.status.success());
+    let status_human = String::from_utf8_lossy(&status_human.stdout);
+    assert!(
+        status_human.contains("sessions: (* = active)"),
+        "stdout: {status_human}"
+    );
+    assert!(status_human.contains("* alpha"), "stdout: {status_human}");
+    assert!(status_human.contains("  beta "), "stdout: {status_human}");
+
     let delete_running = run_named_cli(&config_home, &runtime_dir, &["session", "delete", "alpha"]);
     assert_eq!(delete_running.status.code(), Some(1));
     assert!(
@@ -389,7 +431,7 @@ fn status_commands_report_client_and_server_versions() {
         "stdout: {full_stdout}"
     );
     assert!(
-        full_stdout.contains("  protocol: 20"),
+        full_stdout.contains(&format!("  protocol: {CURRENT_PROTOCOL}")),
         "stdout: {full_stdout}"
     );
     assert!(full_stdout.contains("server:\n"), "stdout: {full_stdout}");
@@ -422,7 +464,7 @@ fn status_commands_report_client_and_server_versions() {
         "stdout: {server_stdout}"
     );
     assert!(
-        server_stdout.contains("protocol: 20"),
+        server_stdout.contains(&format!("protocol: {CURRENT_PROTOCOL}")),
         "stdout: {server_stdout}"
     );
 
@@ -434,7 +476,7 @@ fn status_commands_report_client_and_server_versions() {
         "stdout: {client_stdout}"
     );
     assert!(
-        client_stdout.contains("protocol: 20"),
+        client_stdout.contains(&format!("protocol: {CURRENT_PROTOCOL}")),
         "stdout: {client_stdout}"
     );
     assert!(
@@ -444,7 +486,7 @@ fn status_commands_report_client_and_server_versions() {
 
     let full_json = run_cli_json(&socket_path, &["status", "--json"]);
     assert_eq!(full_json["client"]["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(full_json["client"]["protocol"], 20);
+    assert_eq!(full_json["client"]["protocol"], CURRENT_PROTOCOL);
     assert_eq!(full_json["server"]["status"], "running");
     assert_eq!(full_json["server"]["running"], true);
     assert_eq!(full_json["server"]["compatible"], true);
@@ -458,12 +500,12 @@ fn status_commands_report_client_and_server_versions() {
     let server_json = run_cli_json(&socket_path, &["status", "server", "--json"]);
     assert_eq!(server_json["status"], "running");
     assert_eq!(server_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(server_json["protocol"], 20);
+    assert_eq!(server_json["protocol"], CURRENT_PROTOCOL);
     assert_eq!(server_json["compatible"], true);
 
     let client_json = run_cli_json(&socket_path, &["status", "client", "--json"]);
     assert_eq!(client_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(client_json["protocol"], 20);
+    assert_eq!(client_json["protocol"], CURRENT_PROTOCOL);
     assert!(client_json["binary"]
         .as_str()
         .is_some_and(|path| !path.is_empty()));

@@ -26,3 +26,13 @@ __pycache__/
 
 /.wrangler/
 **/.wrangler/
+.worktrees/
+
+# mobile app (Expo / React Native) + shared TS packages
+/mobile/node_modules/
+/mobile/.expo/
+/mobile/dist/
+/mobile/ios/Pods/
+/mobile/android/.gradle/
+/packages/*/node_modules/
+/packages/*/dist/

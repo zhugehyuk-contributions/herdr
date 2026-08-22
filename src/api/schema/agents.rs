@@ -185,10 +185,19 @@ pub struct AgentInfo {
     pub terminal_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// herdr-mx #58: the pane's MANUAL rename (`terminal.manual_label`) — the "pane name" the
+    /// sidebar shows, distinct from `name` (the agent name). Carried so the client-rendered
+    /// multi-remote sidebar can show it. Additive + optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// herdr-mx #58: the display name of the TAB this pane is in (`Tab::display_name()`), so the
+    /// multi-remote client can group panes into tabs and render tab names. Additive + optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

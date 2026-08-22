@@ -19,6 +19,9 @@ pub(crate) fn end_cli_output() {
     set_sigpipe_disposition(libc::SIG_IGN);
 }
 
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 pub(crate) fn remote_ssh_config_paths() -> super::RemoteSshConfigPaths {
     super::RemoteSshConfigPaths {
         user_config: std::env::var_os("HOME")
@@ -29,6 +32,9 @@ pub(crate) fn remote_ssh_config_paths() -> super::RemoteSshConfigPaths {
     }
 }
 
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 pub(crate) fn create_remote_ssh_config_dir(control_socket_name: &str) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
 
@@ -76,6 +82,9 @@ pub(crate) fn create_remote_ssh_config_dir(control_socket_name: &str) -> std::io
     ))
 }
 
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 pub(crate) fn create_remote_ssh_config_file(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -96,6 +105,9 @@ pub(crate) fn remote_private_temp_base() -> PathBuf {
     std::env::temp_dir()
 }
 
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 pub(crate) fn remote_bridge_endpoint_path(readable_name: &str, short_name: &str) -> PathBuf {
     let tmp = std::env::temp_dir();
     let readable = tmp.join(readable_name);
@@ -132,6 +144,9 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
 fn fits_unix_socket_path(path: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
 

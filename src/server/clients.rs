@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::protocol::RenderEncoding;
+use crate::protocol::{ClientSurfaceMode, RenderEncoding};
 use crate::server::client_transport::ClientWriter;
 use crate::server::render_stream::ClientRenderState;
 
@@ -18,6 +18,7 @@ pub(crate) type RenderTarget = (
     crate::kitty_graphics::HostCellSize,
     bool,
     ClientConnectionMode,
+    ClientSurfaceMode,
 );
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,6 +32,8 @@ pub(crate) enum DeferredRender {
 pub(crate) struct ClientConnection {
     /// Whether this connection is the full app client or a direct terminal attach.
     pub(crate) mode: ClientConnectionMode,
+    /// Surface mode requested by app clients. Terminal attach clients ignore this.
+    pub(crate) surface_mode: ClientSurfaceMode,
     /// True after the handshake for clients that will switch into direct terminal attach mode.
     pub(crate) pending_terminal_attach: bool,
     /// Client-local app keybindings. None means use the server's keybindings.
@@ -71,6 +74,18 @@ pub(crate) struct ClientConnection {
     pub(crate) host_keyboard_report_all_active: Option<bool>,
     /// Temporary files staged from this client's local clipboard image pastes.
     pub(crate) staged_clipboard_files: Vec<PathBuf>,
+    /// The target's own PTY grid, `(rows, cols)` per `TerminalRuntime::current_size`, as it stood
+    /// the instant **this** client took writable control of it — and `None` whenever this client
+    /// holds no control.
+    ///
+    /// Taking control resizes the shared PTY to the controller's grid and locks it
+    /// (`attach_terminal_client`). Releasing control without disconnecting (M6's contract: promote
+    /// for one input, drop straight back to observe) therefore has to put the grid back, and the
+    /// layout pass cannot be relied on to do it: `resize_shared_runtime_to_effective_size` returns
+    /// immediately when there is no foreground app client, and the no-client virtual render only
+    /// resizes panes while `view.pane_infos` is still empty (`render_and_stream`). A headless box
+    /// whose only client is a phone would otherwise keep the phone's grid forever.
+    pub(crate) control_restore_grid: Option<(u16, u16)>,
     /// Channels for sending framed ServerMessage data to the client writer thread.
     pub(crate) writer: Option<ClientWriter>,
 }
@@ -114,6 +129,7 @@ impl ClientConnection {
     ) -> Self {
         Self {
             mode,
+            surface_mode: ClientSurfaceMode::FullApp,
             pending_terminal_attach,
             keybindings,
             terminal_size,
@@ -136,12 +152,20 @@ impl ClientConnection {
             host_sgr_pixels_active: None,
             host_keyboard_report_all_active: None,
             staged_clipboard_files: Vec::new(),
+            control_restore_grid: None,
             writer,
         }
     }
 
     pub(crate) fn request_repaint(&mut self) {
         self.render_state.request_repaint();
+    }
+
+    /// mx (#13/v14): full recovery redraw — reset the render baseline AND schedule a kitty
+    /// graphics surface reset, used when a client's delta baseline desynced.
+    pub(crate) fn request_full_redraw(&mut self) {
+        self.render_state.reset_baseline();
+        self.graphics_surface_reset_pending = true;
     }
 
     pub(crate) fn deferred_render(&self) -> DeferredRender {
@@ -307,10 +331,11 @@ pub(crate) fn render_targets(
                 client.cell_size,
                 foreground_client_id == Some(client_id),
                 client.mode.clone(),
+                client.surface_mode,
             )
         })
         .collect();
 
-    targets.sort_by_key(|(client_id, _, _, is_foreground, _)| (*is_foreground, *client_id));
+    targets.sort_by_key(|(client_id, _, _, is_foreground, _, _)| (*is_foreground, *client_id));
     targets
 }

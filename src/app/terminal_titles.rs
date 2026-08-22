@@ -10,17 +10,16 @@ pub(crate) struct TerminalTitleChanges {
 }
 
 impl App {
-    pub(crate) fn terminal_title_sidebar_changed(&self, changes: &TerminalTitleChanges) -> bool {
-        let config = &self.state.sidebar_agents;
-        std::iter::once(&config.rows)
-            .chain(config.rows_by_agent.values())
-            .flatten()
-            .flatten()
-            .any(|token| match token.parts().0 {
-                crate::config::AgentSidebarToken::TerminalTitle => changes.raw_changed,
-                crate::config::AgentSidebarToken::TerminalTitleStripped => changes.stripped_changed,
-                _ => false,
-            })
+    /// herdr-mx: always false.
+    ///
+    /// Upstream answers this from `state.sidebar_agents`' `terminal_title` /
+    /// `terminal_title_stripped` tokens. This fork replaced that token subsystem with the
+    /// segments sidebar (`SidebarAgentField`, `src/config/model.rs`), which has **no**
+    /// terminal-title field at all, so no title change can ever require a sidebar redraw here.
+    /// The sync itself still runs — it records titles and emits `pane_updated` — which is exactly
+    /// what the pre-merge mx loop comment in `src/app/mod.rs` said.
+    pub(crate) fn terminal_title_sidebar_changed(&self, _changes: &TerminalTitleChanges) -> bool {
+        false
     }
 
     pub(crate) fn sync_pending_terminal_titles(&mut self) -> TerminalTitleChanges {
@@ -157,63 +156,10 @@ mod tests {
         assert_eq!(pane_updated_events(&event_hub), 3);
     }
 
-    #[tokio::test]
-    async fn syncing_pending_titles_preserves_sidebar_render_impact() {
-        let event_hub = crate::api::EventHub::default();
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(&Config::default(), true, None, api_rx, event_hub);
-        app.state.workspaces = vec![Workspace::test_new("one")];
-        app.state.active = Some(0);
-        app.state.ensure_test_terminals();
-        app.state.sidebar_agents.rows = vec![vec![
-            crate::config::AgentSidebarToken::TerminalTitleStripped,
-        ]];
-        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = app.state.workspaces[0]
-            .terminal_id(pane_id)
-            .unwrap()
-            .clone();
-        let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
-        runtime.test_process_pty_bytes(b"\x1b]0;building\x07");
-        app.terminal_runtimes.insert(terminal_id, runtime);
-        app.render_dirty.request_terminal_title(pane_id);
-
-        let changes = app.sync_pending_terminal_titles();
-
-        assert!(changes.stripped_changed);
-        let render_request = app.render_dirty.take();
-        assert!(render_request.generic);
-    }
-
-    #[test]
-    fn sidebar_redraws_only_for_the_configured_title_form() {
-        let event_hub = crate::api::EventHub::default();
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(&Config::default(), true, None, api_rx, event_hub);
-        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
-        app.state.sidebar_agents.rows_by_agent.insert(
-            "claude".into(),
-            vec![vec![
-                crate::config::AgentSidebarToken::TerminalTitleStripped,
-            ]],
-        );
-
-        let spinner_only = TerminalTitleChanges {
-            raw_changed: true,
-            ..TerminalTitleChanges::default()
-        };
-        assert!(!app.terminal_title_sidebar_changed(&spinner_only));
-        assert!(app.terminal_title_sidebar_changed(&TerminalTitleChanges {
-            stripped_changed: true,
-            ..TerminalTitleChanges::default()
-        }));
-
-        app.state.sidebar_agents.rows_by_agent.insert(
-            "claude".into(),
-            vec![vec![crate::config::AgentSidebarToken::TerminalTitle]],
-        );
-        assert!(app.terminal_title_sidebar_changed(&spinner_only));
-    }
+    // herdr-mx: upstream's `syncing_pending_titles_preserves_sidebar_render_impact` and
+    // `sidebar_redraws_only_for_the_configured_title_form` are not merged — both drive
+    // `state.sidebar_agents.rows`, upstream's token-row sidebar, which this fork rejects
+    // (DIVERGENCE.md). `terminal_title_sidebar_changed` is a constant `false` here.
 
     fn pane_updated_events(event_hub: &crate::api::EventHub) -> usize {
         event_hub

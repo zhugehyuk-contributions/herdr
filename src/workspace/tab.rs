@@ -201,6 +201,14 @@ impl Tab {
         self.custom_name.is_none()
     }
 
+    /// herdr-mx: tab display name — the custom name if set, else the tab number. Used by the
+    /// multi-remote client to render tab labels in the fleet sidebar.
+    pub fn display_name(&self) -> String {
+        self.custom_name
+            .clone()
+            .unwrap_or_else(|| self.number.to_string())
+    }
+
     pub fn set_custom_name(&mut self, name: String) {
         self.custom_name = Some(name);
     }

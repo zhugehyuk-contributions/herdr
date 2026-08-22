@@ -53,7 +53,7 @@ pub(crate) use self::{
     modal::{
         handle_global_menu_key, handle_keybind_help_key, handle_navigator_key,
         insert_keybind_help_query_text, insert_navigator_search_text, insert_rename_input_text,
-        open_new_workspace_dialog,
+        open_keybind_help, open_new_workspace_dialog,
     },
     navigate::{
         terminal_direct_indexed_navigation_action, terminal_direct_non_indexed_navigation_action,
@@ -390,6 +390,7 @@ impl App {
         }
 
         let previous_agent_panel_sort = self.state.agent_panel_sort;
+        let previous_agent_panel_scope = self.state.agent_panel_scope;
         let previous_settings_section = self.state.settings.section;
         if !handled_pane_double_click {
             if let Some(action) =
@@ -411,6 +412,36 @@ impl App {
                         }
                         SettingsAction::SaveAgentBorderLabels(enabled) => {
                             self.save_agent_border_labels(enabled)
+                        }
+                        SettingsAction::SavePaneHistory(enabled) => {
+                            self.save_pane_history_persistence(enabled)
+                        }
+                        SettingsAction::SaveSwitchAsciiInputSourceInPrefix(enabled) => {
+                            self.save_switch_ascii_input_source_in_prefix(enabled)
+                        }
+                        SettingsAction::SaveSidebarSpace {
+                            previous,
+                            preferences,
+                        } => {
+                            if !self.save_sidebar_space_preferences(preferences) {
+                                self.state.sidebar_space = previous;
+                            }
+                        }
+                        SettingsAction::SaveSidebarAgent {
+                            previous,
+                            preferences,
+                        } => {
+                            if !self.save_sidebar_agent_preferences(preferences) {
+                                self.state.sidebar_agent = previous;
+                            }
+                        }
+                        SettingsAction::SaveSidebarHost {
+                            previous,
+                            preferences,
+                        } => {
+                            if !self.save_sidebar_host_preferences(preferences) {
+                                self.state.sidebar_host = previous;
+                            }
                         }
                         SettingsAction::InstallRecommendedIntegrations => {
                             self.install_recommended_integrations()
@@ -465,6 +496,9 @@ impl App {
         }
         if self.state.agent_panel_sort != previous_agent_panel_sort {
             self.save_agent_panel_sort(self.state.agent_panel_sort);
+        }
+        if self.state.agent_panel_scope != previous_agent_panel_scope {
+            self.save_agent_panel_scope(self.state.agent_panel_scope);
         }
 
         self.dispatch_pending_clipboard_write();
@@ -872,9 +906,12 @@ fn capture_snapshot(state: &AppState) -> crate::persist::SessionSnapshot {
         &terminal_runtimes,
         state.active,
         state.selected,
+        state.agent_panel_scope,
         state.sidebar_width,
         state.sidebar_section_split,
         state.collapsed_space_keys.clone(),
+        state.remote_registry.clone(),
+        &state.pane_id_aliases,
     )
 }
 

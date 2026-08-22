@@ -61,7 +61,7 @@ use crate::server::notifications::{
 use crate::server::socket_paths::{
     client_socket_path, prepare_socket_path, restrict_socket_permissions,
 };
-use crate::server::terminal_attach::paste_payload_for_runtime;
+use crate::server::terminal_attach::clipboard_image_paste_payload;
 
 mod pane_graphics;
 
@@ -697,6 +697,8 @@ impl HeadlessServer {
             self.drain_client_config_reload_request();
             self.sync_immediate_pty_sources();
             self.stream_host_mouse_capture_mode();
+
+            self.app.sync_headless_animation_timer(now);
             self.stream_host_keyboard_enhancement_flags();
 
             // 7. Render virtually and stream frames. Hidden-only PTY work keeps a
@@ -1289,9 +1291,14 @@ impl HeadlessServer {
             &self.app.terminal_runtimes,
             self.app.state.active,
             self.app.state.selected,
+            self.app.state.agent_panel_scope,
             self.app.state.sidebar_width,
             self.app.state.sidebar_section_split,
             self.app.state.collapsed_space_keys.clone(),
+            self.app.state.remote_registry.clone(),
+            // #37: carry the cumulative pane-id alias map across the live handoff so an agent's
+            // spawn-time HERDR_PANE_ID keeps resolving (otherwise pane.report_agent fails post-handoff).
+            &self.app.state.pane_id_aliases,
         );
 
         let mut handoff_entries = Vec::new();
@@ -1599,15 +1606,41 @@ impl HeadlessServer {
         self.app.clear_input_source(client_id);
         self.send_client_graphics_cleanup(client_id);
         let removed = self.clients.remove(&client_id);
+        let no_app_client_left = latest_app_client(&self.clients).is_none();
         if let Some(removed) = removed {
             crate::server::clipboard_image::remove_files(removed.staged_clipboard_files);
             if let ClientConnectionMode::TerminalAttach { terminal_id } = removed.mode {
                 self.terminal_attach_owners.remove(&terminal_id);
-                if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
+                if let Some(real_terminal_id) = self.terminal_id_by_string(&terminal_id) {
                     self.app
                         .state
                         .direct_attach_resize_locks
-                        .remove(&terminal_id);
+                        .remove(&real_terminal_id);
+                    // Same restore as `release_terminal_control`, for the disconnect path, and
+                    // guarded the same way: with an app client still present the layout pass that
+                    // follows is authoritative and resizing here first would only make the pane's
+                    // child field two SIGWINCHes for one event. With none, that pass returns
+                    // immediately (`resize_shared_runtime_to_effective_size`) and this is the only
+                    // thing that puts a headless box's pane back.
+                    if let Some((rows, cols)) =
+                        removed.control_restore_grid.filter(|_| no_app_client_left)
+                    {
+                        if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
+                            runtime.resize(
+                                rows,
+                                cols,
+                                removed.cell_size.width_px,
+                                removed.cell_size.height_px,
+                            );
+                            info!(
+                                client_id,
+                                terminal_id = %terminal_id,
+                                rows,
+                                cols,
+                                "restored PTY grid after terminal control client left"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1818,7 +1851,10 @@ impl HeadlessServer {
         }) = self.clients.get(&client_id)
         {
             if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
-                let payload = paste_payload_for_runtime(runtime, &path);
+                // #59: send the staged image path UN-bracketed so the agent's path→image auto-attach
+                // fires. Bracketing it (as a normal text paste would) made Claude Code treat it as
+                // literal text and print the path instead of attaching the image.
+                let payload = clipboard_image_paste_payload(&path);
                 if let Err(err) = runtime.try_send_bytes(Bytes::from(payload)) {
                     warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach clipboard image paste failed");
                 }
@@ -1910,6 +1946,241 @@ impl HeadlessServer {
         };
 
         self.attach_terminal_client(client_id, terminal_id, takeover)
+    }
+
+    /// Moves an already-established terminal session to another target and/or mode (B6, M6).
+    ///
+    /// This is the whole of the mobile pane-swipe: without it a chip tap costs a new ssh exec
+    /// channel, a fresh `Hello`/`Welcome`, and a full ~56 KB uncompressed ANSI baseline, because
+    /// `ObserveTerminal`/`ControlTerminal` both refuse a connection that is no longer
+    /// `pending_terminal_attach` (`client_is_pending_terminal_mode`).
+    ///
+    /// **Failure does not close the connection.** Every other handler here answers a bad request
+    /// with `ServerShutdown` + removal, and that is right for a *handshake* — a client that cannot
+    /// attach has nothing to keep. A retarget is different: the session it is asking to move is
+    /// working, and the most likely reason a target does not resolve is that the pane closed while
+    /// a phone was backgrounded. Tearing the stream down there would turn a stale chip into a
+    /// reconnect, i.e. exactly the cost this message exists to remove. So a refusal leaves the
+    /// session on its current target and says so in a `Notify`.
+    fn retarget_terminal_client(
+        &mut self,
+        client_id: u64,
+        target: String,
+        mode: protocol::TerminalSessionMode,
+    ) -> bool {
+        let current = match self
+            .clients
+            .get(&client_id)
+            .map(|client| client.mode.clone())
+        {
+            Some(ClientConnectionMode::TerminalObserve { terminal_id }) => (terminal_id, false),
+            Some(ClientConnectionMode::TerminalAttach { terminal_id }) => (terminal_id, true),
+            _ => {
+                // An app client, or one still pending its first ObserveTerminal/ControlTerminal.
+                // It has no session to move, and silently doing nothing would look identical to a
+                // successful retarget from the client's side.
+                self.reject_retarget(
+                    client_id,
+                    "retarget failed: this connection has no terminal session to move; \
+                     send ObserveTerminal or ControlTerminal first",
+                );
+                return false;
+            }
+        };
+        let (current_terminal_id, currently_controlling) = current;
+
+        let Some(terminal_id) = self.resolve_terminal_target_id_string(&target) else {
+            self.reject_retarget(
+                client_id,
+                &format!("retarget failed: terminal target {target} not found"),
+            );
+            return false;
+        };
+        let Some(real_terminal_id) = self.terminal_id_by_string(&terminal_id) else {
+            self.reject_retarget(
+                client_id,
+                &format!("retarget failed: terminal {terminal_id} not found"),
+            );
+            return false;
+        };
+
+        let want_control = matches!(mode, protocol::TerminalSessionMode::Control { .. });
+        let takeover = matches!(
+            mode,
+            protocol::TerminalSessionMode::Control { takeover: true }
+        );
+
+        if want_control {
+            // Same guards `attach_terminal_client` applies, checked BEFORE anything is mutated so a
+            // refused promotion leaves the observe session exactly as it was.
+            if self
+                .pending_alt_screen_reads
+                .iter()
+                .any(|pending| pending.terminal_id == real_terminal_id)
+            {
+                self.reject_retarget(
+                    client_id,
+                    &format!(
+                        "retarget failed: terminal {terminal_id} has a read in progress; retry"
+                    ),
+                );
+                return false;
+            }
+            if let Some(existing_owner) = self.terminal_attach_owners.get(&terminal_id).copied() {
+                if existing_owner != client_id && !takeover {
+                    self.reject_retarget(
+                        client_id,
+                        &format!(
+                            "retarget failed: terminal {terminal_id} already has an attached \
+                             client; retry with takeover"
+                        ),
+                    );
+                    return false;
+                }
+            }
+        }
+
+        // Release whatever control this client already holds. Unconditional, including when the new
+        // mode is also Control: the target may have moved, and a controller that kept the previous
+        // pane's lock would hold a desktop pane hostage at a phone's grid with nothing pointing at
+        // it any more.
+        if currently_controlling {
+            self.release_terminal_control(client_id, &current_terminal_id);
+        }
+
+        if want_control {
+            if let Some(existing_owner) = self.terminal_attach_owners.get(&terminal_id).copied() {
+                if existing_owner != client_id {
+                    self.send_to_client(
+                        existing_owner,
+                        ServerMessage::ServerShutdown {
+                            reason: Some("terminal attach taken over".to_owned()),
+                        },
+                    );
+                    self.remove_client_and_resize_if_needed(existing_owner);
+                }
+            }
+        }
+
+        let stamp = self.allocate_activity_stamp();
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return false;
+        };
+        let (cols, rows) = client.terminal_size;
+        let cell_size = client.cell_size;
+        client.mode = if want_control {
+            ClientConnectionMode::TerminalAttach {
+                terminal_id: terminal_id.clone(),
+            }
+        } else {
+            ClientConnectionMode::TerminalObserve {
+                terminal_id: terminal_id.clone(),
+            }
+        };
+        // The new target is a different screen with a different size; a diff against the old
+        // target's baseline would paint one pane's cells over another's.
+        client.render_state.reset_baseline();
+        client.request_repaint();
+        client.last_activity = stamp;
+
+        if want_control {
+            let restore_grid = self
+                .app
+                .terminal_runtimes
+                .get(&real_terminal_id)
+                .map(crate::terminal::TerminalRuntime::current_size);
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                client.control_restore_grid = restore_grid;
+            }
+            self.terminal_attach_owners
+                .insert(terminal_id.clone(), client_id);
+            self.app
+                .state
+                .direct_attach_resize_locks
+                .insert(real_terminal_id.clone());
+            self.app
+                .start_pending_agent_resume_for_terminal(&real_terminal_id, rows, cols, true);
+            if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
+                runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
+            }
+        }
+
+        info!(
+            client_id,
+            cols,
+            rows,
+            from = %current_terminal_id,
+            terminal_id = %terminal_id,
+            control = want_control,
+            "terminal session retargeted"
+        );
+        true
+    }
+
+    /// Gives up this client's writable control of `terminal_id` and puts the PTY back.
+    ///
+    /// The lock and the owner entry are the same two pieces `remove_client` drops on disconnect.
+    /// The third piece is new and is the one M6 is measured on: the grid recorded at promotion time
+    /// is written back explicitly, *then* the ordinary layout pass runs. Order matters — with a
+    /// desktop client attached, `resize_shared_runtime_to_effective_size` recomputes the layout and
+    /// wins, which is what we want; with no desktop client it returns immediately and the recorded
+    /// grid is the only thing that restores the pane.
+    fn release_terminal_control(&mut self, client_id: u64, terminal_id: &str) {
+        if self.terminal_attach_owners.get(terminal_id) == Some(&client_id) {
+            self.terminal_attach_owners.remove(terminal_id);
+        }
+        let restore = self
+            .clients
+            .get_mut(&client_id)
+            .and_then(|client| client.control_restore_grid.take());
+        let cell_size = self
+            .clients
+            .get(&client_id)
+            .map(|client| client.cell_size)
+            .unwrap_or_default();
+        // With a desktop client attached, the layout pass at the end of this function recomputes
+        // the pane rects and is authoritative; resizing to the recorded grid first would just cost
+        // the pane's child an extra SIGWINCH and reflow. With none, that pass is a no-op and this
+        // is the only restore there is.
+        let no_app_client = latest_app_client(&self.clients).is_none();
+        if let Some(real_terminal_id) = self.terminal_id_by_string(terminal_id) {
+            self.app
+                .state
+                .direct_attach_resize_locks
+                .remove(&real_terminal_id);
+            if let Some((rows, cols)) = restore.filter(|_| no_app_client) {
+                if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
+                    runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
+                    info!(
+                        client_id,
+                        terminal_id = %terminal_id,
+                        rows,
+                        cols,
+                        "restored PTY grid after terminal control release"
+                    );
+                }
+            }
+        }
+        self.resize_shared_runtime_to_effective_size();
+    }
+
+    /// Refuses a retarget without ending the session it refused to move.
+    ///
+    /// `Notify` rather than a new `ServerMessage` variant on purpose: the reason has to reach the
+    /// user, and adding a variant would move nothing on the wire but would still cost an ABI epoch
+    /// for a diagnostic. Clients that do not decode `Notify` (the mobile codec) count it as
+    /// undecodable traffic, which is already its normal state and cannot re-arm the layout probe
+    /// once a `Terminal` has decoded (`packages/herdr-client-ts/src/layoutProbe.ts`).
+    fn reject_retarget(&mut self, client_id: u64, reason: &str) {
+        warn!(client_id, reason, "terminal retarget refused");
+        self.send_to_client(
+            client_id,
+            ServerMessage::Notify {
+                kind: protocol::NotifyKind::Toast,
+                message: reason.to_owned(),
+                body: None,
+            },
+        );
     }
 
     fn handle_terminal_attach_scroll(
@@ -2868,12 +3139,21 @@ impl HeadlessServer {
             }
         }
 
+        // Read before anything below resizes it: this is the grid the pane's child had while
+        // nobody was controlling it, and the only value that can put it back afterwards.
+        let restore_grid = self
+            .app
+            .terminal_runtimes
+            .get(&real_terminal_id)
+            .map(crate::terminal::TerminalRuntime::current_size);
+
         let stamp = self.allocate_activity_stamp();
         let Some(client) = self.clients.get_mut(&client_id) else {
             return false;
         };
         let (cols, rows) = client.terminal_size;
         let cell_size = client.cell_size;
+        client.control_restore_grid = restore_grid;
         client.mode = ClientConnectionMode::TerminalAttach {
             terminal_id: terminal_id.clone(),
         };
@@ -3001,6 +3281,7 @@ impl HeadlessServer {
                 cell_height_px,
                 keybindings,
                 writer,
+                surface_mode,
                 render_encoding,
                 direct_attach_requested,
                 direct_graphics,
@@ -3025,6 +3306,7 @@ impl HeadlessServer {
                     rows,
                     cell_width_px,
                     cell_height_px,
+                    ?surface_mode,
                     ?render_encoding,
                     "client connected"
                 );
@@ -3044,6 +3326,7 @@ impl HeadlessServer {
                     direct_attach_requested,
                     Some(writer),
                 );
+                connection.surface_mode = surface_mode;
                 connection.direct_graphics = direct_graphics;
                 connection.pixel_mouse = direct_graphics;
                 self.clients.insert(client_id, connection);
@@ -3082,6 +3365,11 @@ impl HeadlessServer {
                 target,
                 takeover,
             } => self.control_terminal_client(client_id, target, takeover),
+            ServerEvent::ClientRetargetTerminal {
+                client_id,
+                target,
+                mode,
+            } => self.retarget_terminal_client(client_id, target, mode),
             ServerEvent::ClientAttachScroll {
                 client_id,
                 source,
@@ -3305,6 +3593,31 @@ impl HeadlessServer {
                 info!(client_id, "client detached");
                 self.send_terminal_stream_detach_shutdown(client_id);
                 self.remove_client_and_resize_if_needed(client_id);
+                true
+            }
+            ServerEvent::ClientOpenSettings { client_id } => {
+                self.promote_client_to_foreground(client_id);
+                self.app.open_settings();
+                true
+            }
+            ServerEvent::ClientOpenKeybindHelp { client_id } => {
+                self.promote_client_to_foreground(client_id);
+                self.app.open_keybind_help();
+                true
+            }
+            ServerEvent::ClientPing { client_id, nonce } => {
+                // issue #13: echo the latency probe so the client measures real round-trip time
+                // over the persistent stream. No re-render needed.
+                self.send_to_client(client_id, ServerMessage::Pong { nonce });
+                false
+            }
+            ServerEvent::ClientRequestFullFrame { client_id } => {
+                // v14: the client's delta baseline desynced (a dropped/failed frame). Reset this
+                // client's render baseline so the next render is a full `Frame`, recovering without
+                // ever applying a delta onto a stale baseline. Re-render to push it promptly.
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.request_full_redraw();
+                }
                 true
             }
             ServerEvent::ClientDisconnected { client_id } => {
@@ -4233,7 +4546,7 @@ impl HeadlessServer {
         }
 
         let render_targets = render_targets(&self.clients, self.foreground_client_id);
-        let [(client_id, (cols, rows), cell_size, _is_foreground, mode)] =
+        let [(client_id, (cols, rows), cell_size, _is_foreground, mode, _surface_mode)] =
             render_targets.as_slice()
         else {
             retained_fallback!("multiple_or_no_target");
@@ -4451,7 +4764,9 @@ impl HeadlessServer {
 
         let mut broken_clients: Vec<u64> = Vec::new();
         let mut deferred_frame = false;
-        for (client_id, (cols, rows), cell_size, is_foreground, mode) in render_targets {
+        for (client_id, (cols, rows), cell_size, is_foreground, mode, surface_mode) in
+            render_targets
+        {
             let area = Rect::new(0, 0, cols, rows);
             let is_app_client = matches!(mode, ClientConnectionMode::App);
             let mut frame = match mode {
@@ -4463,20 +4778,35 @@ impl HeadlessServer {
                         } else {
                             crate::kitty_graphics::HostCellSize::default()
                         };
+                    // upstream v0.8.2: a background client's render must not move the foreground
+                    // client's scroll positions. mx keeps its surface-mode branch inside the
+                    // save/restore rather than replacing it.
                     let preserved_scroll = (!is_foreground).then_some((
                         self.app.state.workspace_scroll,
                         self.app.state.agent_panel_scroll,
                         self.app.state.tab_scroll,
                         self.app.state.mobile_switcher_scroll,
                     ));
-                    let (buffer, cursor) =
-                        crate::server::render_stream::render_virtual_with_runtime_registry(
-                            &mut self.app.state,
-                            &self.app.terminal_runtimes,
-                            area,
-                            is_foreground,
-                            render_cell_size,
-                        );
+                    let (buffer, cursor) = match surface_mode {
+                        crate::protocol::ClientSurfaceMode::FullApp => {
+                            crate::server::render_stream::render_virtual_with_runtime_registry(
+                                &mut self.app.state,
+                                &self.app.terminal_runtimes,
+                                area,
+                                is_foreground,
+                                render_cell_size,
+                            )
+                        }
+                        crate::protocol::ClientSurfaceMode::EmbeddedContent => {
+                            crate::server::render_stream::render_embedded_content_virtual_with_runtime_registry(
+                                &mut self.app.state,
+                                &self.app.terminal_runtimes,
+                                area,
+                                is_foreground,
+                                render_cell_size,
+                            )
+                        }
+                    };
                     if let Some((workspace, agent_panel, tab, mobile_switcher)) = preserved_scroll {
                         self.app.state.workspace_scroll = workspace;
                         self.app.state.agent_panel_scroll = agent_panel;
@@ -4715,6 +5045,8 @@ impl HeadlessServer {
     fn handle_scheduled_tasks_headless(&mut self, now: Instant, geometry_dirty: bool) -> bool {
         let mut changed = false;
 
+        self.app.sync_headless_animation_timer(now);
+
         // No resize polling needed — server has no terminal.
         // Client resize messages drive size changes instead.
 
@@ -4764,6 +5096,20 @@ impl HeadlessServer {
         {
             self.app.copy_feedback_deadline = None;
             self.app.state.copy_feedback = None;
+            changed = true;
+        }
+
+        if self
+            .app
+            .next_animation_tick
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.app.state.spinner_tick = self
+                .app
+                .state
+                .spinner_tick
+                .wrapping_add(app::HEADLESS_ANIMATION_TICK_STEP);
+            self.app.next_animation_tick = Some(now + app::HEADLESS_ANIMATION_INTERVAL);
             changed = true;
         }
 
@@ -4825,6 +5171,7 @@ impl HeadlessServer {
                 .app
                 .start_pending_agent_resumes(self.app.pending_agent_resume_due(now));
         }
+        self.app.sync_headless_animation_timer(now);
         changed
     }
 
@@ -5426,11 +5773,46 @@ mod tests {
     }
 
     fn read_server_frame(bytes: Vec<u8>) -> FrameData {
-        match protocol::read_message(&mut std::io::Cursor::new(bytes), MAX_GRAPHICS_FRAME_SIZE)
-            .expect("decode server frame")
-        {
+        // issue #13: frames may arrive deflate-wrapped; inflate before matching. The cap is
+        // upstream v0.8.2's graphics cap, since a frame may carry spliced kitty graphics.
+        let message =
+            protocol::read_message(&mut std::io::Cursor::new(bytes), MAX_GRAPHICS_FRAME_SIZE)
+                .expect("decode server frame");
+        match crate::protocol::decompress_server_message(message) {
             ServerMessage::Frame(frame) => frame,
             other => panic!("expected frame, got {other:?}"),
+        }
+    }
+
+    /// The kitty-graphics payload of the next server message, whether it arrived as a full `Frame`
+    /// or as an mx `FrameDelta`.
+    ///
+    /// Upstream's graphics tests call `read_server_frame` because upstream's server always sends a
+    /// full `Frame` here. herdr-mx's #13 semantic delta encoder may answer the same render with a
+    /// `FrameDelta`, and `FrameDelta` carries the same `graphics` bytes, so a graphics-only
+    /// assertion does not need the cells reconstructed — only a reader that accepts both.
+    fn read_server_frame_graphics(bytes: Vec<u8>) -> Vec<u8> {
+        let message =
+            protocol::read_message(&mut std::io::Cursor::new(bytes), MAX_GRAPHICS_FRAME_SIZE)
+                .expect("decode server frame");
+        match crate::protocol::decompress_server_message(message) {
+            ServerMessage::Frame(frame) => frame.graphics,
+            ServerMessage::FrameDelta(delta) => delta.graphics,
+            other => panic!("expected frame or frame delta, got {other:?}"),
+        }
+    }
+
+    /// Resolve the next server message to a full frame, reconstructing a #13 semantic `FrameDelta`
+    /// against the prior full `baseline` (the same way the client applies deltas). Lets a test that
+    /// reads a post-baseline render assert on full frame content regardless of whether the encoder
+    /// sent a full frame or a delta.
+    fn read_server_frame_after(baseline: &FrameData, bytes: Vec<u8>) -> FrameData {
+        match crate::protocol::decompress_server_message(read_server_message(bytes)) {
+            ServerMessage::Frame(frame) => frame,
+            ServerMessage::FrameDelta(delta) => baseline
+                .with_delta(&delta)
+                .expect("frame delta should reconstruct against the prior full frame"),
+            other => panic!("expected frame or frame delta, got {other:?}"),
         }
     }
 
@@ -5477,9 +5859,6 @@ mod tests {
         server.app.state.active = Some(0);
         server.app.state.selected = 0;
         server.app.state.mode = crate::app::Mode::Terminal;
-        server.app.state.sidebar_agents.rows = vec![vec![
-            crate::config::AgentSidebarToken::TerminalTitleStripped,
-        ]];
         let pane_id = server.app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = server.app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
@@ -5503,19 +5882,8 @@ mod tests {
         assert_eq!(first.terminal_title.as_deref(), Some("⠋ task"));
         assert_eq!(first.terminal_title_stripped.as_deref(), Some("task"));
         assert_eq!(pane_updated_events(&event_hub), 1);
-        let (buffer, _) = crate::server::render_stream::render_virtual_with_runtime_registry(
-            &mut server.app.state,
-            &server.app.terminal_runtimes,
-            Rect::new(0, 0, 100, 30),
-            true,
-            crate::kitty_graphics::HostCellSize::default(),
-        );
-        let rendered = buffer
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(rendered.contains("task"), "rendered frame: {rendered:?}");
+        // mx: the segments sidebar renders no terminal-title tokens, so there is no
+        // sidebar-render assertion here — the API surface above is the contract.
 
         server
             .app
@@ -6176,6 +6544,7 @@ mod tests {
             render_encoding: RenderEncoding::SemanticFrame,
             keybindings: None,
             direct_attach_requested: false,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             direct_graphics: true,
             writer: writer_a,
         }));
@@ -6193,6 +6562,7 @@ mod tests {
             render_encoding: RenderEncoding::SemanticFrame,
             keybindings: None,
             direct_attach_requested: false,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             direct_graphics: false,
             writer: writer_b,
         }));
@@ -6220,6 +6590,7 @@ new_tab = "prefix+t"
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::SemanticFrame,
             keybindings: Some(Box::new(local_keybindings)),
             direct_attach_requested: false,
@@ -6245,6 +6616,7 @@ new_tab = "prefix+t"
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::SemanticFrame,
             keybindings: None,
             direct_attach_requested: false,
@@ -6263,6 +6635,31 @@ new_tab = "prefix+t"
             .bindings
             .iter()
             .any(|binding| binding.label == "prefix+c"));
+    }
+
+    #[test]
+    fn connected_app_client_tracks_surface_mode() {
+        let mut server = test_headless_server();
+        let (writer, _control_rx, _render_rx) = test_client_writer();
+
+        assert!(server.handle_server_event(ServerEvent::ClientConnected {
+            client_id: 1,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::EmbeddedContent,
+            render_encoding: RenderEncoding::SemanticFrame,
+            keybindings: None,
+            direct_attach_requested: false,
+            direct_graphics: false,
+            writer,
+        }));
+
+        assert_eq!(
+            server.clients[&1].surface_mode,
+            crate::protocol::ClientSurfaceMode::EmbeddedContent
+        );
     }
 
     #[test]
@@ -6286,6 +6683,7 @@ new_tab = "prefix+t"
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::SemanticFrame,
             keybindings: Some(Box::new(local_keybindings)),
             direct_attach_requested: false,
@@ -6300,6 +6698,7 @@ new_tab = "prefix+t"
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::SemanticFrame,
             keybindings: None,
             direct_attach_requested: false,
@@ -6344,6 +6743,7 @@ next_tab = ""
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::SemanticFrame,
             keybindings: Some(Box::new(local_keybindings)),
             direct_attach_requested: false,
@@ -6420,6 +6820,7 @@ next_tab = ""
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::SemanticFrame,
             keybindings: Some(Box::new(local_config.live_keybinds().unwrap())),
             direct_attach_requested: false,
@@ -6441,6 +6842,7 @@ next_tab = ""
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::SemanticFrame,
             keybindings: None,
             direct_attach_requested: false,
@@ -6476,6 +6878,7 @@ next_tab = ""
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::TerminalAnsi,
             keybindings: None,
             direct_attach_requested: true,
@@ -6542,6 +6945,7 @@ next_tab = ""
             rows: 30,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::TerminalAnsi,
             keybindings: None,
             direct_attach_requested: true,
@@ -6939,6 +7343,388 @@ next_tab = ""
         });
     }
 
+    /// A second terminal in the same server, so a retarget has somewhere to go.
+    fn add_second_terminal(server: &mut HeadlessServer) -> (crate::terminal::TerminalId, String) {
+        let workspace = crate::workspace::Workspace::test_new("second");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).expect("terminal id").clone();
+        server.app.state.workspaces.push(workspace);
+        server.app.state.ensure_test_terminals();
+        server.app.terminal_runtimes.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        );
+        let as_string = terminal_id.to_string();
+        (terminal_id, as_string)
+    }
+
+    /// B6. The whole point: an established observe session moves to another terminal on the SAME
+    /// connection. Revert `retarget_terminal_client` and this fails at the mode assertion, which is
+    /// the difference between one ssh channel and one per pane on the mobile bridge.
+    #[test]
+    fn retarget_moves_an_observe_session_to_another_terminal_without_reconnecting() {
+        with_terminal_session_test_server(|server, first_id, first_string, _| {
+            let (second_id, second_string) = add_second_terminal(server);
+            connect_pending_terminal_client(server, 7);
+            assert!(
+                server.handle_server_event(ServerEvent::ClientObserveTerminal {
+                    client_id: 7,
+                    target: first_string.clone(),
+                })
+            );
+
+            let first_size = server
+                .app
+                .terminal_runtimes
+                .get(&first_id)
+                .expect("runtime")
+                .current_size();
+            let second_size = server
+                .app
+                .terminal_runtimes
+                .get(&second_id)
+                .expect("runtime")
+                .current_size();
+
+            assert!(
+                server.handle_server_event(ServerEvent::ClientRetargetTerminal {
+                    client_id: 7,
+                    target: second_string.clone(),
+                    mode: protocol::TerminalSessionMode::Observe,
+                })
+            );
+
+            // Same connection, new target.
+            assert!(server.clients.contains_key(&7));
+            assert!(matches!(
+                server.clients.get(&7).map(|client| &client.mode),
+                Some(ClientConnectionMode::TerminalObserve { terminal_id })
+                    if terminal_id == &second_string
+            ));
+            assert_eq!(
+                terminal_stream_client_ids(&server.clients, &second_string),
+                vec![7]
+            );
+            assert!(terminal_stream_client_ids(&server.clients, &first_string).is_empty());
+
+            // Observe stays observe: no ownership, no lock, and NEITHER pane resized.
+            assert!(server.terminal_attach_owners.is_empty());
+            assert!(server.app.state.direct_attach_resize_locks.is_empty());
+            assert_eq!(
+                server
+                    .app
+                    .terminal_runtimes
+                    .get(&first_id)
+                    .expect("runtime")
+                    .current_size(),
+                first_size
+            );
+            assert_eq!(
+                server
+                    .app
+                    .terminal_runtimes
+                    .get(&second_id)
+                    .expect("runtime")
+                    .current_size(),
+                second_size
+            );
+        });
+    }
+
+    /// The new target is a different screen of a different size; a diff against the old baseline
+    /// would paint one pane's cells over another's. `render_state` has no public "is baseline
+    /// empty" so this asserts the observable consequence: the next frame is a full one.
+    #[test]
+    fn retarget_resets_the_render_baseline_so_the_next_frame_is_full() {
+        with_terminal_session_test_server(|server, _, first_string, _| {
+            let (_, second_string) = add_second_terminal(server);
+            connect_pending_terminal_client(server, 7);
+            assert!(
+                server.handle_server_event(ServerEvent::ClientObserveTerminal {
+                    client_id: 7,
+                    target: first_string,
+                })
+            );
+            let frame = FrameData::blank(100, 30);
+            let prepared = server
+                .clients
+                .get_mut(&7)
+                .expect("client")
+                .render_state
+                .prepare_frame(frame.clone())
+                .expect("first frame");
+            assert!(matches!(
+                prepared.message(),
+                ServerMessage::Terminal(f) if f.full
+            ));
+            server
+                .clients
+                .get_mut(&7)
+                .expect("client")
+                .render_state
+                .commit_sent_frame(prepared);
+
+            assert!(
+                server.handle_server_event(ServerEvent::ClientRetargetTerminal {
+                    client_id: 7,
+                    target: second_string,
+                    mode: protocol::TerminalSessionMode::Observe,
+                })
+            );
+
+            let after = server
+                .clients
+                .get_mut(&7)
+                .expect("client")
+                .render_state
+                .prepare_frame(frame)
+                .expect("post-retarget frame");
+            assert!(
+                matches!(after.message(), ServerMessage::Terminal(f) if f.full),
+                "the first frame after a retarget must be a full repaint, not a diff against the \
+                 previous target"
+            );
+        });
+    }
+
+    /// M6's riskiest promise: promoting to control resizes and locks the shared PTY, and dropping
+    /// back to observe puts it back. Without `release_terminal_control`'s explicit restore this
+    /// fails on `current_size` — `resize_shared_runtime_to_effective_size` returns immediately with
+    /// no foreground app client, which is exactly the headless-box-plus-phone case.
+    #[test]
+    fn retarget_to_control_and_back_restores_the_pane_grid_and_releases_the_lock() {
+        with_terminal_session_test_server(|server, terminal_id, terminal_id_string, _| {
+            connect_pending_terminal_client(server, 7);
+            assert!(
+                server.handle_server_event(ServerEvent::ClientObserveTerminal {
+                    client_id: 7,
+                    target: terminal_id_string.clone(),
+                })
+            );
+            let desktop_size = server
+                .app
+                .terminal_runtimes
+                .get(&terminal_id)
+                .expect("runtime")
+                .current_size();
+            // The client declared 100x30 at connect; the pane is 24x80. If they were equal the
+            // restore assertion below would pass for free.
+            assert_ne!(desktop_size, (30, 100));
+
+            assert!(
+                server.handle_server_event(ServerEvent::ClientRetargetTerminal {
+                    client_id: 7,
+                    target: terminal_id_string.clone(),
+                    mode: protocol::TerminalSessionMode::Control { takeover: false },
+                })
+            );
+            assert!(matches!(
+                server.clients.get(&7).map(|client| &client.mode),
+                Some(ClientConnectionMode::TerminalAttach { .. })
+            ));
+            assert_eq!(
+                server.terminal_attach_owners.get(&terminal_id_string),
+                Some(&7)
+            );
+            assert!(server
+                .app
+                .state
+                .direct_attach_resize_locks
+                .contains(&terminal_id));
+            assert_eq!(
+                server
+                    .app
+                    .terminal_runtimes
+                    .get(&terminal_id)
+                    .expect("runtime")
+                    .current_size(),
+                (30, 100),
+                "control must resize the shared PTY to the controller's grid — if it does not, the \
+                 restore below proves nothing"
+            );
+
+            assert!(
+                server.handle_server_event(ServerEvent::ClientRetargetTerminal {
+                    client_id: 7,
+                    target: terminal_id_string.clone(),
+                    mode: protocol::TerminalSessionMode::Observe,
+                })
+            );
+
+            assert!(matches!(
+                server.clients.get(&7).map(|client| &client.mode),
+                Some(ClientConnectionMode::TerminalObserve { .. })
+            ));
+            assert!(server.terminal_attach_owners.is_empty());
+            assert!(!server
+                .app
+                .state
+                .direct_attach_resize_locks
+                .contains(&terminal_id));
+            assert_eq!(
+                server
+                    .app
+                    .terminal_runtimes
+                    .get(&terminal_id)
+                    .expect("runtime")
+                    .current_size(),
+                desktop_size,
+                "releasing control must put the desktop's grid back"
+            );
+            assert!(server.clients.contains_key(&7), "the connection survives");
+        });
+    }
+
+    /// Retargeting a controller to a *different* pane must not leave the old one locked at the
+    /// phone's grid with nothing pointing at it.
+    #[test]
+    fn retarget_from_control_to_another_target_releases_the_previous_pane() {
+        with_terminal_session_test_server(|server, first_id, first_string, _| {
+            let (_second_id, second_string) = add_second_terminal(server);
+            connect_pending_terminal_client(server, 7);
+            assert!(
+                server.handle_server_event(ServerEvent::ClientControlTerminal {
+                    client_id: 7,
+                    target: first_string.clone(),
+                    takeover: false,
+                })
+            );
+            let controlled_size = server
+                .app
+                .terminal_runtimes
+                .get(&first_id)
+                .expect("runtime")
+                .current_size();
+            assert_eq!(controlled_size, (30, 100));
+
+            assert!(
+                server.handle_server_event(ServerEvent::ClientRetargetTerminal {
+                    client_id: 7,
+                    target: second_string.clone(),
+                    mode: protocol::TerminalSessionMode::Observe,
+                })
+            );
+
+            assert!(server.terminal_attach_owners.is_empty());
+            assert!(!server
+                .app
+                .state
+                .direct_attach_resize_locks
+                .contains(&first_id));
+            assert_eq!(
+                server
+                    .app
+                    .terminal_runtimes
+                    .get(&first_id)
+                    .expect("runtime")
+                    .current_size(),
+                (24, 80),
+                "the pane we walked away from must be back at its own grid"
+            );
+        });
+    }
+
+    /// A refused retarget keeps the session it refused to move. Every other handler here answers a
+    /// bad request by closing the connection; doing that on a stale chip id would turn a closed
+    /// pane into a reconnect, which is the cost B6 exists to remove.
+    #[test]
+    fn a_retarget_to_a_missing_target_keeps_the_current_session() {
+        with_terminal_session_test_server(|server, _, terminal_id_string, _| {
+            // The refusal is a targeted `Notify`, so the control receiver has to stay alive: the
+            // no-rx harness makes any send close the connection and the assertion below vacuous.
+            let _control_rx = connect_pending_terminal_client_with_control_rx(server, 7);
+            assert!(
+                server.handle_server_event(ServerEvent::ClientObserveTerminal {
+                    client_id: 7,
+                    target: terminal_id_string.clone(),
+                })
+            );
+
+            assert!(
+                !server.handle_server_event(ServerEvent::ClientRetargetTerminal {
+                    client_id: 7,
+                    target: "ws-nope:p9".to_owned(),
+                    mode: protocol::TerminalSessionMode::Observe,
+                })
+            );
+
+            assert!(server.clients.contains_key(&7), "the connection survives");
+            assert!(matches!(
+                server.clients.get(&7).map(|client| &client.mode),
+                Some(ClientConnectionMode::TerminalObserve { terminal_id })
+                    if terminal_id == &terminal_id_string
+            ));
+        });
+    }
+
+    /// `RetargetTerminal` moves an *established* session. A connection that never sent
+    /// `ObserveTerminal`/`ControlTerminal` has none, and answering it with silence would be
+    /// indistinguishable from success.
+    #[test]
+    fn a_retarget_before_any_terminal_session_is_refused() {
+        with_terminal_session_test_server(|server, _, terminal_id_string, _| {
+            let _control_rx = connect_pending_terminal_client_with_control_rx(server, 7);
+            assert!(
+                !server.handle_server_event(ServerEvent::ClientRetargetTerminal {
+                    client_id: 7,
+                    target: terminal_id_string,
+                    mode: protocol::TerminalSessionMode::Observe,
+                })
+            );
+            assert!(matches!(
+                server.clients.get(&7).map(|client| &client.mode),
+                Some(ClientConnectionMode::App)
+            ));
+        });
+    }
+
+    /// Promotion is refused, without side effects, when someone else holds the lock and the client
+    /// did not ask for a takeover — and the refusal leaves the observe session intact.
+    #[test]
+    fn a_control_retarget_without_takeover_leaves_the_observe_session_intact() {
+        with_terminal_session_test_server(|server, terminal_id, terminal_id_string, _| {
+            connect_pending_terminal_client(server, 7);
+            assert!(
+                server.handle_server_event(ServerEvent::ClientControlTerminal {
+                    client_id: 7,
+                    target: terminal_id_string.clone(),
+                    takeover: false,
+                })
+            );
+            let _observer_rx = connect_pending_terminal_client_with_control_rx(server, 8);
+            assert!(
+                server.handle_server_event(ServerEvent::ClientObserveTerminal {
+                    client_id: 8,
+                    target: terminal_id_string.clone(),
+                })
+            );
+
+            assert!(
+                !server.handle_server_event(ServerEvent::ClientRetargetTerminal {
+                    client_id: 8,
+                    target: terminal_id_string.clone(),
+                    mode: protocol::TerminalSessionMode::Control { takeover: false },
+                })
+            );
+
+            assert_eq!(
+                server.terminal_attach_owners.get(&terminal_id_string),
+                Some(&7),
+                "the incumbent keeps the lock"
+            );
+            assert!(server
+                .app
+                .state
+                .direct_attach_resize_locks
+                .contains(&terminal_id));
+            assert!(matches!(
+                server.clients.get(&8).map(|client| &client.mode),
+                Some(ClientConnectionMode::TerminalObserve { .. })
+            ));
+            assert!(server.clients.contains_key(&7), "the incumbent survives");
+        });
+    }
+
     fn app_client_marks_git_refresh_due_on_first_attach(render_encoding: RenderEncoding) {
         let mut server = test_headless_server();
         server
@@ -6956,6 +7742,7 @@ next_tab = ""
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding,
             keybindings: None,
             direct_attach_requested: false,
@@ -6991,6 +7778,7 @@ next_tab = ""
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::TerminalAnsi,
             keybindings: None,
             direct_attach_requested: true,
@@ -7025,6 +7813,7 @@ next_tab = ""
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::SemanticFrame,
             keybindings: None,
             direct_attach_requested: false,
@@ -7126,6 +7915,7 @@ next_tab = ""
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::TerminalAnsi,
             keybindings: None,
             direct_attach_requested: true,
@@ -7651,6 +8441,26 @@ next_tab = ""
             crate::server::render_stream::render_virtual(&mut state, area, true);
         assert_eq!(buffer.area.width, 80);
         assert_eq!(buffer.area.height, 24);
+    }
+
+    #[test]
+    fn embedded_virtual_render_omits_sidebar_and_uses_full_width_content() {
+        let mut state = AppState::test_new();
+        state.workspaces = vec![crate::workspace::Workspace::test_new("test")];
+        state.active = Some(0);
+        state.selected = 0;
+        state.mode = crate::app::Mode::Terminal;
+
+        let area = Rect::new(0, 0, 80, 24);
+        let (buffer, _cursor) =
+            crate::server::render_stream::render_embedded_content_virtual(&mut state, area, true);
+
+        assert_eq!(buffer.area.width, 80);
+        assert_eq!(buffer.area.height, 24);
+        assert_eq!(state.view.sidebar_rect, Rect::default());
+        assert!(state.view.workspace_card_areas.is_empty());
+        assert_eq!(state.view.tab_bar_rect, Rect::new(0, 0, 80, 1));
+        assert_eq!(state.view.terminal_area, Rect::new(0, 1, 80, 23));
     }
 
     #[test]
@@ -9042,6 +9852,39 @@ next_tab = ""
         );
     }
 
+    #[test]
+    fn render_and_stream_uses_embedded_app_surface_mode() {
+        let mut server = test_headless_server();
+        server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("test")];
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+        server.app.state.mode = crate::app::Mode::Terminal;
+
+        let (writer, _control_rx, render_rx) = test_client_writer();
+        let mut connection = ClientConnection::new(
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            1,
+            RenderEncoding::SemanticFrame,
+            Some(writer),
+        );
+        connection.surface_mode = crate::protocol::ClientSurfaceMode::EmbeddedContent;
+        server.clients.insert(1, connection);
+        server.foreground_client_id = Some(1);
+        server.sync_foreground_client_state();
+        server.resize_shared_runtime_to_effective_size();
+
+        server.render_and_stream();
+        let frame = read_server_frame(render_rx.recv().expect("embedded frame"));
+
+        assert_eq!((frame.width, frame.height), (80, 24));
+        assert_eq!(server.app.state.view.sidebar_rect, Rect::default());
+        assert_eq!(server.app.state.view.tab_bar_rect, Rect::new(0, 0, 80, 1));
+        assert_eq!(server.app.state.view.terminal_area, Rect::new(0, 1, 80, 23));
+    }
+
     #[tokio::test]
     async fn resize_shared_runtime_resizes_background_tabs() {
         let mut server = test_headless_server();
@@ -9151,6 +9994,7 @@ next_tab = ""
             rows: 24,
             cell_width_px: 0,
             cell_height_px: 0,
+            surface_mode: crate::protocol::ClientSurfaceMode::FullApp,
             render_encoding: RenderEncoding::TerminalAnsi,
             keybindings: None,
             direct_attach_requested: true,
@@ -9469,8 +10313,10 @@ next_tab = ""
             DeferredRender::None
         );
         assert!(matches!(
-            read_server_message(client_rx.recv_timeout(Duration::from_millis(100)).unwrap()),
-            ServerMessage::Frame(_)
+            crate::protocol::decompress_server_message(read_server_message(
+                client_rx.recv_timeout(Duration::from_millis(100)).unwrap()
+            )),
+            ServerMessage::Frame(_) | ServerMessage::FrameDelta(_)
         ));
     }
 
@@ -9746,9 +10592,11 @@ next_tab = ""
         server.sync_foreground_client_state();
         server.resize_shared_runtime_to_effective_size();
         server.render_and_stream();
-        let _initial_frame = client_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("initial frame");
+        let initial_frame = read_server_frame(
+            client_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("initial frame"),
+        );
 
         let runtime = server
             .app
@@ -9775,7 +10623,9 @@ next_tab = ""
 
         server.app.state.workspaces[0].switch_tab(background_tab);
         server.render_and_stream();
-        let visible_frame = read_server_frame(
+        // mx #13: the encoder may stream a FrameDelta against the initial frame; reconstruct.
+        let visible_frame = read_server_frame_after(
+            &initial_frame,
             client_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("frame after tab switch"),
@@ -9837,7 +10687,8 @@ next_tab = ""
         runtime.test_process_pty_bytes(b"\rZ");
 
         assert!(server.render_retained_pty_update_and_stream());
-        let patched = read_server_frame(
+        let patched = read_server_frame_after(
+            &first,
             client_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("retained frame"),
@@ -9869,7 +10720,9 @@ next_tab = ""
 
         assert!(!server.render_retained_pty_update_and_stream());
         server.render_and_stream();
-        let updated = read_server_frame(
+        // issue #13: the fallback full render still delta-encodes against the baseline.
+        let updated = read_server_frame_after(
+            &initial,
             client_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("full popup fallback frame"),
@@ -10152,13 +11005,17 @@ next_tab = ""
         let (mut full_server, full_rx, full_pane_id) = retained_test_server(initial);
 
         retained_server.render_and_stream();
-        let _ = retained_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("initial retained baseline");
+        let retained_baseline = read_server_frame(
+            retained_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("initial retained baseline"),
+        );
         full_server.render_and_stream();
-        let _ = full_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("initial full baseline");
+        let full_baseline = read_server_frame(
+            full_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("initial full baseline"),
+        );
 
         retained_server
             .app
@@ -10180,12 +11037,14 @@ next_tab = ""
         assert!(retained_server.render_retained_pty_update_and_stream());
         full_server.render_and_stream();
 
-        let retained_frame = read_server_frame(
+        let retained_frame = read_server_frame_after(
+            &retained_baseline,
             retained_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("retained frame"),
         );
-        let full_frame = read_server_frame(
+        let full_frame = read_server_frame_after(
+            &full_baseline,
             full_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("full frame"),
@@ -10201,13 +11060,17 @@ next_tab = ""
         let (mut full_server, full_rx, full_pane_id) = retained_test_server(initial);
 
         retained_server.render_and_stream();
-        let _ = retained_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("initial retained baseline");
+        let retained_baseline = read_server_frame(
+            retained_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("initial retained baseline"),
+        );
         full_server.render_and_stream();
-        let _ = full_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("initial full baseline");
+        let full_baseline = read_server_frame(
+            full_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("initial full baseline"),
+        );
 
         retained_server
             .app
@@ -10229,12 +11092,14 @@ next_tab = ""
         assert!(retained_server.render_retained_pty_update_and_stream());
         full_server.render_and_stream();
 
-        let retained_frame = read_server_frame(
+        let retained_frame = read_server_frame_after(
+            &retained_baseline,
             retained_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("retained cursor frame"),
         );
-        let full_frame = read_server_frame(
+        let full_frame = read_server_frame_after(
+            &full_baseline,
             full_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("full cursor frame"),
@@ -10246,9 +11111,11 @@ next_tab = ""
     async fn retained_pty_update_declines_unsafe_mode_without_consuming_dirty_rows() {
         let (mut server, client_rx, pane_id) = retained_test_server(b"aaaa");
         server.render_and_stream();
-        let _ = client_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("initial frame");
+        let baseline = read_server_frame(
+            client_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("initial frame"),
+        );
 
         let runtime = server
             .app
@@ -10263,7 +11130,8 @@ next_tab = ""
 
         server.app.state.mode = crate::app::Mode::Terminal;
         assert!(server.render_retained_pty_update_and_stream());
-        let patched = read_server_frame(
+        let patched = read_server_frame_after(
+            &baseline,
             client_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("retained frame after safe mode"),
@@ -10308,7 +11176,7 @@ next_tab = ""
         frame.cells[hyperlink_idx].hyperlink = Some(0);
         let prepared = client
             .render_state
-            .prepare_frame(frame)
+            .prepare_frame(frame.clone())
             .expect("hyperlink frame differs");
         client.render_state.commit_sent_frame(prepared);
 
@@ -10323,7 +11191,8 @@ next_tab = ""
         assert!(client_rx.recv_timeout(Duration::from_millis(50)).is_err());
 
         server.render_and_stream();
-        let full = read_server_frame(
+        let full = read_server_frame_after(
+            &frame,
             client_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("full frame after hyperlink overwrite"),
@@ -10338,9 +11207,11 @@ next_tab = ""
     async fn retained_pty_update_allows_dirty_row_that_creates_plain_url() {
         let (mut server, client_rx, pane_id) = retained_test_server(b"plain");
         server.render_and_stream();
-        let _ = client_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("initial frame");
+        let initial = read_server_frame(
+            client_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("initial frame"),
+        );
 
         let runtime = server
             .app
@@ -10350,7 +11221,9 @@ next_tab = ""
         runtime.test_process_pty_bytes(b"\rhttps://example.com/new");
 
         assert!(server.render_retained_pty_update_and_stream());
-        let patched = read_server_frame(
+        // issue #13: the retained path streams a semantic FrameDelta; reconstruct it.
+        let patched = read_server_frame_after(
+            &initial,
             client_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("retained frame after plain URL"),
@@ -10371,9 +11244,11 @@ next_tab = ""
         };
 
         server.render_and_stream();
-        let _ = client_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("initial frame");
+        let baseline = read_server_frame(
+            client_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("initial frame"),
+        );
 
         let runtime = server
             .app
@@ -10383,7 +11258,8 @@ next_tab = ""
         runtime.test_process_pty_bytes(b"\rZ");
 
         assert!(server.render_retained_pty_update_and_stream());
-        let retained = read_server_frame(
+        let retained = read_server_frame_after(
+            &baseline,
             client_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("retained frame with kitty enabled"),

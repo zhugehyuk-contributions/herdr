@@ -385,7 +385,7 @@ fn send_fds(stream: &UnixStream, fds: &[RawFd]) -> io::Result<()> {
     if fds.is_empty() {
         return Ok(());
     }
-    let byte = [b'F'];
+    let byte = b"F";
     let iov = [libc::iovec {
         iov_base: byte.as_ptr() as *mut libc::c_void,
         iov_len: byte.len(),
@@ -482,9 +482,12 @@ mod tests {
             workspaces: Vec::new(),
             active: None,
             selected: 0,
+            agent_panel_scope: Default::default(),
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
+            remote_registry: Default::default(),
+            pane_id_aliases: Default::default(),
         }
     }
 

@@ -1,0 +1,106 @@
+/**
+ * Golden wire vectors.
+ *
+ * PROVENANCE: every hex string below was produced by real `bincode` v2 with
+ * `bincode::config::standard()` — not by hand and not by this codec. The generator is checked in
+ * at `tools/gen-vectors.rs`; it declares mirrors of the `src/protocol/wire.rs` types with the same
+ * variant ordinals and field order (bincode's output depends on nothing else) and prints
+ * `payload`/`framed` hex. Run it with the recipe in that file's header to regenerate.
+ *
+ * The `hello_*` vectors were additionally reconciled against the Rust integration harness
+ * `tests/support/mod.rs::client_handshake_with`, which hand-builds the same message:
+ * `encode_varint_enum(0, [version, cols, rows, cell_width_px=8, cell_height_px=16,
+ * requested_encoding, 0 (FullApp), 0 (Server), launch_mode])`. Its output for
+ * `(version=20, cols=80, rows=24, encoding=0, launch=0)` is `00 14 50 18 08 10 00 00 00 00`,
+ * byte-identical to `HELLO_SEMANTIC_APP_80X24`.
+ *
+ * `REQUEST_FULL_FRAME` and `TERMINAL_SMALL_DIFF` came out of the same generator run as everything
+ * else here; that run reproduced every pre-existing vector below byte for byte, which is what makes
+ * the two new ones trustworthy rather than hand-typed.
+ *
+ * ## The `_V21` twins, and why the version-20 vectors stay
+ *
+ * `PROTOCOL_VERSION` moved to 21 when the wire-ABI prelude landed (`src/protocol/abi.rs`), and the
+ * version is a *field* of both `Hello` and `Welcome`, so the current-version bytes differ from the
+ * ones below by one varint (`14` -> `15`). Both sets are kept, deliberately:
+ *
+ *   - the **20** vectors pin that this codec is version-AGNOSTIC where it should be. `decodeWelcome`
+ *     must read whatever version arrived rather than assume its own, and the tests that use them
+ *     pass the version explicitly. Deleting them would delete that property.
+ *   - the **`_V21`** vectors pin the bytes that actually go on the wire today, for the tests that
+ *     exercise `encodeHello`'s default and the end-to-end handshake flow.
+ *
+ * The `_V21` bytes are not hand-typed either: `test/fixtures.test.ts` compares
+ * `encodeHelloFrame(...)` against `docs/next/protocol/fixtures.json`, which
+ * `src/protocol/wire_fixtures.rs` generates from the production encoder. That artifact, not this
+ * file, is the anchor for the current version.
+ *
+ * `OBSERVE_TERMINAL_W1_P1` was likewise reconciled against
+ * `tests/support/mod.rs::send_observe_terminal(stream, "w1:p1")`, which builds
+ * `encode_varint_u32(12) ++ encode_varint_u32(target.len()) ++ target.as_bytes()`. Note
+ * `str::len()` is the BYTE length, which is why the UTF-8 vector below is the load-bearing one.
+ */
+
+export const HELLO_SEMANTIC_APP_80X24 = "00145018081000000000";
+export const HELLO_ANSI_ATTACH_300X100 = "0014fb2c0164081001000001";
+export const HELLO_ANSI_ATTACH_65535_NO_CELLPX = "0014fbfffffbffff000001000001";
+
+/** The same messages at the current `PROTOCOL_VERSION` (21): the version varint is `15`, not `14`. */
+export const HELLO_SEMANTIC_APP_80X24_V21 = "00155018081000000000";
+export const HELLO_ANSI_ATTACH_65535_NO_CELLPX_V21 = "0015fbfffffbffff000001000001";
+
+/**
+ * `ClientMessage::RequestFullFrame` — a UNIT variant (`src/protocol/wire.rs:462-467`), so the whole
+ * message is the tag byte. Its neighbours all carry fields, which is exactly the copy-paste hazard
+ * this vector exists to pin: `ObserveTerminal` below is `0c 00` even for an *empty* target.
+ */
+export const REQUEST_FULL_FRAME = "0b";
+
+/** `ClientMessage::ObserveTerminal { target: "w1:p1" }` — tag 0x0c, len 0x05, then the ASCII. */
+export const OBSERVE_TERMINAL_W1_P1 = "0c0577313a7031";
+/** An empty target still costs the length varint: `0c 00`, never a bare tag. */
+export const OBSERVE_TERMINAL_EMPTY = "0c00";
+/** "한글:터미널" — 6 chars but 0x10 = 16 bytes; the varint counts bytes. */
+export const OBSERVE_TERMINAL_UTF8 = "0c10ed959ceab8803aed84b0ebafb8eb8490";
+export const OBSERVE_TERMINAL_UTF8_TEXT = "한글:터미널";
+/** 250 × "a": the last length that fits in a single varint byte (0xfa). */
+export const OBSERVE_TERMINAL_LEN_250 = "0cfa" + "61".repeat(250);
+/** 251 × "a": one byte longer, so the length switches to the 0xfb u16 marker. */
+export const OBSERVE_TERMINAL_LEN_251 = "0cfbfb00" + "61".repeat(251);
+
+export const WELCOME_OK_ANSI = "00140100";
+export const WELCOME_OK_SEMANTIC = "00140000";
+/** An accepted TerminalAnsi handshake at the current `PROTOCOL_VERSION` (21). */
+export const WELCOME_OK_ANSI_V21 = "00150100";
+export const WELCOME_ERROR =
+  "0014000131636c69656e742076657273696f6e203139206973206f6c646572207468616e" +
+  "207365727665722076657273696f6e203230";
+export const WELCOME_ERROR_TEXT = "client version 19 is older than server version 20";
+export const WELCOME_ERROR_UTF8 = "0014000112eab1b0ebb6803a20ed959ceab88020e29c85";
+export const WELCOME_ERROR_UTF8_TEXT = "거부: 한글 ✅";
+
+export const TERMINAL_SMALL_FULL = "0d01641e010a1b5b324a1b5b313b3148";
+/**
+ * The same geometry with `full: false` — a diff (seq 2, `ESC[1;1Hhi`).
+ *
+ * A diff is only correct against the baseline the frame before it left behind, which is why losing
+ * one is a *screen* problem and not a framing problem: the length prefix keeps the wire in sync
+ * while the rendered cells drift permanently.
+ */
+export const TERMINAL_SMALL_DIFF = "0d02641e00081b5b313b31486869";
+export const TERMINAL_SEQ_VARINT_U16 = "0dfbfb00fbfb00fbffff0000";
+/** seq = 2^32 (needs the 253/u64 marker), 300 payload bytes (needs the 251/u16 length marker). */
+export const TERMINAL_SEQ_U64 =
+  "0dfd0000000001000000501800fb2c01" + "aa".repeat(300);
+
+/** Bare `u64` values encoded by bincode, for varint boundary checks. */
+export const VARINT_U64_VECTORS: ReadonlyArray<readonly [bigint, string]> = [
+  [0n, "00"],
+  [250n, "fa"],
+  [251n, "fbfb00"],
+  [65535n, "fbffff"],
+  [65536n, "fc00000100"],
+  [4294967295n, "fcffffffff"],
+  [4294967296n, "fd0000000001000000"],
+  [18446744073709551615n, "fdffffffffffffffff"],
+];

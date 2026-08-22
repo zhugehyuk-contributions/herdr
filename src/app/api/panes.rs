@@ -1234,11 +1234,50 @@ impl App {
         params: PaneReportAgentParams,
     ) -> String {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            // #37: a hook reporting to an unresolvable pane id never lands its authoritative state,
+            // so the sidebar silently falls back to heuristic detection (the false-positive source).
+            // Log the exact id + source so the failing format is visible in the server log instead of
+            // a bare `outcome="error"` (e.g. a stale HERDR_PANE_ID after a restart/handoff).
+            //
+            // The hook always emits the server-provided `p_<raw>` id (see
+            // integration::apply_pane_env). Classify the failure so an operator can
+            // tell a *format* problem (wrong prefix) from a *resolution* problem
+            // (a `p_<raw>` whose raw pane no longer exists / was not re-aliased after
+            // a live handoff). The live pane id list makes the mismatch concrete.
+            let reason = report_pane_id_failure_reason(&params.pane_id);
+            let live_pane_ids = self.live_pane_ids();
+            tracing::warn!(
+                subsystem = "agent",
+                event = "pane.report_agent.unresolved_pane",
+                pane_id = %params.pane_id,
+                reason,
+                live_pane_ids = ?live_pane_ids,
+                source = %params.source,
+                agent = %params.agent,
+                "pane.report_agent could not resolve its pane id; authoritative hook state dropped"
+            );
             return pane_not_found(id, &params.pane_id);
         };
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
+            tracing::warn!(
+                subsystem = "agent",
+                event = "pane.report_agent.invalid_label",
+                pane_id = %params.pane_id,
+                source = %params.source,
+                agent = %params.agent,
+                "pane.report_agent rejected an empty/invalid agent label"
+            );
             return invalid_agent(id);
         };
+        tracing::debug!(
+            subsystem = "agent",
+            event = "pane.report_agent.accepted",
+            pane_id = %params.pane_id,
+            source = %params.source,
+            agent = %agent_label,
+            state = ?params.state,
+            "pane.report_agent applied authoritative hook state"
+        );
         self.handle_internal_event(crate::events::AppEvent::HookStateReported {
             pane_id,
             session_ref: crate::agent_resume::session_ref_from_report(
@@ -1670,6 +1709,45 @@ fn normalize_state_labels(
 
 fn pane_not_found(id: String, pane_id: &str) -> String {
     encode_error(id, "pane_not_found", format!("pane {pane_id} not found"))
+}
+
+/// Classify why a reported pane id could not be resolved, to make #37 hook
+/// failures diagnosable from the server log. The hook always sends the
+/// server-issued `p_<raw>` id, so a non-`p_`/non-numeric shape means the env was
+/// corrupted or overwritten, whereas a well-formed `p_<raw>` that still fails to
+/// resolve points at a stale id (e.g. after a live handoff re-numbered panes).
+fn report_pane_id_failure_reason(pane_id: &str) -> &'static str {
+    let trimmed = pane_id.trim();
+    if trimmed.is_empty() {
+        return "empty_pane_id";
+    }
+    match trimmed.strip_prefix("p_") {
+        Some(rest) if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()) => {
+            "stale_or_unknown_pane"
+        }
+        Some(_) => "malformed_p_id",
+        None => "unexpected_id_format",
+    }
+}
+
+impl App {
+    /// Snapshot of every currently live public pane id, for diagnostics when a
+    /// hook reports to a pane id the server can no longer resolve (#37).
+    fn live_pane_ids(&self) -> Vec<String> {
+        self.state
+            .workspaces
+            .iter()
+            .enumerate()
+            .flat_map(|(ws_idx, ws)| {
+                ws.tabs.iter().flat_map(move |tab| {
+                    tab.layout
+                        .pane_ids()
+                        .into_iter()
+                        .filter_map(move |pane_id| self.public_pane_id(ws_idx, pane_id))
+                })
+            })
+            .collect()
+    }
 }
 
 impl App {
@@ -2307,6 +2385,96 @@ mod tests {
         assert_eq!(success.id, "req");
         assert_eq!(app.state.request_remove_linked_worktree, None);
         assert!(app.state.workspaces.is_empty());
+    }
+
+    fn report_agent_params(pane_id: &str) -> PaneReportAgentParams {
+        // Use a state-reporting (non-reserved) agent: claude/codex/cursor/droid/opencode now report
+        // session identity only (native state comes from screen detection), so their hook no longer
+        // lands authoritative state. Pi still reports state, so it exercises the #37 authority path.
+        PaneReportAgentParams {
+            pane_id: pane_id.to_string(),
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            state: crate::api::schema::PaneAgentState::Working,
+            message: None,
+            seq: Some(1),
+            agent_session_id: None,
+            agent_session_path: None,
+        }
+    }
+
+    fn error_code(response: &str) -> String {
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(response).unwrap();
+        error.error.code
+    }
+
+    #[test]
+    fn report_pane_id_failure_reason_classifies_shapes() {
+        // Well-formed server-issued id that simply does not resolve any more.
+        assert_eq!(
+            report_pane_id_failure_reason("p_42"),
+            "stale_or_unknown_pane"
+        );
+        // Wrong-shaped values that should never come from the integration env.
+        assert_eq!(report_pane_id_failure_reason("p_abc"), "malformed_p_id");
+        assert_eq!(
+            report_pane_id_failure_reason("issue-1"),
+            "unexpected_id_format"
+        );
+        assert_eq!(report_pane_id_failure_reason("   "), "empty_pane_id");
+    }
+
+    #[test]
+    fn report_agent_lands_authoritative_state_for_live_pane() {
+        let mut app = app_with_linked_worktree();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        // Register a backing terminal for the pane so the reported state has
+        // somewhere to land (the bare test fixture only wires the pane).
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .cloned()
+            .unwrap();
+        app.state.terminals.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalState::new(terminal_id.clone(), "/tmp".into()),
+        );
+        // Upstream v0.8.0 full-lifecycle routing only lands hook authority when the agent
+        // process is detected AND the session is anchored — mirror `anchor_full_lifecycle_session`.
+        {
+            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+            terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:pi".into(),
+                agent: "pi".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("sess-1").unwrap(),
+            });
+        }
+
+        let response =
+            app.handle_pane_report_agent("req".into(), report_agent_params(&public_pane_id));
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.id, "req");
+
+        // Authoritative hook state must now be present on the terminal so the
+        // sidebar uses it instead of falling back to heuristic detection.
+        let terminal = app.state.terminals.get(&terminal_id).unwrap();
+        assert_eq!(terminal.effective_agent_label(), Some("pi"));
+        assert_eq!(terminal.state, crate::detect::AgentState::Working);
+    }
+
+    #[test]
+    fn report_agent_to_stale_pane_id_returns_pane_not_found() {
+        let mut app = app_with_linked_worktree();
+
+        let response = app.handle_pane_report_agent("req".into(), report_agent_params("p_999999"));
+
+        assert_eq!(error_code(&response), "pane_not_found");
     }
 
     #[test]
