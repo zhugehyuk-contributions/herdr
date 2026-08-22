@@ -43,6 +43,18 @@ class HerdrSshModule : Module() {
     }
 
     Class(HerdrSshConnection::class) {
+      // Required by Expo: ClassComponentBuilder throws "constructor cannot be null" at module
+      // REGISTRATION time for any Class() with an owner type that is not a SharedRef
+      // (expo-modules-core .../classcomponent/ClassComponentBuilder.kt:76-79). It compiles without
+      // one — this only surfaced by running the app, which is why it survived a green build.
+      // A connection cannot be built from JS: it owns a live sshj SSHClient handed over by
+      // `connect`. So the constructor exists to satisfy registration and refuses if JS calls it.
+      Constructor {
+        throw IllegalStateException(
+          "HerdrSshConnection is returned by HerdrSsh.connect(); it cannot be constructed from JS"
+        )
+      }
+
       // The handlers are arguments, not listeners attached afterwards — obligation 4. sshj hands
       // back a `Session.Command` whose streams are already live, so a listener registered after
       // `openChannel` resolved would lose whatever the remote wrote first, which for a bridge that
@@ -60,6 +72,14 @@ class HerdrSshModule : Module() {
     }
 
     Class(HerdrSshChannel::class) {
+      // Same registration requirement as above. A channel is handed back by
+      // `connection.openChannel(...)` and wraps a live sshj Session.Command.
+      Constructor {
+        throw IllegalStateException(
+          "HerdrSshChannel is returned by connection.openChannel(); it cannot be constructed from JS"
+        )
+      }
+
       // `ByteArray` in, `Uint8Array` on the JS side, with one `getRegion` copy and no base64:
       // `ByteArrayTypeConverter` declares `CppType.UINT8_TYPED_ARRAY` inbound, and outbound the
       // emit path routes through `FollyDynamicExtensionConverter` into `createUint8Array`
