@@ -19,6 +19,8 @@ import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.transport.verification.FingerprintVerifier
 import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 import net.schmizz.sshj.userauth.keyprovider.OpenSSHKeyFile
+import net.schmizz.sshj.userauth.password.PasswordFinder
+import net.schmizz.sshj.userauth.password.Resource
 
 /** How many bytes a pump hands to JS at once. Chunk boundaries are meaningless to the framer. */
 private const val PUMP_BUFFER = 32 * 1024
@@ -56,7 +58,21 @@ object HerdrSshDialer {
     if (config.passphrase.isNullOrEmpty()) {
       keys.init(config.privateKey, null)
     } else {
-      keys.init(config.privateKey, null, { config.passphrase!!.toCharArray() })
+      // NOT a lambda: `PasswordFinder` declares two abstract methods (`reqPassword` and
+      // `shouldRetry`, sshj 0.40.0 PasswordFinder.java:13,25), so Kotlin SAM conversion does not
+      // apply and `{ ... }` here does not compile. `shouldRetry = false` is the deliberate half:
+      // the passphrase came from the caller in one shot, so retrying just re-offers the same wrong
+      // secret and burns auth attempts against the server.
+      val passphrase = config.passphrase!!
+      keys.init(
+        config.privateKey,
+        null,
+        object : PasswordFinder {
+          override fun reqPassword(resource: Resource<*>?): CharArray = passphrase.toCharArray()
+
+          override fun shouldRetry(resource: Resource<*>?): Boolean = false
+        }
+      )
     }
     client.authPublickey(config.username, keys)
     return client
