@@ -158,7 +158,7 @@ ssh 라이브러리가 정하고 있었고, 아무도 그걸 읽지 않았다.
 | Hermes JS 로드 | ✅ Metro가 **3,243 모듈** 번들 → 앱이 수신 |
 | UI 렌더 | ✅ agents 뷰(모노톤, blocked 8 / working 16, 하단 탭 nodes\|agents) |
 
-**아직 아닌 것**: 화면에 그려지는 데이터는 여전히 `src/api/mock/mock-fixture.ts` 목업이다 — ssh 전송 계층은 붙지만(아래 절) UI가 그 연결에서 읽도록 배선되지 않았다. 실측은 전부 격리 스크래치 서버 + 폐기용 키로만 했고, 유저 실인프라·실키를 에뮬레이터에 넣는 것은 하지 않는다.
+**화면은 목업이 아니었다 (2026-08-22 정정)**: 직전 판은 "화면 데이터는 여전히 `mock-fixture.ts` 목업"이라고 적었다. **틀렸다.** 선택 이음매는 `herdr-data-provider.tsx`의 한 줄 `connections.length > 0 ? createLiveSnapshotLoader(connections) : loadMockSnapshot`이고, 기기에서 그 값은 **1**이었다(`{"connections":1,"failures":[]}`) → 라이브 로더가 선택됐다. 화면 증거도 일치한다: `app/index.tsx:44`의 `N nodes`는 `snapshot.perRemote.length`인데 **목업은 4 nodes와 에이전트 40개**를 낸다(실행 확인 `[v]`). 기기 스크린샷은 **`1 nodes` · `No agents on any node`** — 목업이 만들 수 없는 값이고, 원격 1개·에이전트 0개인 격리 랩 서버와 정확히 일치한다. 나는 화면을 열어보고도 "목업일 것"이라고 적었다 — 판별 가능한 값(노드 수)이 화면에 이미 있었다.
 
 **툴체인 (다음 사람용)**: JDK **17** (Java 26은 `Unsupported class file major version 70`으로 gradle 실패) · Android SDK platform 36 + build-tools 36.0.0 · `ANDROID_HOME=/opt/homebrew/share/android-commandlinetools`.
 

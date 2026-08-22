@@ -34,11 +34,21 @@ import { HerdrDataProvider } from '../src/api/herdr-data-provider'
 import { HerdrClientsProvider } from '../src/transport/herdr-clients-context'
 import { useSupervisedRemotes } from '../src/transport/use-supervised-remotes'
 import { useHerdrSshConnections } from '../modules/herdr-ssh'
+import { useForegroundRefresh } from '../src/api/use-foreground-refresh'
 
 // Why: keeps the native splash screen visible until the React tree is mounted
 // and ready to render. Without this the user sees a blank white/black frame
 // between the native splash and the first React paint.
 SplashScreen.preventAutoHideAsync()
+
+// Why a component rather than a hook call in `RootLayout`: the poller reads the snapshot context,
+// and `RootLayout` is what *installs* it — a hook called there would see the default context and
+// poll nothing forever. Rendering null keeps it out of the layout entirely
+// (`src/api/use-foreground-refresh.ts` explains what it is for).
+function ForegroundSnapshotPolling() {
+  useForegroundRefresh()
+  return null
+}
 
 export default function RootLayout() {
   // Was `const APP_CONNECTIONS = []`, with a comment saying it was empty because React Native has no
@@ -70,6 +80,7 @@ export default function RootLayout() {
     // the seam (port map §5, "이 시점 전까지 mock으로 UI가 이미 완성돼 있어야 한다").
     <HerdrClientsProvider connections={connections} supervisors={supervisors}>
       <HerdrDataProvider>
+        <ForegroundSnapshotPolling />
         <View style={styles.root} onLayout={onNavigatorLayout}>
           <StatusBar style="light" />
           <Stack

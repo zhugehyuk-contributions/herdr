@@ -84,6 +84,9 @@ vi.mock('react-native', () => {
   }
   return {
     Animated,
+    // `RootLayout` mounts the foreground snapshot poller, which gates itself on the app being
+    // active (`src/api/use-foreground-refresh.ts`). Without these two the shell cannot mount at all.
+    AppState: { currentState: 'active', addEventListener: () => ({ remove: () => {} }) },
     Easing: { linear: 'linear' },
     PanResponder: { create: () => ({ panHandlers: {} }) },
     Platform: { OS: 'ios' },

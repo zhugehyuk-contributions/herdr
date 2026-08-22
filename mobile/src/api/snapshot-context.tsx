@@ -54,14 +54,31 @@ export type SnapshotState = {
   status: 'loading' | 'ready' | 'error'
   snapshot: HerdrSnapshot
   error: string | null
+  /**
+   * Why this is not `error`: `refresh` runs every few seconds while the app is foregrounded, and on
+   * a phone one dropped ssh exec is the normal case rather than a broken screen. Reporting it
+   * through `error` would drag `status` to `'error'` and the snapshot to `EMPTY_SNAPSHOT` with it,
+   * so a single hiccup would blank a fleet view that is still perfectly readable. Screens may show
+   * this (a "last update failed" hint) but nothing is required to.
+   */
+  refreshError: string | null
+  /** The visible reload: back to `status: 'loading'`, i.e. the user asked to see a spinner. */
   reload: () => void
+  /**
+   * The invisible one, for the foreground poller (`./use-foreground-refresh.ts`): re-reads the same
+   * loader without ever leaving `ready`, and on failure keeps the last good snapshot on screen.
+   * Resolves when the attempt settles — including when it was skipped for one already in flight.
+   */
+  refresh: () => Promise<void>
 }
 
 const SnapshotContext = createContext<SnapshotState>({
   status: 'loading',
   snapshot: EMPTY_SNAPSHOT,
   error: null,
-  reload: () => {}
+  refreshError: null,
+  reload: () => {},
+  refresh: () => Promise.resolve()
 })
 
 export function HerdrSnapshotProvider({
@@ -71,43 +88,91 @@ export function HerdrSnapshotProvider({
   load: SnapshotLoader
   children: ReactNode
 }) {
-  const [state, setState] = useState<Omit<SnapshotState, 'reload'>>({
+  const [state, setState] = useState<Omit<SnapshotState, 'reload' | 'refresh'>>({
     status: 'loading',
     snapshot: EMPTY_SNAPSHOT,
-    error: null
+    error: null,
+    refreshError: null
   })
   const [generation, setGeneration] = useState(0)
   // Why: a load that resolves after the provider unmounts (or after a reload superseded it) must
   // not write state — the same "stale" guard orca uses around its async preference loads.
   const disposedRef = useRef(false)
+  // Why these two replaced the per-effect `superseded` closure flag: `refresh` starts loads from
+  // *outside* this effect, so "am I still the current load" has to be answerable by a caller the
+  // effect never saw, and a closure flag can only ever see its own load. The token is that answer —
+  // whoever bumped it last owns the state writes and owns clearing `inFlight`.
+  const loadTokenRef = useRef(0)
+  // Why an explicit in-flight flag rather than letting ticks stack: one load is one JSON call per
+  // remote and — until blocker B8 is closed — one JSON call is one ssh exec, one remote `herdr`
+  // process (.prd/03-blockers.md B8). A 4s poll over a link that answers in 9s would fork-bomb the
+  // box it is watching, so a tick that lands on a busy loader evaporates instead of queueing.
+  const inFlightRef = useRef(false)
 
   useEffect(() => {
     disposedRef.current = false
-    let superseded = false
-    setState((current) => ({ ...current, status: 'loading', error: null }))
+    const token = ++loadTokenRef.current
+    inFlightRef.current = true
+    setState((current) => ({ ...current, status: 'loading', error: null, refreshError: null }))
     load()
       .then((snapshot) => {
-        if (!superseded && !disposedRef.current) {
-          setState({ status: 'ready', snapshot, error: null })
+        if (token === loadTokenRef.current && !disposedRef.current) {
+          setState({ status: 'ready', snapshot, error: null, refreshError: null })
         }
       })
       .catch((error: unknown) => {
-        if (!superseded && !disposedRef.current) {
+        if (token === loadTokenRef.current && !disposedRef.current) {
           setState({
             status: 'error',
             snapshot: EMPTY_SNAPSHOT,
-            error: error instanceof Error ? error.message : String(error)
+            error: error instanceof Error ? error.message : String(error),
+            refreshError: null
           })
         }
       })
+      .finally(() => {
+        if (token === loadTokenRef.current) {
+          inFlightRef.current = false
+        }
+      })
     return () => {
-      superseded = true
       disposedRef.current = true
     }
   }, [load, generation])
 
   const reload = useCallback(() => setGeneration((value) => value + 1), [])
-  const value = useMemo<SnapshotState>(() => ({ ...state, reload }), [state, reload])
+
+  const refresh = useCallback(async () => {
+    if (inFlightRef.current || disposedRef.current) {
+      return
+    }
+    const token = ++loadTokenRef.current
+    inFlightRef.current = true
+    try {
+      const snapshot = await load()
+      if (token === loadTokenRef.current && !disposedRef.current) {
+        setState({ status: 'ready', snapshot, error: null, refreshError: null })
+      }
+    } catch (error: unknown) {
+      if (token === loadTokenRef.current && !disposedRef.current) {
+        // Only this field moves: the snapshot on screen is still the last one the server confirmed,
+        // and it is a better answer than a blank screen for the seconds until the next tick.
+        setState((current) => ({
+          ...current,
+          refreshError: error instanceof Error ? error.message : String(error)
+        }))
+      }
+    } finally {
+      if (token === loadTokenRef.current) {
+        inFlightRef.current = false
+      }
+    }
+  }, [load])
+
+  const value = useMemo<SnapshotState>(
+    () => ({ ...state, reload, refresh }),
+    [state, reload, refresh]
+  )
 
   return <SnapshotContext.Provider value={value}>{children}</SnapshotContext.Provider>
 }
