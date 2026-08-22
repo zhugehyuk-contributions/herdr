@@ -124,8 +124,6 @@ describe('mock fixture invariants', () => {
       expect(workspace.tab_count).toBe(new Set(own.map((pane) => pane.tab_id)).size)
       expect(own.map((pane) => pane.tab_id)).toContain(workspace.active_tab_id)
     }
-    expect(panes).toHaveLength(
-      DEFAULT_SCENARIO.workspaceCount * DEFAULT_SCENARIO.panesPerWorkspace
-    )
+    expect(panes).toHaveLength(DEFAULT_SCENARIO.workspaceCount * DEFAULT_SCENARIO.panesPerWorkspace)
   })
 })

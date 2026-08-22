@@ -510,7 +510,8 @@ describe('M4’s zero — no reachable state needs the app switcher', () => {
           h.supervisor.start()
           await h.settle()
           h.supervisor.handleLinkClosed({
-            stderr: 'remote herdr server is running with protocol 19, but this bridge needs protocol 20'
+            stderr:
+              'remote herdr server is running with protocol 19, but this bridge needs protocol 20'
           })
           await h.settle()
         }

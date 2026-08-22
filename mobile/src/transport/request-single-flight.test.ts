@@ -15,8 +15,10 @@ type Call = { method: string; params: Record<string, unknown> }
 /** A stand-in for `JsonApiClient` that records every exec it would have spawned. */
 function fakeClient() {
   const calls: Call[] = []
-  const settlers: { resolve: (v: Record<string, unknown>) => void; reject: (e: unknown) => void }[] =
-    []
+  const settlers: {
+    resolve: (v: Record<string, unknown>) => void
+    reject: (e: unknown) => void
+  }[] = []
   const client = {
     request(method: string, params: Record<string, unknown> = {}) {
       calls.push({ method, params })

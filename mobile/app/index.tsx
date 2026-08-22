@@ -24,7 +24,11 @@ import { BottomNav } from '../src/components/BottomNav'
 import { useHerdrSnapshot } from '../src/api/snapshot-context'
 import { snapshotStalenessLabel } from '../src/api/snapshot-staleness'
 import { agentPaneHandle } from '../src/agents/agent-display'
-import { buildFleetAgentRows, countByStatus, groupFleetAgentsByStatus } from '../src/agents/fleet-agents'
+import {
+  buildFleetAgentRows,
+  countByStatus,
+  groupFleetAgentsByStatus
+} from '../src/agents/fleet-agents'
 import { mono } from '../src/theme/monotone'
 
 export default function AgentsHomeScreen() {
@@ -79,7 +83,10 @@ export default function AgentsHomeScreen() {
           <Text style={styles.meta}>No agents on any node.</Text>
         ) : null}
       </ScrollView>
-      <BottomNav active="agents" onSelect={(tab) => (tab === 'nodes' ? router.push('/nodes') : undefined)} />
+      <BottomNav
+        active="agents"
+        onSelect={(tab) => (tab === 'nodes' ? router.push('/nodes') : undefined)}
+      />
     </View>
   )
 }

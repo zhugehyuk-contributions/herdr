@@ -103,7 +103,11 @@ export class FakeClock {
   private earliest(): Scheduled | null {
     let best: Scheduled | null = null
     for (const entry of this.queue) {
-      if (best === null || entry.dueAt < best.dueAt || (entry.dueAt === best.dueAt && entry.id < best.id)) {
+      if (
+        best === null ||
+        entry.dueAt < best.dueAt ||
+        (entry.dueAt === best.dueAt && entry.id < best.id)
+      ) {
         best = entry
       }
     }

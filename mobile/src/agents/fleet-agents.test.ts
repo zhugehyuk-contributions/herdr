@@ -141,10 +141,7 @@ describe('grouping', () => {
           remote: remote('r', 'r'),
           workspaces: [],
           panes: [],
-          agents: [
-            agent('p1', 'from-the-future' as AgentStatus),
-            agent('p2', 'blocked')
-          ]
+          agents: [agent('p1', 'from-the-future' as AgentStatus), agent('p2', 'blocked')]
         }
       ]
     })

@@ -25,7 +25,11 @@ import { memo } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { spacing } from '../theme/mobile-theme'
 import { mono } from '../theme/monotone'
-import { agentIdentityLabel, agentStateLabel, type AgentDisplayFields } from '../agents/agent-display'
+import {
+  agentIdentityLabel,
+  agentStateLabel,
+  type AgentDisplayFields
+} from '../agents/agent-display'
 import { AgentStateDot } from './AgentStateDot'
 
 type Props = {

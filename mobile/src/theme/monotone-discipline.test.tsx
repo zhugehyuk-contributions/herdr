@@ -72,7 +72,9 @@ function colorsIn(target: ReactTestRenderer): string[] {
   return target.root
     .findAll(() => true)
     .flatMap((node) => [node.props.style].flat(3))
-    .filter((style): style is Record<string, unknown> => typeof style === 'object' && style !== null)
+    .filter(
+      (style): style is Record<string, unknown> => typeof style === 'object' && style !== null
+    )
     .flatMap((style) =>
       ['backgroundColor', 'borderColor', 'borderTopColor', 'color']
         .map((key) => style[key])
@@ -104,8 +106,8 @@ describe('state dots are monotone', () => {
   )
 
   it('draws blocked as an inverted ring, not a brighter fill', () => {
-    const style = render(createElement(AgentStateDot, { state: 'blocked' })).root
-      .findAllByType(host('View'))
+    const style = render(createElement(AgentStateDot, { state: 'blocked' }))
+      .root.findAllByType(host('View'))
       .map((node) => node.props.style as Record<string, unknown>)
       .find((candidate) => candidate?.['borderWidth'] !== undefined)
     expect(style).toMatchObject({ backgroundColor: 'transparent', borderColor: mono.fg })

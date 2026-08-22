@@ -22,9 +22,9 @@ describe('the orca accessory row against herdr key names', () => {
     const accounted = [...Object.keys(HERDR_KEY_BY_ACCESSORY_ID), ...UNSUPPORTED_ACCESSORY_KEY_IDS]
     expect([...accounted].sort()).toEqual([...ids].sort())
     // No id is both mapped and unsupported.
-    expect(
-      UNSUPPORTED_ACCESSORY_KEY_IDS.filter((id) => id in HERDR_KEY_BY_ACCESSORY_ID)
-    ).toEqual([])
+    expect(UNSUPPORTED_ACCESSORY_KEY_IDS.filter((id) => id in HERDR_KEY_BY_ACCESSORY_ID)).toEqual(
+      []
+    )
   })
 
   it('maps nineteen of orca’s twenty; `delete` is the one herdr cannot name', () => {
@@ -125,7 +125,18 @@ describe('isHerdrKeyName mirrors parse_key_combo', () => {
   })
 
   it('accepts every modifier token, in any case', () => {
-    for (const modifier of ['ctrl', 'control', 'shift', 'alt', 'option', 'meta', 'cmd', 'command', 'super', 'hyper']) {
+    for (const modifier of [
+      'ctrl',
+      'control',
+      'shift',
+      'alt',
+      'option',
+      'meta',
+      'cmd',
+      'command',
+      'super',
+      'hyper'
+    ]) {
       expect(isHerdrKeyName(`${modifier}+c`)).toBe(true)
       expect(isHerdrKeyName(`${modifier.toUpperCase()}+c`)).toBe(true)
     }

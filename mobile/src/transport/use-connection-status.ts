@@ -10,7 +10,11 @@
 // cached snapshot the contract needs (see its header for why the verdict is cached and what that
 // costs).
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
-import { showConnectionRetry, verdictDisplayLabel, type ConnectionVerdict } from './connection-health'
+import {
+  showConnectionRetry,
+  verdictDisplayLabel,
+  type ConnectionVerdict
+} from './connection-health'
 import type { SupervisedRemote } from './supervised-remote'
 import type { ConnectionState } from './connection-state-types'
 

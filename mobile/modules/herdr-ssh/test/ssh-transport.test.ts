@@ -333,9 +333,9 @@ describe('teardown and host keys', () => {
   it('refuses to dial a host whose key it cannot check', async () => {
     const native = new FakeNativeSsh()
     const { hostKeySha256: _omitted, ...noFingerprint } = SSH
-    await expect(
-      NativeSshHerdrTransport.connect(native, { ssh: noFingerprint })
-    ).rejects.toThrow(/no host key fingerprint configured for box.example/)
+    await expect(NativeSshHerdrTransport.connect(native, { ssh: noFingerprint })).rejects.toThrow(
+      /no host key fingerprint configured for box.example/
+    )
     expect(native.connections).toHaveLength(0)
   })
 

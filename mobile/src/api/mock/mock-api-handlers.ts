@@ -84,7 +84,12 @@ export function handleMockApiRequest(
     case 'ping':
       return {
         id,
-        result: { type: 'pong', version: MOCK_SERVER_VERSION, protocol: MOCK_PROTOCOL, capabilities: null }
+        result: {
+          type: 'pong',
+          version: MOCK_SERVER_VERSION,
+          protocol: MOCK_PROTOCOL,
+          capabilities: null
+        }
       }
     default:
       // Faithful to the server: unknown method = the request did not deserialize, so `id` is

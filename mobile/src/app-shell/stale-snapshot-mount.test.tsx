@@ -128,7 +128,9 @@ function textNodes(target: ReactTestRenderer): string[] {
     .findAllByType(host('Text'))
     .map((node) =>
       Children.toArray(node.props.children as ReactNode)
-        .map((child) => (typeof child === 'string' || typeof child === 'number' ? String(child) : ''))
+        .map((child) =>
+          typeof child === 'string' || typeof child === 'number' ? String(child) : ''
+        )
         .join('')
     )
     .filter((text) => text.length > 0)
@@ -146,7 +148,9 @@ function colorsIn(target: ReactTestRenderer): string[] {
   return target.root
     .findAll(() => true)
     .flatMap((node) => [node.props.style].flat(3))
-    .filter((style): style is Record<string, unknown> => typeof style === 'object' && style !== null)
+    .filter(
+      (style): style is Record<string, unknown> => typeof style === 'object' && style !== null
+    )
     .flatMap((style) =>
       ['backgroundColor', 'borderColor', 'borderTopColor', 'color']
         .map((key) => style[key])

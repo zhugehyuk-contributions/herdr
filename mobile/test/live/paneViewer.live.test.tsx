@@ -136,7 +136,9 @@ const REMOTE: RemoteDefinition = {
 function skipReason(): string | null {
   const reasons: string[] = []
   if (!serverBinaryExists()) {
-    reasons.push(`herdr server binary not found at ${SERVER_BINARY} — build it with \`cargo build\``)
+    reasons.push(
+      `herdr server binary not found at ${SERVER_BINARY} — build it with \`cargo build\``
+    )
   }
   if (findSshd() === null) {
     reasons.push('no sshd binary found (set HERDR_LIVE_SSHD to one)')
@@ -163,7 +165,9 @@ function textNodes(target: ReactTestRenderer): string[] {
     .findAllByType(host('Text'))
     .map((node) =>
       Children.toArray(node.props.children as ReactNode)
-        .map((child) => (typeof child === 'string' || typeof child === 'number' ? String(child) : ''))
+        .map((child) =>
+          typeof child === 'string' || typeof child === 'number' ? String(child) : ''
+        )
         .join('')
     )
     .filter((text) => text.length > 0)
@@ -204,7 +208,11 @@ async function panePtySize(api: JsonApiClient, paneId: string, tag: string): Pro
  * (`src/server/headless.rs:4074`). That drift is client-independent, so the invariance claim has to
  * start from the settled value. (Ported from the sibling package's `observeTerminal.live.test.ts`.)
  */
-async function settledPanePtySize(api: JsonApiClient, paneId: string, tag: string): Promise<string> {
+async function settledPanePtySize(
+  api: JsonApiClient,
+  paneId: string,
+  tag: string
+): Promise<string> {
   let last = await panePtySize(api, paneId, `${tag}0`)
   for (let round = 1; round < 8; round += 1) {
     await delay(250)
@@ -235,7 +243,9 @@ async function waitForScreen(needle: string, timeoutMs: number, pollMs = 120): P
     if (Date.now() >= deadline) {
       throw new Error(
         `${needle} never reached the xterm buffer within ${timeoutMs}ms; ` +
-          `writes=${bridge().writes} commands=${bridge().commands.map((c) => c.type).join(',')}\n` +
+          `writes=${bridge().writes} commands=${bridge()
+            .commands.map((c) => c.type)
+            .join(',')}\n` +
           lines.filter((line) => line.length > 0).join('\n')
       )
     }
@@ -298,8 +308,16 @@ describe.skipIf(reason !== null)('live: the pane viewer against a real herdr ser
     paneA = (created['root_pane'] as { pane_id: string }).pane_id
     const split = await api.request('pane.split', { pane_id: paneA, direction: 'right' })
     paneB = (split['pane'] as { pane_id: string }).pane_id
-    await api.request('pane.send_input', { pane_id: paneA, text: `echo ${MARKER_A}`, keys: ['Enter'] })
-    await api.request('pane.send_input', { pane_id: paneB, text: `echo ${MARKER_B}`, keys: ['Enter'] })
+    await api.request('pane.send_input', {
+      pane_id: paneA,
+      text: `echo ${MARKER_A}`,
+      keys: ['Enter']
+    })
+    await api.request('pane.send_input', {
+      pane_id: paneB,
+      text: `echo ${MARKER_B}`,
+      keys: ['Enter']
+    })
     process.stdout.write(
       `[pane-viewer] server pid=${server.pid} sshd pid=${sshd.pid} port=${sshd.port} ` +
         `panes=${paneA},${paneB}\n`
@@ -345,7 +363,9 @@ describe.skipIf(reason !== null)('live: the pane viewer against a real herdr ser
     process.stdout.write(
       `[pane-viewer] rendered nodes: ${JSON.stringify(textNodes(target))}\n` +
         `[pane-viewer] WebViews=${target.root.findAllByType(host('WebView')).length} ` +
-        `commands=${bridge().commands.map((command) => command.type).join(',')} ` +
+        `commands=${bridge()
+          .commands.map((command) => command.type)
+          .join(',')} ` +
         `writes=${bridge().writes}\n`
     )
 
@@ -361,7 +381,11 @@ describe.skipIf(reason !== null)('live: the pane viewer against a real herdr ser
     // The first *screen-bearing* command is `init`, never a bare `write`: the theme/font-scale
     // commands `TerminalWebView` posts on mount carry no bytes, and a `write` before `init` would
     // mean the sink applied a diff to a buffer that does not exist.
-    expect(bridge().commands.map((command) => command.type).find(isScreenCommand)).toBe('init')
+    expect(
+      bridge()
+        .commands.map((command) => command.type)
+        .find(isScreenCommand)
+    ).toBe('init')
 
     // Observing did not resize the pane: milestone M2 (c), measured rather than argued. The same
     // round also produces *new* output, which is the second thing this asserts — the stream is
@@ -431,7 +455,11 @@ describe.skipIf(reason !== null)('live: the pane viewer against a real herdr ser
     expect(lines.some((line) => line.includes(MARKER_A))).toBe(false)
     // The buffer was rebuilt rather than written over: `PaneObserver.retarget` resets the sink, so
     // the server's post-retarget full frame arrives as an `init` at the (possibly new) geometry.
-    expect(bridge().commands.map((command) => command.type).find(isScreenCommand)).toBe('init')
+    expect(
+      bridge()
+        .commands.map((command) => command.type)
+        .find(isScreenCommand)
+    ).toBe('init')
     // The receipt this milestone is measured on: the swap opened **no** new ssh channel, on a
     // transport that would otherwise have spawned a bridge process per pane tap.
     // M6's "됐다" is a pane switch under 200 ms. Asserted loosely (an ssh round trip plus a React

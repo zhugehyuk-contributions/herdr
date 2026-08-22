@@ -161,7 +161,9 @@ describe('pane observer', () => {
     // initial data; the diff was written on top.
     expect(applied[0]!.call).toBe('init')
     expect(applied[0]!.args.slice(0, 2)).toEqual([100, 30])
-    expect(toHex(new TextEncoder().encode(applied[0]!.args[2] as string))).toBe('1b5b324a1b5b313b3148')
+    expect(toHex(new TextEncoder().encode(applied[0]!.args[2] as string))).toBe(
+      '1b5b324a1b5b313b3148'
+    )
     expect(applied[1]!.call).toBe('write')
     observer.close()
   })

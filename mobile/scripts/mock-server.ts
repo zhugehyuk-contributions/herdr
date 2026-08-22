@@ -50,7 +50,8 @@ const scenario: MockScenario = {
 }
 const delayMs = readScenarioNumber('MOCK_API_DELAY_MS', 0)
 
-const socketPath = process.env['HERDR_MOCK_SOCKET'] ?? join(tmpdir(), 'herdr-mobile-mock', 'herdr.sock')
+const socketPath =
+  process.env['HERDR_MOCK_SOCKET'] ?? join(tmpdir(), 'herdr-mobile-mock', 'herdr.sock')
 const tcpPort = process.env['HERDR_MOCK_PORT'] ? Number(process.env['HERDR_MOCK_PORT']) : null
 
 const server = createServer((socket: Socket) => {
@@ -108,7 +109,9 @@ if (tcpPort === null) {
   server.listen(socketPath, () => {
     console.log(`[mock] herdr JSON API mock listening on unix:${socketPath}`)
     console.log(`[mock] Scenario: ${summary}`)
-    console.log(`[mock] Try: printf '{"id":"1","method":"agent.list","params":{}}\\n' | nc -U ${socketPath}`)
+    console.log(
+      `[mock] Try: printf '{"id":"1","method":"agent.list","params":{}}\\n' | nc -U ${socketPath}`
+    )
   })
 } else {
   server.listen(tcpPort, () => {

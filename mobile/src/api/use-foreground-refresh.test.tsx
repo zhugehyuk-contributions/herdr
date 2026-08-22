@@ -118,7 +118,7 @@ async function mount(load: SnapshotLoader): Promise<ReactTestRenderer> {
 function texts(target: ReactTestRenderer): string[] {
   return target.root
     .findAllByType(host('Text'))
-    .map((node) => (node.props.children as ReactNode[] | string) as string)
+    .map((node) => node.props.children as ReactNode[] | string as string)
 }
 
 async function advance(ms: number) {

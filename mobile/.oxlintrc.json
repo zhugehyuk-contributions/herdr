@@ -1,12 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": [
-    "typescript",
-    "react",
-    "react-hooks",
-    "react-perf",
-    "unicorn"
-  ],
+  "plugins": ["typescript", "react", "react-hooks", "react-perf", "unicorn"],
   "categories": {
     "correctness": "error"
   },
@@ -40,10 +34,7 @@
     "react/jsx-filename-extension": [
       "error",
       {
-        "extensions": [
-          ".tsx",
-          ".jsx"
-        ]
+        "extensions": [".tsx", ".jsx"]
       }
     ],
     "react/jsx-fragments": "error",
@@ -123,9 +114,7 @@
   },
   "overrides": [
     {
-      "files": [
-        "**/*.ts"
-      ],
+      "files": ["**/*.ts"],
       "rules": {
         "max-lines": [
           "error",
@@ -138,9 +127,7 @@
       }
     },
     {
-      "files": [
-        "**/*.tsx"
-      ],
+      "files": ["**/*.tsx"],
       "rules": {
         "max-lines": [
           "error",
@@ -153,9 +140,7 @@
       }
     },
     {
-      "files": [
-        "**/*.mjs"
-      ],
+      "files": ["**/*.mjs"],
       "rules": {
         "max-lines": [
           "error",
@@ -168,10 +153,7 @@
       }
     },
     {
-      "files": [
-        "**/*.test.ts",
-        "**/*.test.tsx"
-      ],
+      "files": ["**/*.test.ts", "**/*.test.tsx"],
       "rules": {
         "max-lines": [
           "error",
@@ -184,9 +166,7 @@
       }
     },
     {
-      "files": [
-        "src/terminal/TerminalWebView.tsx"
-      ],
+      "files": ["src/terminal/TerminalWebView.tsx"],
       "rules": {
         "max-lines": [
           "error",
@@ -199,9 +179,7 @@
       }
     },
     {
-      "files": [
-        "src/terminal/terminal-accessory-keys.ts"
-      ],
+      "files": ["src/terminal/terminal-accessory-keys.ts"],
       "rules": {
         "max-lines": [
           "error",
@@ -214,9 +192,7 @@
       }
     },
     {
-      "files": [
-        "src/terminal/terminal-webview-html.ts"
-      ],
+      "files": ["src/terminal/terminal-webview-html.ts"],
       "rules": {
         "max-lines": [
           "error",

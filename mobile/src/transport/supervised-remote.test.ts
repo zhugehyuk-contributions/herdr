@@ -14,7 +14,10 @@
 // receipts talk about the same machine.
 import { describe, expect, it } from 'vitest'
 import { HerdrChannelKind } from '@herdr/client-ts'
-import { FakeTransport, type FakeChannel } from '../../../packages/herdr-client-ts/test/fakeTransport'
+import {
+  FakeTransport,
+  type FakeChannel
+} from '../../../packages/herdr-client-ts/test/fakeTransport'
 import { frameHex, fromHex, toHex } from '../../../packages/herdr-client-ts/test/helpers'
 import { WELCOME_OK_ANSI_V21 } from '../../../packages/herdr-client-ts/test/vectors'
 import { FakeClock, flushMicrotasks } from '../../test/fake-clock'

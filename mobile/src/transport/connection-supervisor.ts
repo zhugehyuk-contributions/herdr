@@ -226,7 +226,9 @@ export class ConnectionSupervisor {
       abandoned = true
     }
     if (this.state === 'reconnecting') {
-      this.log(`foreground(${reason}) — restarting reconnect loop at attempt ${this.scheduler.reconnectAttempt}`)
+      this.log(
+        `foreground(${reason}) — restarting reconnect loop at attempt ${this.scheduler.reconnectAttempt}`
+      )
       // L5: an abandoned dial keeps the failure it already represents — we skip the wait, we do not
       // pardon it. A redial with no dial to abandon is a genuinely fresh start.
       this.scheduler.redialNow(!abandoned)
@@ -247,8 +249,7 @@ export class ConnectionSupervisor {
     if (this.intentionallyClosed) {
       return
     }
-    const live =
-      this.link !== null || this.state === 'connecting' || this.state === 'handshaking'
+    const live = this.link !== null || this.state === 'connecting' || this.state === 'handshaking'
     if (!live) {
       return
     }

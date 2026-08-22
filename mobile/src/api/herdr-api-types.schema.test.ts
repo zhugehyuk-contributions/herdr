@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url'
 import { PROTOCOL_VERSION } from '@herdr/client-ts'
 import { describe, expect, it } from 'vitest'
 
-const SCHEMA_PATH = fileURLToPath(new URL('../../../docs/next/api/herdr-api.schema.json', import.meta.url))
+const SCHEMA_PATH = fileURLToPath(
+  new URL('../../../docs/next/api/herdr-api.schema.json', import.meta.url)
+)
 const TYPES_PATH = fileURLToPath(new URL('./herdr-api-types.ts', import.meta.url))
 
 type SchemaObject = {

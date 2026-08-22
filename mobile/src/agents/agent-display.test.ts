@@ -4,7 +4,12 @@
 // What is worth pinning here is the one rule that came out of herdr's own source rather than out of
 // orca: the server's `state_labels` override beats any word this app might hard-code.
 import { describe, expect, it } from 'vitest'
-import { agentIdentityLabel, agentPaneHandle, agentStateLabel, hasCustomStateLabel } from './agent-display'
+import {
+  agentIdentityLabel,
+  agentPaneHandle,
+  agentStateLabel,
+  hasCustomStateLabel
+} from './agent-display'
 import { mockAgents } from '../api/mock/mock-fixture'
 
 describe('state label', () => {
@@ -19,9 +24,9 @@ describe('state label', () => {
   })
 
   it('ignores an override that belongs to a different status', () => {
-    expect(
-      agentStateLabel({ agent_status: 'working', state_labels: { blocked: 'waiting' } })
-    ).toBe('working')
+    expect(agentStateLabel({ agent_status: 'working', state_labels: { blocked: 'waiting' } })).toBe(
+      'working'
+    )
   })
 
   it('falls back to the bare status word, which is what the server prints too', () => {
@@ -36,7 +41,9 @@ describe('state label', () => {
 describe('identity label', () => {
   it('walks the fallback chain and never returns blank', () => {
     expect(agentIdentityLabel({ agent_status: 'idle', name: 'claude', agent: 'x' })).toBe('claude')
-    expect(agentIdentityLabel({ agent_status: 'idle', name: null, display_agent: 'codex' })).toBe('codex')
+    expect(agentIdentityLabel({ agent_status: 'idle', name: null, display_agent: 'codex' })).toBe(
+      'codex'
+    )
     expect(agentIdentityLabel({ agent_status: 'idle', name: '  ', agent: 'gemini' })).toBe('gemini')
     expect(agentIdentityLabel({ agent_status: 'idle', manual_label: '1-2' })).toBe('1-2')
     expect(agentIdentityLabel({ agent_status: 'idle', terminal_title_stripped: 'zsh' })).toBe('zsh')

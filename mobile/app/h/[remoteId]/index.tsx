@@ -24,7 +24,11 @@ import { useLocalSearchParams, useRouter } from 'expo-router'
 import { AgentStateDot } from '../../../src/components/AgentStateDot'
 import { WorkspaceListRow } from '../../../src/components/WorkspaceListRow'
 import { useRemote, useRemoteSnapshot, remoteSubtitle } from '../../../src/api/snapshot-context'
-import { agentPaneHandle, agentIdentityLabel, agentStateLabel } from '../../../src/agents/agent-display'
+import {
+  agentPaneHandle,
+  agentIdentityLabel,
+  agentStateLabel
+} from '../../../src/agents/agent-display'
 import { paneHref } from '../../../src/agents/fleet-agents'
 import { groupPanesByTab, rollupText, tabLabelsFrom } from '../../../src/panes/pane-tree'
 import { mono } from '../../../src/theme/monotone'

@@ -55,7 +55,9 @@ export function decideReconnect(reconnectAttempt: number): ReconnectDecision {
     // Why: hold the counter at the cap — connection-health's "Can't reach desktop" verdict keys off attempts >= 12.
     return { delayMs: TRICKLE_RECONNECT_DELAY_MS, attempt: reconnectAttempt, trickle: true }
   }
-  const delayMs = RECONNECT_DELAYS[Math.min(reconnectAttempt, RECONNECT_DELAYS.length - 1)] as number
+  const delayMs = RECONNECT_DELAYS[
+    Math.min(reconnectAttempt, RECONNECT_DELAYS.length - 1)
+  ] as number
   return { delayMs, attempt: reconnectAttempt + 1, trickle: false }
 }
 

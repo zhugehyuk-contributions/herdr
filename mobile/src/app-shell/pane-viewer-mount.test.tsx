@@ -49,7 +49,11 @@ vi.mock('expo-router', () => ({
   })
 }))
 
-vi.mock('lucide-react-native', () => ({ ChevronDown: 'ChevronDown', ChevronRight: 'ChevronRight', RefreshCw: 'RefreshCw' }))
+vi.mock('lucide-react-native', () => ({
+  ChevronDown: 'ChevronDown',
+  ChevronRight: 'ChevronRight',
+  RefreshCw: 'RefreshCw'
+}))
 
 vi.mock('react-native-webview', async () => {
   const React = await import('react')
@@ -188,7 +192,9 @@ function textNodes(target: ReactTestRenderer): string[] {
     .findAllByType(host('Text'))
     .map((node) =>
       Children.toArray(node.props.children as ReactNode)
-        .map((child) => (typeof child === 'string' || typeof child === 'number' ? String(child) : ''))
+        .map((child) =>
+          typeof child === 'string' || typeof child === 'number' ? String(child) : ''
+        )
         .join('')
     )
     .filter((text) => text.length > 0)
@@ -196,7 +202,9 @@ function textNodes(target: ReactTestRenderer): string[] {
 
 /** Every command the RN side posted into the WebView document, parsed. */
 function postedCommands(): Record<string, unknown>[] {
-  return nativeWebView.postMessage.mock.calls.map(([message]) => JSON.parse(message) as Record<string, unknown>)
+  return nativeWebView.postMessage.mock.calls.map(
+    ([message]) => JSON.parse(message) as Record<string, unknown>
+  )
 }
 
 /**
@@ -238,7 +246,9 @@ afterEach(() => {
 
 describe('pane viewer route', () => {
   it('renders the workspace chips across tabs, with the routed pane active', async () => {
-    const target = await mount(createElement(PaneViewerScreen, { remoteId: 'remote-1', paneId: 'ws-1-p1' }))
+    const target = await mount(
+      createElement(PaneViewerScreen, { remoteId: 'remote-1', paneId: 'ws-1-p1' })
+    )
     const texts = textNodes(target)
     // Every pane of ws-1, flattened out of its two tabs — the tab survives as the chip's label.
     expect(texts).toContain('1-1')
@@ -255,7 +265,9 @@ describe('pane viewer route', () => {
   })
 
   it('says there is no transport instead of pretending the mock is a server', async () => {
-    const target = await mount(createElement(PaneViewerScreen, { remoteId: 'remote-1', paneId: 'ws-1-p1' }))
+    const target = await mount(
+      createElement(PaneViewerScreen, { remoteId: 'remote-1', paneId: 'ws-1-p1' })
+    )
     expect(textNodes(target)).toContain('no transport')
     expect(postedCommands().filter((command) => command['type'] === 'init')).toEqual([])
   })

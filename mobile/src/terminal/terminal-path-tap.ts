@@ -6,10 +6,7 @@
 // one path span containing the tapped column — mobile opens a tapped path, it
 // does not render hover links over the whole line.
 
-import {
-  parseFileLinkLocation,
-  type ParsedFileLinkLocation
-} from '../shared/file-link-location'
+import { parseFileLinkLocation, type ParsedFileLinkLocation } from '../shared/file-link-location'
 
 export type TappedFilePath = ParsedFileLinkLocation
 

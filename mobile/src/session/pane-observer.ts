@@ -56,7 +56,10 @@ import {
   type TerminalMessage,
   type WelcomeMessage
 } from '@herdr/client-ts'
-import { createTerminalFrameSink, type TerminalFrameSinkTarget } from '../terminal/terminal-frame-sink'
+import {
+  createTerminalFrameSink,
+  type TerminalFrameSinkTarget
+} from '../terminal/terminal-frame-sink'
 import {
   paneLayoutFromResult,
   resolveObserverGeometry,

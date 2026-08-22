@@ -60,7 +60,10 @@ vi.mock('expo-router', () => {
   }
 })
 
-const storage = vi.hoisted(() => ({ getItem: vi.fn(async () => null), setItem: vi.fn(async () => {}) }))
+const storage = vi.hoisted(() => ({
+  getItem: vi.fn(async () => null),
+  setItem: vi.fn(async () => {})
+}))
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: storage }))
 
 const windowSize = vi.hoisted(() => ({ width: 390, height: 844 }))
@@ -124,7 +127,9 @@ function textNodes(target: ReactTestRenderer): string[] {
     .findAllByType(host('Text'))
     .map((node) =>
       Children.toArray(node.props.children as ReactNode)
-        .map((child) => (typeof child === 'string' || typeof child === 'number' ? String(child) : ''))
+        .map((child) =>
+          typeof child === 'string' || typeof child === 'number' ? String(child) : ''
+        )
         .join('')
     )
     .filter((text) => text.length > 0)
@@ -148,7 +153,8 @@ function dumpTree(node: unknown, depth = 0): string[] {
   }
   const element = node as JsonNode & object
   const props = (element as { props?: Record<string, unknown> }).props ?? {}
-  const label = typeof props['accessibilityLabel'] === 'string' ? ` a11y=${props['accessibilityLabel']}` : ''
+  const label =
+    typeof props['accessibilityLabel'] === 'string' ? ` a11y=${props['accessibilityLabel']}` : ''
   const line = `${'  '.repeat(depth)}<${(element as { type: string }).type}${label}>`
   const children = (element as { children?: unknown[] }).children ?? []
   return [line, ...children.flatMap((child) => dumpTree(child, depth + 1))]
@@ -159,7 +165,9 @@ function colorsIn(target: ReactTestRenderer): string[] {
   return target.root
     .findAll(() => true)
     .flatMap((node) => [node.props.style].flat(3))
-    .filter((style): style is Record<string, unknown> => typeof style === 'object' && style !== null)
+    .filter(
+      (style): style is Record<string, unknown> => typeof style === 'object' && style !== null
+    )
     .flatMap((style) =>
       ['backgroundColor', 'borderColor', 'borderTopColor', 'borderLeftColor', 'color']
         .map((key) => style[key])
@@ -202,7 +210,9 @@ describe('Agents home', () => {
 
   it('puts blocked at the very top — asserted by position, not by presence', async () => {
     const texts = textNodes(await mountShell())
-    const sections = texts.filter((text) => /^(blocked|working|done|unknown|idle) · \d+$/.test(text))
+    const sections = texts.filter((text) =>
+      /^(blocked|working|done|unknown|idle) · \d+$/.test(text)
+    )
     expect(sections).toEqual(['blocked · 8', 'working · 16', 'done · 8', 'unknown · 8'])
     // ...and nothing from another status is rendered above the first blocked row.
     expect(texts.indexOf('blocked · 8')).toBeLessThan(texts.indexOf('working · 16'))
@@ -286,9 +296,7 @@ describe('workspace / pane browser', () => {
     const target = await mountShell()
     const row = target.root
       .findAllByType(host('Pressable'))
-      .find((node) =>
-        String(node.props.accessibilityLabel).startsWith('palladium — 1 blocked')
-      )
+      .find((node) => String(node.props.accessibilityLabel).startsWith('palladium — 1 blocked'))
     expect(row, 'the palladium workspace row was not found').toBeDefined()
     act(() => {
       ;(row!.props.onPress as () => void)()
@@ -347,7 +355,9 @@ describe('receipt', () => {
       ;(row!.props.onPress as () => void)()
     })
     const lines = dumpTree(target.toJSON())
-    console.log(`\n===== rendered remote-2 browser, palladium expanded (${lines.length} nodes) =====\n${lines.join('\n')}`)
+    console.log(
+      `\n===== rendered remote-2 browser, palladium expanded (${lines.length} nodes) =====\n${lines.join('\n')}`
+    )
     expect(lines.length).toBeGreaterThan(100)
   })
 })

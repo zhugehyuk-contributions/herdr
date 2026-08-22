@@ -147,7 +147,9 @@ const REMOTE: RemoteDefinition = {
 function skipReason(): string | null {
   const reasons: string[] = []
   if (!serverBinaryExists()) {
-    reasons.push(`herdr server binary not found at ${SERVER_BINARY} — build it with \`cargo build\``)
+    reasons.push(
+      `herdr server binary not found at ${SERVER_BINARY} — build it with \`cargo build\``
+    )
   }
   if (findSshd() === null) {
     reasons.push('no sshd binary found (set HERDR_LIVE_SSHD to one)')
@@ -174,7 +176,9 @@ function textNodes(target: ReactTestRenderer): string[] {
     .findAllByType(host('Text'))
     .map((node) =>
       Children.toArray(node.props.children as ReactNode)
-        .map((child) => (typeof child === 'string' || typeof child === 'number' ? String(child) : ''))
+        .map((child) =>
+          typeof child === 'string' || typeof child === 'number' ? String(child) : ''
+        )
         .join('')
     )
     .filter((text) => text.length > 0)
@@ -366,7 +370,9 @@ describe.skipIf(reason !== null)('live: the pane viewer under a real outage', ()
         return last
       }
       if (Date.now() >= deadline) {
-        throw new Error(`${what} — the screen never showed it within ${timeoutMs}ms; last: ${JSON.stringify(last)}`)
+        throw new Error(
+          `${what} — the screen never showed it within ${timeoutMs}ms; last: ${JSON.stringify(last)}`
+        )
       }
     }
   }
@@ -398,7 +404,11 @@ describe.skipIf(reason !== null)('live: the pane viewer under a real outage', ()
       'workspace_created'
     )
     paneId = (created['root_pane'] as { pane_id: string }).pane_id
-    await api.request('pane.send_input', { pane_id: paneId, text: `echo ${MARKER}`, keys: ['Enter'] })
+    await api.request('pane.send_input', {
+      pane_id: paneId,
+      text: `echo ${MARKER}`,
+      keys: ['Enter']
+    })
 
     supervised = new SupervisedRemote({
       remoteId: REMOTE.id,
@@ -441,11 +451,7 @@ describe.skipIf(reason !== null)('live: the pane viewer under a real outage', ()
       renderer = create(tree())
       supervised.start()
     })
-    const texts = await untilRendered(
-      'Connected',
-      (values) => values.includes('Connected'),
-      60_000
-    )
+    const texts = await untilRendered('Connected', (values) => values.includes('Connected'), 60_000)
     process.stdout.write(`[outage] connected — rendered: ${JSON.stringify(texts)}\n`)
     // The verdict is on screen, and it is not a button: L7's gate is closed while the loop is fine.
     expect(texts).toContain('Connected')
@@ -561,11 +567,7 @@ describe.skipIf(reason !== null)('live: the pane viewer under a real outage', ()
 
   it('a second outage repaints the same way — the screen has no one-shot in it', async () => {
     cutter.cut()
-    const down = await untilRendered(
-      'down again',
-      (texts) => !texts.includes('Connected'),
-      90_000
-    )
+    const down = await untilRendered('down again', (texts) => !texts.includes('Connected'), 90_000)
     cutter.heal()
     const up = await untilRendered('up again', (texts) => texts.includes('Connected'), 120_000)
     process.stdout.write(

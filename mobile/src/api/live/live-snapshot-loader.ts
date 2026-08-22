@@ -32,14 +32,12 @@ import type { HerdrRemoteConnection } from '../../transport/herdr-connection'
  * different build, so the cast is guarded: a missing or non-array field becomes a named error, not
  * a list screen quietly rendering `undefined`.
  */
-function arrayField<T>(
-  result: Record<string, unknown>,
-  method: string,
-  key: string
-): T[] {
+function arrayField<T>(result: Record<string, unknown>, method: string, key: string): T[] {
   const value = result[key]
   if (!Array.isArray(value)) {
-    throw new Error(`${method} returned no \`${key}\` array (got ${JSON.stringify(result['type'])})`)
+    throw new Error(
+      `${method} returned no \`${key}\` array (got ${JSON.stringify(result['type'])})`
+    )
   }
   return value as T[]
 }
@@ -60,9 +58,7 @@ async function snapshotOf(connection: HerdrRemoteConnection): Promise<RemoteSnap
 }
 
 /** `remote.list` from the box the phone reached, merged behind the remotes it actually dialled. */
-async function fleetOf(
-  connections: readonly HerdrRemoteConnection[]
-): Promise<RemoteDefinition[]> {
+async function fleetOf(connections: readonly HerdrRemoteConnection[]): Promise<RemoteDefinition[]> {
   const dialled = connections.map((connection) => connection.remote)
   const first = connections[0]
   if (!first) {
@@ -107,14 +103,17 @@ export function createLiveSnapshotLoader(
         try {
           return { ok: true as const, value: await snapshotOf(connection) }
         } catch (error: unknown) {
-          return { ok: false as const, error: error instanceof Error ? error : new Error(String(error)) }
+          return {
+            ok: false as const,
+            error: error instanceof Error ? error : new Error(String(error))
+          }
         }
       })
     )
     const perRemote = settled.flatMap((entry) => (entry.ok ? [entry.value] : []))
     if (perRemote.length === 0) {
       const first = settled.find((entry) => !entry.ok)
-      throw (first && !first.ok ? first.error : new Error('no remote answered'))
+      throw first && !first.ok ? first.error : new Error('no remote answered')
     }
     return { remotes, perRemote }
   }

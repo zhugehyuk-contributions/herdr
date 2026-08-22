@@ -18,11 +18,7 @@ function pane(paneId: string, tabId: string, status: AgentStatus = 'idle'): Pane
 
 describe('grouping panes into tabs', () => {
   it('groups by tab_id in first-appearance order and numbers positionally', () => {
-    const groups = groupPanesByTab([
-      pane('p1', 'tab-a'),
-      pane('p2', 'tab-b'),
-      pane('p3', 'tab-a')
-    ])
+    const groups = groupPanesByTab([pane('p1', 'tab-a'), pane('p2', 'tab-b'), pane('p3', 'tab-a')])
     expect(groups.map((group) => group.tabId)).toEqual(['tab-a', 'tab-b'])
     expect(groups.map((group) => group.label)).toEqual(['tab 1', 'tab 2'])
     expect(groups[0]!.panes.map((p) => p.pane_id)).toEqual(['p1', 'p3'])
@@ -43,7 +39,10 @@ describe('grouping panes into tabs', () => {
         tab_label: 'agents'
       }
     ]
-    const groups = groupPanesByTab([pane('p1', 'tab-a'), pane('p2', 'tab-b')], tabLabelsFrom(agents))
+    const groups = groupPanesByTab(
+      [pane('p1', 'tab-a'), pane('p2', 'tab-b')],
+      tabLabelsFrom(agents)
+    )
     expect(groups.map((group) => group.label)).toEqual(['tab 1 · agents', 'tab 2'])
   })
 

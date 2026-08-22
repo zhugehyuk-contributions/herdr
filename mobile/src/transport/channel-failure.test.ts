@@ -65,9 +65,9 @@ describe('the ssh replacement for a WebSocket close code', () => {
 
   it('a handshake verdict outranks the close: the peer answered, in another dialect', () => {
     // These arrive while the channel is still open — the version check and the wire-layout probe.
-    expect(
-      classifyChannelFailure({}, new ProtocolVersionMismatchError(20, 19)).kind
-    ).toBe('protocol')
+    expect(classifyChannelFailure({}, new ProtocolVersionMismatchError(20, 19)).kind).toBe(
+      'protocol'
+    )
     expect(
       classifyChannelFailure({}, new LayoutMismatchError([{ tag: 2, name: 'Frame', count: 4 }], 0))
         .fatal

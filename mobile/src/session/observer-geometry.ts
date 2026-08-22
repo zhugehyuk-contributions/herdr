@@ -93,11 +93,7 @@ function positive(value: unknown): number {
 export function resolveObserverGeometry(input: ObserverGeometryInput): ObserverGeometry {
   const layout = input.layout ?? null
   const rect = layout?.panes.find((pane) => pane.pane_id === input.paneId)?.rect ?? null
-  const cols = Math.max(
-    positive(layout?.area.width),
-    positive(rect?.width),
-    DEFAULT_OBSERVER_COLS
-  )
+  const cols = Math.max(positive(layout?.area.width), positive(rect?.width), DEFAULT_OBSERVER_COLS)
   const rows = Math.max(
     positive(layout?.area.height),
     positive(rect?.height),
@@ -116,7 +112,11 @@ export function paneLayoutFromResult(
     return null
   }
   const candidate = layout as Partial<PaneLayoutSnapshot>
-  if (!Array.isArray(candidate.panes) || typeof candidate.area !== 'object' || candidate.area === null) {
+  if (
+    !Array.isArray(candidate.panes) ||
+    typeof candidate.area !== 'object' ||
+    candidate.area === null
+  ) {
     return null
   }
   return candidate as PaneLayoutSnapshot

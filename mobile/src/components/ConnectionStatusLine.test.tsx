@@ -13,7 +13,10 @@ import { Children } from 'react'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HerdrChannelKind } from '@herdr/client-ts'
-import { FakeTransport, type FakeChannel } from '../../../packages/herdr-client-ts/test/fakeTransport'
+import {
+  FakeTransport,
+  type FakeChannel
+} from '../../../packages/herdr-client-ts/test/fakeTransport'
 import { frameHex, fromHex } from '../../../packages/herdr-client-ts/test/helpers'
 import { WELCOME_OK_ANSI_V21 } from '../../../packages/herdr-client-ts/test/vectors'
 import { FakeClock, flushMicrotasks } from '../../test/fake-clock'
@@ -44,7 +47,9 @@ function textNodes(target: ReactTestRenderer): string[] {
     .findAllByType(host('Text'))
     .map((node) =>
       Children.toArray(node.props.children as ReactNode)
-        .map((child) => (typeof child === 'string' || typeof child === 'number' ? String(child) : ''))
+        .map((child) =>
+          typeof child === 'string' || typeof child === 'number' ? String(child) : ''
+        )
         .join('')
     )
     .filter((text) => text.length > 0)
@@ -113,7 +118,9 @@ afterEach(() => {
   }
 })
 
-async function mount(supervised: InstanceType<typeof SupervisedRemote> | null): Promise<ReactTestRenderer> {
+async function mount(
+  supervised: InstanceType<typeof SupervisedRemote> | null
+): Promise<ReactTestRenderer> {
   let created: ReactTestRenderer | null = null
   await act(async () => {
     created = create(createElement(Line, { supervised }))
@@ -227,7 +234,9 @@ describe('ConnectionStatusLine', () => {
       const styles = target.root
         .findAll(() => true)
         .flatMap((node) => [node.props.style].flat(3))
-        .filter((style): style is Record<string, unknown> => typeof style === 'object' && style !== null)
+        .filter(
+          (style): style is Record<string, unknown> => typeof style === 'object' && style !== null
+        )
       for (const style of styles) {
         for (const key of ['backgroundColor', 'borderColor', 'color']) {
           const value = style[key]

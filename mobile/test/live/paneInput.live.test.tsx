@@ -133,7 +133,9 @@ const REMOTE: RemoteDefinition = {
 function skipReason(): string | null {
   const reasons: string[] = []
   if (!serverBinaryExists()) {
-    reasons.push(`herdr server binary not found at ${SERVER_BINARY} — build it with \`cargo build\``)
+    reasons.push(
+      `herdr server binary not found at ${SERVER_BINARY} — build it with \`cargo build\``
+    )
   }
   if (findSshd() === null) {
     reasons.push('no sshd binary found (set HERDR_LIVE_SSHD to one)')
@@ -160,7 +162,9 @@ function textNodes(target: ReactTestRenderer): string[] {
     .findAllByType(host('Text'))
     .map((node) =>
       Children.toArray(node.props.children as ReactNode)
-        .map((child) => (typeof child === 'string' || typeof child === 'number' ? String(child) : ''))
+        .map((child) =>
+          typeof child === 'string' || typeof child === 'number' ? String(child) : ''
+        )
         .join('')
     )
     .filter((text) => text.length > 0)
@@ -223,7 +227,11 @@ async function panePtySize(api: JsonApiClient, paneId: string, tag: string): Pro
 }
 
 /** The same measurement, but only once two consecutive readings agree (`src/server/headless.rs:4074`). */
-async function settledPanePtySize(api: JsonApiClient, paneId: string, tag: string): Promise<string> {
+async function settledPanePtySize(
+  api: JsonApiClient,
+  paneId: string,
+  tag: string
+): Promise<string> {
   let last = await panePtySize(api, paneId, `${tag}0`)
   for (let round = 1; round < 8; round += 1) {
     await delay(250)
@@ -247,7 +255,9 @@ async function waitForScreen(needle: string, timeoutMs: number): Promise<string[
     if (Date.now() >= deadline) {
       throw new Error(
         `${needle} never reached the xterm buffer within ${timeoutMs}ms; ` +
-          `writes=${bridge().writes} commands=${bridge().commands.map((c) => c.type).join(',')}\n` +
+          `writes=${bridge().writes} commands=${bridge()
+            .commands.map((c) => c.type)
+            .join(',')}\n` +
           lines.filter((line) => line.length > 0).join('\n')
       )
     }
@@ -507,9 +517,7 @@ describe.skipIf(reason !== null)('live: sending input from the app screen to a r
       pressable(target, 'Answer yes').props.onPress()
       await delay(200)
     })
-    process.stdout.write(
-      `[pane-input] offline screen said: ${JSON.stringify(textNodes(target))}\n`
-    )
+    process.stdout.write(`[pane-input] offline screen said: ${JSON.stringify(textNodes(target))}\n`)
     // Nothing was sent, and — the part that matters — nothing was held for later either.
     expect(screenCalls).toHaveLength(before)
     expect(textNodes(target)).toContain('no transport')

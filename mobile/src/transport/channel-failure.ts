@@ -108,7 +108,12 @@ export function classifyChannelFailure(
     return { kind: 'auth', fatal: true, hint: AUTH_HINT, detail: describe(close) }
   }
   if (close.exitCode === NOT_FOUND_EXIT || text.includes('command not found')) {
-    return { kind: 'missing-binary', fatal: true, hint: MISSING_BINARY_HINT, detail: describe(close) }
+    return {
+      kind: 'missing-binary',
+      fatal: true,
+      hint: MISSING_BINARY_HINT,
+      detail: describe(close)
+    }
   }
   return { kind: 'transport', fatal: false, hint: undefined, detail: describe(close) }
 }

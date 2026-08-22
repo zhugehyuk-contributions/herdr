@@ -68,7 +68,15 @@ export function splitTrailingPartialUtf8(bytes: Uint8Array): {
       continue
     }
     const needed =
-      (lead & 0x80) === 0 ? 1 : (lead & 0xe0) === 0xc0 ? 2 : (lead & 0xf0) === 0xe0 ? 3 : (lead & 0xf8) === 0xf0 ? 4 : 0
+      (lead & 0x80) === 0
+        ? 1
+        : (lead & 0xe0) === 0xc0
+          ? 2
+          : (lead & 0xf0) === 0xe0
+            ? 3
+            : (lead & 0xf8) === 0xf0
+              ? 4
+              : 0
     if (needed === 0 || needed <= back) {
       // Either not a lead byte at all (leave it to utf8Decode to reject) or the sequence is
       // complete inside this run.
@@ -91,7 +99,10 @@ function concat(head: Uint8Array, tail: Uint8Array): Uint8Array {
 }
 
 /** A stateful UTF-8 decoder that carries an unfinished sequence across `push` calls. */
-export function createAnsiTextDecoder(): { push: (bytes: Uint8Array) => string; reset: () => void } {
+export function createAnsiTextDecoder(): {
+  push: (bytes: Uint8Array) => string
+  reset: () => void
+} {
   let carry = new Uint8Array(0)
   return {
     push(bytes) {

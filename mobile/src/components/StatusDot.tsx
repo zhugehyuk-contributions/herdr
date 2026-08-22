@@ -42,8 +42,7 @@ export function StatusDot({
   if (escalated) {
     return <View style={styles.ring} />
   }
-  const color =
-    verdict?.kind === 'warning' ? mono.fg : (stateColors[state] ?? mono.dim2)
+  const color = verdict?.kind === 'warning' ? mono.fg : (stateColors[state] ?? mono.dim2)
   return <View style={[styles.dot, { backgroundColor: color }]} />
 }
 

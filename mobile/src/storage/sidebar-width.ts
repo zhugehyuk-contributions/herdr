@@ -25,10 +25,7 @@ export function clampRemoteSidebarWidth(width: number): number {
   if (!Number.isFinite(width)) {
     return REMOTE_SIDEBAR_DEFAULT_WIDTH
   }
-  return Math.min(
-    REMOTE_SIDEBAR_MAX_WIDTH,
-    Math.max(REMOTE_SIDEBAR_MIN_WIDTH, Math.round(width))
-  )
+  return Math.min(REMOTE_SIDEBAR_MAX_WIDTH, Math.max(REMOTE_SIDEBAR_MIN_WIDTH, Math.round(width)))
 }
 
 export async function loadRemoteSidebarWidth(): Promise<number> {

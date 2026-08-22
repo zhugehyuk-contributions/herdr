@@ -187,9 +187,7 @@ describe('PaneInputBar', () => {
     const target = render(
       view({ state: { ...IDLE, last: { delivery: 'unknown', reason: 'EPIPE' } } }).input
     )
-    const texts = target.root
-      .findAllByType(host('Text'))
-      .map((node) => String(node.props.children))
+    const texts = target.root.findAllByType(host('Text')).map((node) => String(node.props.children))
     expect(texts).toContain('delivery unknown')
     expect(texts.some((text) => text.includes('failed'))).toBe(false)
   })

@@ -16,7 +16,10 @@
 //   · dictation, the native chat overlay, paste. M3 is "폰에서 승인 눌러주기".
 import { useCallback, useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
-import { HERDR_ACCESSORY_KEYS, herdrKeyForAccessoryId } from '../terminal/terminal-accessory-herdr-keys'
+import {
+  HERDR_ACCESSORY_KEYS,
+  herdrKeyForAccessoryId
+} from '../terminal/terminal-accessory-herdr-keys'
 import { PANE_QUICK_COMMANDS, quickCommandChunk } from './pane-quick-commands'
 import { inputStatusLabel } from './pane-input'
 import { mono } from '../theme/monotone'

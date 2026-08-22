@@ -132,7 +132,9 @@ describe('PaneInputSender — X2: never queue, never assert failure', () => {
 
   it('reports `rejected` with the server’s code when the server answers an error envelope', async () => {
     // An error envelope is proof the write *arrived*: herdr parsed it and said no.
-    const { api } = instantApi(new JsonApiError('pane.send_input', 'invalid_key', 'unsupported key foo'))
+    const { api } = instantApi(
+      new JsonApiError('pane.send_input', 'invalid_key', 'unsupported key foo')
+    )
     const sender = new PaneInputSender({ api, paneId: 'p1' })
     expect(await sender.sendKeys(['foo'])).toEqual({ delivery: 'rejected', reason: 'invalid_key' })
   })
@@ -305,9 +307,9 @@ describe('the status line', () => {
   })
 
   it('names the server’s refusal', () => {
-    expect(inputStatusLabel({ ...base, last: { delivery: 'rejected', reason: 'invalid_key' } })).toBe(
-      'refused: invalid_key'
-    )
+    expect(
+      inputStatusLabel({ ...base, last: { delivery: 'rejected', reason: 'invalid_key' } })
+    ).toBe('refused: invalid_key')
   })
 
   it('prefers in-flight over the previous verdict', () => {

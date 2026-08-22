@@ -93,8 +93,7 @@ function validate(value: unknown, node: SchemaNode, path: string): string[] {
   }
   const extra = resolved.additionalProperties
   for (const [field, raw] of Object.entries(object)) {
-    const child =
-      resolved.properties?.[field] ?? (typeof extra === 'object' ? extra : undefined)
+    const child = resolved.properties?.[field] ?? (typeof extra === 'object' ? extra : undefined)
     if (!child) {
       problems.push(`${path}.${field}: not declared in the schema`)
       continue

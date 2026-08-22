@@ -71,7 +71,10 @@ export default function NodeListScreen() {
           )
         })}
       </ScrollView>
-      <BottomNav active="nodes" onSelect={(tab) => (tab === 'agents' ? router.push('/') : undefined)} />
+      <BottomNav
+        active="nodes"
+        onSelect={(tab) => (tab === 'agents' ? router.push('/') : undefined)}
+      />
     </View>
   )
 }

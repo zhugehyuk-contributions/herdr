@@ -104,7 +104,8 @@ function stateLabelsFor(status: AgentStatus, flat: number): Record<string, strin
 export function mockRemotes(scenario: MockScenario = DEFAULT_SCENARIO): RemoteDefinition[] {
   return Array.from({ length: scenario.remoteCount }, (_, index) => {
     const base = REMOTE_NAMES[index % REMOTE_NAMES.length]!
-    const name = index < REMOTE_NAMES.length ? base : `${base}-${Math.floor(index / REMOTE_NAMES.length) + 1}`
+    const name =
+      index < REMOTE_NAMES.length ? base : `${base}-${Math.floor(index / REMOTE_NAMES.length) + 1}`
     const sshTarget = SSH_TARGETS[base]
     return {
       id: `remote-${index + 1}`,

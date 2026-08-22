@@ -29,9 +29,7 @@ function scriptedApi(script: Script, asked: string[] = []): JsonApiClient {
         )
       },
       readLine: () =>
-        pending === null
-          ? Promise.reject(new Error('nothing written'))
-          : Promise.resolve(pending),
+        pending === null ? Promise.reject(new Error('nothing written')) : Promise.resolve(pending),
       close: () => {}
     }
   })
@@ -55,7 +53,10 @@ function connection(
 
 const HUB_LISTS: Script = {
   'remote.list': { type: 'remote_list', remotes: [remote('remote-2', 'iq-64')] },
-  'workspace.list': { type: 'workspace_list', workspaces: [{ workspace_id: 'w1', label: 'herdr' }] },
+  'workspace.list': {
+    type: 'workspace_list',
+    workspaces: [{ workspace_id: 'w1', label: 'herdr' }]
+  },
   'pane.list': { type: 'pane_list', panes: [{ pane_id: 'w1:p1', tab_id: 'w1:t1' }] },
   'agent.list': { type: 'agent_list', agents: [{ pane_id: 'w1:p1', tab_label: 'main' }] }
 }

@@ -16,7 +16,10 @@ import {
 /** Mount time, so every `nowMs` below reads as "this long after the last good snapshot". */
 const LOADED_AT = 1_700_000_000_000
 
-function labelAfter(ms: number, refreshError: string | null = 'ssh: channel closed'): string | null {
+function labelAfter(
+  ms: number,
+  refreshError: string | null = 'ssh: channel closed'
+): string | null {
   return snapshotStalenessLabel({ updatedAt: LOADED_AT, refreshError, nowMs: LOADED_AT + ms })
 }
 
@@ -62,7 +65,11 @@ describe('snapshot staleness label', () => {
     // Reachable: the initial load fails (`status: 'error'`, `updatedAt` still null) and the poller
     // keeps failing on top of it. "stale 2m" would be a claim about data the user cannot see.
     expect(
-      snapshotStalenessLabel({ updatedAt: null, refreshError: 'ssh: channel closed', nowMs: LOADED_AT })
+      snapshotStalenessLabel({
+        updatedAt: null,
+        refreshError: 'ssh: channel closed',
+        nowMs: LOADED_AT
+      })
     ).toBe('never loaded')
     expect(snapshotStalenessLabel({ updatedAt: null, refreshError: null })).toBeNull()
   })

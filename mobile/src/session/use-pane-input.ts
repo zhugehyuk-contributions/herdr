@@ -3,7 +3,12 @@
 // is the part worth testing, and it is testable without mounting anything (port map §3 P1 — "폰 없는
 // 재현부터 돌려라, 실패하면 UI를 건드리지 마라").
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { PaneInputSender, type PaneInputChunk, type PaneInputResult, type PaneInputState } from './pane-input'
+import {
+  PaneInputSender,
+  type PaneInputChunk,
+  type PaneInputResult,
+  type PaneInputState
+} from './pane-input'
 import type { HerdrRemoteConnection } from '../transport/herdr-connection'
 
 export type PaneInputView = {

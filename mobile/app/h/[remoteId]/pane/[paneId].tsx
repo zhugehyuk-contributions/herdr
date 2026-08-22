@@ -135,7 +135,9 @@ export function PaneViewerScreen({
   // tabs and the tab survives only as each chip's label.
   const siblings = useMemo(
     () =>
-      routed ? (entry?.panes ?? []).filter((pane) => pane.workspace_id === routed.workspace_id) : [],
+      routed
+        ? (entry?.panes ?? []).filter((pane) => pane.workspace_id === routed.workspace_id)
+        : [],
     [entry, routed]
   )
   const agents = useMemo(

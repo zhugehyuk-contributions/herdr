@@ -64,7 +64,10 @@ vi.mock('expo-router', () => {
   }
 })
 
-const storage = vi.hoisted(() => ({ getItem: vi.fn(async () => null), setItem: vi.fn(async () => {}) }))
+const storage = vi.hoisted(() => ({
+  getItem: vi.fn(async () => null),
+  setItem: vi.fn(async () => {})
+}))
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: storage }))
 
 const windowSize = vi.hoisted(() => ({ width: 390, height: 844 }))
@@ -135,7 +138,9 @@ function textNodes(target: ReactTestRenderer): string[] {
     .findAllByType(host('Text'))
     .map((node) =>
       Children.toArray(node.props.children as ReactNode)
-        .map((child) => (typeof child === 'string' || typeof child === 'number' ? String(child) : ''))
+        .map((child) =>
+          typeof child === 'string' || typeof child === 'number' ? String(child) : ''
+        )
         .join('')
     )
     .filter((text) => text.length > 0)
@@ -181,8 +186,12 @@ describe('root route shell', () => {
     expect(texts).toContain('fable-m5max')
     expect(texts).toContain('iq-64')
     // Each dialled remote's row carries its own roll-up, computed from *that remote's* pane.list.
-    expect(texts).toContain('local · 4 spaces · 12 panes · 2 blocked · 4 working · 2 done · 2 unknown · 2 idle')
-    expect(texts).toContain('z@iq-64 · 4 spaces · 12 panes · 2 blocked · 4 working · 2 done · 2 unknown · 2 idle')
+    expect(texts).toContain(
+      'local · 4 spaces · 12 panes · 2 blocked · 4 working · 2 done · 2 unknown · 2 idle'
+    )
+    expect(texts).toContain(
+      'z@iq-64 · 4 spaces · 12 panes · 2 blocked · 4 working · 2 done · 2 unknown · 2 idle'
+    )
     // The disabled remote renders as disabled — and *only* as disabled. A remote that was never
     // dialled must not be given a count, because "0 panes" and "we did not ask" look identical.
     expect(texts).toContain('disabled')

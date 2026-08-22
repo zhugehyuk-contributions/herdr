@@ -39,10 +39,7 @@ type SingleFlightEntry = {
   followUp: { deferred: Deferred; params: Record<string, unknown> } | null
 }
 
-const inFlightRequests = new WeakMap<
-  JsonApiClient,
-  Map<string, Map<string, SingleFlightEntry>>
->()
+const inFlightRequests = new WeakMap<JsonApiClient, Map<string, Map<string, SingleFlightEntry>>>()
 
 function makeDeferred(): Deferred {
   let resolve!: (value: JsonApiResult) => void

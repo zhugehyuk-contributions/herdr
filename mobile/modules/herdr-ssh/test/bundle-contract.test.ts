@@ -18,8 +18,26 @@ import { describe, expect, it } from 'vitest'
 const MODULE_ROOT = resolve(import.meta.dirname, '..')
 
 const NODE_BUILTINS = new Set([
-  'assert', 'buffer', 'child_process', 'crypto', 'dns', 'events', 'fs', 'http', 'https', 'net',
-  'os', 'path', 'process', 'stream', 'timers', 'tls', 'url', 'util', 'worker_threads', 'zlib'
+  'assert',
+  'buffer',
+  'child_process',
+  'crypto',
+  'dns',
+  'events',
+  'fs',
+  'http',
+  'https',
+  'net',
+  'os',
+  'path',
+  'process',
+  'stream',
+  'timers',
+  'tls',
+  'url',
+  'util',
+  'worker_threads',
+  'zlib'
 ])
 
 /** Specifiers reached by a *static* import — the ones that load when the module loads. */
@@ -114,20 +132,26 @@ describe('herdr-ssh bundle contract', () => {
     const builtins = reach.bare.filter(
       ({ specifier }) => specifier.startsWith('node:') || NODE_BUILTINS.has(specifier)
     )
-    expect(builtins.map(({ specifier, importer }) => `${relative(importer)} -> ${specifier}`)).toEqual([])
+    expect(
+      builtins.map(({ specifier, importer }) => `${relative(importer)} -> ${specifier}`)
+    ).toEqual([])
   })
 
   it('never reaches the ssh2 entry point that metro.config.js blocks', () => {
     const leaked = reach.bare.filter(
       ({ specifier }) => specifier === 'ssh2' || specifier.startsWith('@herdr/client-ts/node')
     )
-    expect(leaked.map(({ specifier, importer }) => `${relative(importer)} -> ${specifier}`)).toEqual([])
+    expect(
+      leaked.map(({ specifier, importer }) => `${relative(importer)} -> ${specifier}`)
+    ).toEqual([])
   })
 
   it('static imports are confined to the packages a Hermes bundle already carries', () => {
     const allowed = new Set(['@herdr/client-ts', 'react', 'zod'])
     const unexpected = reach.bare.filter(({ specifier }) => !allowed.has(specifier))
-    expect(unexpected.map(({ specifier, importer }) => `${relative(importer)} -> ${specifier}`)).toEqual([])
+    expect(
+      unexpected.map(({ specifier, importer }) => `${relative(importer)} -> ${specifier}`)
+    ).toEqual([])
   })
 
   it('reaches expo-modules-core and expo-constants only through a dynamic import', () => {

@@ -36,7 +36,10 @@ function Probe() {
 function liveConnection(): HerdrRemoteConnection {
   const script: Record<string, unknown> = {
     'remote.list': { type: 'remote_list', remotes: [] },
-    'workspace.list': { type: 'workspace_list', workspaces: [{ workspace_id: 'w1', label: 'live' }] },
+    'workspace.list': {
+      type: 'workspace_list',
+      workspaces: [{ workspace_id: 'w1', label: 'live' }]
+    },
     'pane.list': { type: 'pane_list', panes: [] },
     'agent.list': { type: 'agent_list', agents: [] }
   }
@@ -50,7 +53,9 @@ function liveConnection(): HerdrRemoteConnection {
           pending = JSON.stringify({ id: request.id, result: script[request.method] })
         },
         readLine: () =>
-          pending === null ? Promise.reject(new Error('nothing written')) : Promise.resolve(pending),
+          pending === null
+            ? Promise.reject(new Error('nothing written'))
+            : Promise.resolve(pending),
         close: () => {}
       }
     }),
@@ -81,7 +86,7 @@ async function mount(connections: readonly HerdrRemoteConnection[]): Promise<Rea
 function texts(target: ReactTestRenderer): string[] {
   return target.root
     .findAllByType(host('Text'))
-    .map((node) => (node.props.children as ReactNode[] | string) as string)
+    .map((node) => node.props.children as ReactNode[] | string as string)
 }
 
 afterEach(() => {

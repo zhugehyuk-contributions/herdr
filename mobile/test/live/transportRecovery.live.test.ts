@@ -54,7 +54,10 @@ import {
   type ScratchSshd
 } from '../../../packages/herdr-client-ts/test/live-ssh/sshHarness'
 import { startNetworkCutter, type NetworkCutter } from './networkCutter'
-import { ConnectionSupervisor, type SupervisedLink } from '../../src/transport/connection-supervisor'
+import {
+  ConnectionSupervisor,
+  type SupervisedLink
+} from '../../src/transport/connection-supervisor'
 import { encodePingFrame, isPongVariant } from '../../src/transport/client-ping'
 import type { ObserveSubscription } from '../../src/transport/observe-subscriptions'
 import type { ConnectionState } from '../../src/transport/connection-state-types'
@@ -87,7 +90,9 @@ const ROWS = 30
 function skipReason(): string | null {
   const reasons: string[] = []
   if (!serverBinaryExists()) {
-    reasons.push(`herdr server binary not found at ${SERVER_BINARY} — build it with \`cargo build\``)
+    reasons.push(
+      `herdr server binary not found at ${SERVER_BINARY} — build it with \`cargo build\``
+    )
   }
   if (findSshd() === null) {
     reasons.push('no sshd binary found (set HERDR_LIVE_SSHD to one)')
@@ -329,7 +334,11 @@ describe.skipIf(reason !== null)('live: M4 transport survivability', () => {
 
   it('connects through ssh, observes a real pane, and receives real frames', async () => {
     supervisor.start()
-    await until('the supervisor connected', () => supervisor.snapshot().state === 'connected', 60_000)
+    await until(
+      'the supervisor connected',
+      () => supervisor.snapshot().state === 'connected',
+      60_000
+    )
     await api.request('pane.send_input', { pane_id: paneId, text: 'echo M4ALIVE', keys: ['Enter'] })
     await until('frames arrived', () => frames > 0, 60_000)
 
@@ -445,9 +454,7 @@ describe.skipIf(reason !== null)('live: M4 transport survivability', () => {
   }, 180_000)
 
   it('the reconnect loop produced no uncaught errors at all', () => {
-    process.stdout.write(
-      `[m4-live] suppressed ssh2 dial errors: ${suppressedDialErrors}\n`
-    )
+    process.stdout.write(`[m4-live] suppressed ssh2 dial errors: ${suppressedDialErrors}\n`)
     // Nothing is filtered out of `unexpected`: an exec that threw into an EventEmitter, a codec
     // callback escaping, or a regression of the pre-handshake double-emit all land here and fail.
     expect(unexpected).toEqual([])
