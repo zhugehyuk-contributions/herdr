@@ -235,6 +235,37 @@ RSA 시도가 같은 오류를 낸 것은 오염이 아니라 **정상적인 같
 
 ---
 
+## J. 이 머지의 실제 blast radius — "모바일 앱 추가"가 아니다 (2026-08-22, 리뷰가 프레임 정정)
+
+머지 게이트 리뷰에서 dispatcher의 프레임이 틀렸다는 지적이 나왔고, 실측으로 확인했다 `[v]`.
+
+**`origin/mx`에는 upstream v0.8.2가 없다** — `git merge-base --is-ancestor ae8009e1 origin/mx` = NO
+(v0.8.0은 in mx, v0.8.2는 NOT). 즉 이 브랜치를 mx에 머지하는 것은 **모바일 앱 + upstream v0.8.2
+동기화(133커밋)를 한 번에 착륙시키는 일**이다. 비-mobile diff = **558파일 / +50905 / −7437**
+(`src/` 167파일, `website+workers+docs` 273파일). 데스크톱 herdr 사용자에 대한 회귀 위험은
+`mobile/`이 아니라 **여기** 있다.
+
+**프로토콜 정체성이 함께 움직인다** `[v]`: mx는 `PROTOCOL_VERSION = 20`이고 `src/protocol/abi.rs`가
+**아예 없다**. 이 브랜치는 `21` + `WIRE_ABI_EPOCH = 3` + 28바이트 프렐류드다. 핸드셰이크는 완전일치
+검사이므로, 착륙 후 바이너리를 올리는 순간 **서버와 클라이언트가 한꺼번에 움직여야 한다** — 혼재
+함대는 붙지 않는다. 이건 결함이 아니라 B1이 의도한 식별 거부(조용한 오파싱보다 낫다)지만, 실사용
+함대를 가진 쪽에는 운영 사건이다. 마침 같은 머지가 들여오는 mx 커밋에 **`herdr live-handoff`**
+(한 명령으로 모든 러닝 세션을 현재 바이너리로 넘김)가 있으므로 업그레이드 수단은 함께 도착한다.
+
+**따라서 이 머지의 리시트는 "mobile 게이트"가 아니라 upstream 동기화 규약이다.** `update-upstream`
+스킬 기준 남은 산출물은 전부 push 이후다: ①`upstream-mirror`를 v0.8.2로 force-push(**머지가 mx에
+착륙한 뒤에** — 순서를 어기면 divergence PR diff가 역방향으로 오염된다) ②상시 divergence PR
+**#81** 갱신(현재 제목 `divergence: mx vs upstream v0.8.0`, base `upstream-mirror` = `346411fa`
+= v0.8.0) ③`mx` push는 `preview-mx.yml`을 격발해 프리릴리즈를 발행하므로 tap·brew까지 완주.
+
+**로컬 리시트가 덮지 못하는 유일한 구멍**: CI 매트릭스에서 `ubuntu-latest`는 nextest `all()`,
+`macos-latest`는 `not binary(live_handoff)`다. 나는 macOS에서 `all()`로 돌렸으므로 macOS CI보다는
+넓지만 **Linux 레그는 대변하지 못한다** — 그리고 mx tip이 하필 `8fec6568 test(live-handoff): drop an
+assertion that is false on Linux`로, 이 영역엔 Linux 특이 파손 전력이 있다. 첫 push의 ubuntu leg는
+눈으로 확인해야 한다.
+
+---
+
 ---
 
 **규율**: 이 목록은 *n번째 문서화*가 아니라 **추적 큐**다. 항목을 닫을 때는 여기서 지우고 커밋 메시지에 근거를 남긴다.
