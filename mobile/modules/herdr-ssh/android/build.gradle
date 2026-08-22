@@ -7,9 +7,20 @@
 // 2.6k stars. The alternatives were checked rather than assumed — JSch is abandoned upstream and its
 // live fork (`mwiede/jsch`) publishes no SPDX license identifier on GitHub, which is a worse
 // starting point than "Apache-2.0" for a dependency that ships in a released app.
-apply plugin: 'com.android.library'
-apply plugin: 'kotlin-android'
-apply plugin: 'expo-module-gradle-plugin'
+// Gradle idiom matched to the Expo modules that actually build in this tree
+// (node_modules/expo-{clipboard,haptics,secure-store}/android/build.gradle): a `plugins` block,
+// no separate `kotlin-android` apply, and NO minSdkVersion here.
+//
+// The previous version called `safeExtGet('minSdkVersion', 24)`. That helper is a react-native
+// community-module convention; `expo-module-gradle-plugin` does not define it, so evaluating this
+// project failed outright with "Could not find method safeExtGet()". It was never caught because
+// this file had never been evaluated by Gradle. The plugin supplies the project-wide SDK levels
+// (the app resolves its own from `rootProject.ext.minSdkVersion`, app/build.gradle:93), so the
+// correct fix is to state nothing rather than to define the missing helper.
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
 
 group = 'dev.herdr.ssh'
 version = '0.0.0'
@@ -17,7 +28,8 @@ version = '0.0.0'
 android {
   namespace 'dev.herdr.ssh'
   defaultConfig {
-    minSdkVersion safeExtGet('minSdkVersion', 24)
+    versionCode 1
+    versionName '0.0.0'
     consumerProguardFiles 'proguard-rules.pro'
   }
   packagingOptions {

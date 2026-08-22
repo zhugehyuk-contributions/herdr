@@ -13,6 +13,8 @@
 #   1. HerdrSshModule.kt is NOT compiled here. It is almost entirely Expo's `ModuleDefinition` DSL,
 #      whose overload machinery cannot be stubbed faithfully; a loose stub would go green on code
 #      real Expo rejects, which is worse than no check. Only the Record is pulled in, verbatim.
+#      That file IS compiled for real by `./gradlew :herdr-ssh:assembleDebug` (needs the Android SDK
+#      and JDK 17). This harness is the fast pre-check that needs neither; gradle is the real gate.
 #   2. The three Expo symbols are stubs (typecheck/stubs/), matched by hand to expo-modules-core.
 #      If Expo changes those signatures this harness will not notice. Re-derive on Expo upgrades.
 #   3. This is not a build. No Android SDK, no aapt, no dex, no device. `./gradlew` remains the

@@ -1,0 +1,20 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml:1:1-5:12
+INJECTED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml:1:1-5:12
+	package
+		INJECTED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml:1:11-69
+uses-permission#android.permission.INTERNET
+ADDED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml:4:3-65
+	android:name
+		ADDED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml:4:20-62
+uses-sdk
+INJECTED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml
+INJECTED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/zhugehyuk/2lab.ai/herdr/.worktrees/feat-mobile-client/mobile/modules/herdr-ssh/android/src/main/AndroidManifest.xml
