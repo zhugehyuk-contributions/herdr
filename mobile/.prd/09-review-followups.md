@@ -378,3 +378,38 @@ sink는 opened로 남아(`:317-320`, reset은 retarget 때만 `:254`) **`Request
 ---
 
 **규율**: 이 목록은 *n번째 문서화*가 아니라 **추적 큐**다. 항목을 닫을 때는 여기서 지우고 커밋 메시지에 근거를 남긴다.
+
+## M. §K1·K3 + AbiMismatch — 닫힘 (2026-08-22, 커밋 `d8d36bb5`)
+
+증거 유실 사슬은 §K에 적었던 2층이 아니라 **5층**이었다. 그중 2~4층이 닫혔다.
+
+| 층 | 위치 | 상태 |
+|---|---|---|
+| 1 | `HerdrSshSession.kt:253-257` — `shutdownNow()`가 배수 중 stderr 펌프를 끊고, 채널 close 전에 `exitStatus`를 읽는다 | **열림** (위임 중) |
+| 2 | `observe-stream-link.ts` — pre-Welcome close에서 `close.error?.message`만 남기고 exit/signal/stderr 폐기 | 닫힘 — 구조체째 `hooks.reportClosed(close)` |
+| 3 | 같은 파일 — `activeToken`이 핸드셰이크 후에야 설정돼, pre-Welcome close에 **보고할 주체가 없었다** | 닫힘 — `dialToken`(다이얼 시작 시 청구) / `activeToken`(핸드셰이크 후) 분리 |
+| 4 | `connection-supervisor.ts:303-312` — 거부된 다이얼을 `{ error }` 단일 필드로 재합성 | 닫힘 — `closeOfDialRejection(error)` |
+| 5 | `channel-failure.ts` — `AbiMismatchError`가 fatal 분기에 없어 무한 재접속 | 닫힘 — `protocol/fatal` + `WIRE_ABI_HINT` + `describeAbiRefusal` |
+
+5층은 이 브랜치가 자초한 구멍이었다: M0가 `WIRE_ABI_EPOCH`와 프렐류드를 만들어 서버에 "낯선 레이아웃을 거부하라"를 가르쳤으나, 클라이언트에는 **그 거부가 복구 불가능하다**는 것을 가르치지 않았다. `grep -rn AbiMismatch mobile/` = 0건이었다.
+
+RED-on-revert 3종 독립 재현(2층·4층·경합 가드). 게이트 72파일/650테스트, typecheck·lint·format:check exit 0.
+
+### 잔여 — 같은 모양의 **네 번째 사본**
+
+`mobile/test/live/paneViewerOutage.live.test.tsx:282-286`의 `sshRedialLink` 팩토리가 `close.error?.message` + 핸드셰이크-후 `activeToken` 게이트를 동일하게 갖고 있다. 결과: **실제 sshd에 다이얼하는 유일한 리시트가 구조적으로 이 수정을 관측할 수 없다.** "나쁜 키가 latch된다"를 종단으로 증명하려면 여기부터다.
+
+그리고 이 사슬 전체는 Android transport가 실제로 `stderr`/`exitCode`를 채워야 폰에서 발화한다 (`ssh-transport.ts:42`의 "부재 = undefined" 규약, `packages/herdr-client-ts/src/transport.ts:184-186`).
+
+## N. 무체크섬 원격 설치 — 귀속 재측정 (2026-08-22)
+
+패널 1인이 `attach.rs`의 release-asset 무검증 설치를 **머지 차단**으로 들었다. 귀속을 직접 쟀다:
+
+| 측정 | 값 |
+|---|---|
+| `git show origin/mx:src/remote/unix.rs \| grep -ci sha256` | **0** |
+| `git show feat/mobile-client:src/remote/attach.rs \| grep -ci sha256` | 2 (검증에 쓰이지 않는 잔재) |
+| 대조군 `src/update.rs` (자가 업데이트 경로) | origin/mx **20** / branch **36** |
+| `origin/mx:src/remote/unix.rs:1946` | `fn download_release_asset` 존재 |
+
+upstream v0.8.2가 `unix.rs`를 `attach.rs`로 재편했을 뿐, **무체크섬 원격 설치 경로는 mx에 이미 있었다.** 결함은 실재하나 이 브랜치의 회귀가 아니다 → 별도 보안 이슈. 자가 업데이트는 검증하는데 원격 설치는 안 하는 비대칭이 결함의 본체다.
