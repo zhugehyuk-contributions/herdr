@@ -537,6 +537,24 @@ document.querySelector('.xterm-rows') !== null
 판별점 = 마커 `196:>>>>>>>>>>>>:213`을 다시 심고 ①fit에서 213열 전부 들어오는지 ②최대 줌+최대 우측 팬에서
 `:213`까지 도달하는지.
 
+#### 정적 조사로 좁힌 것 (2026-08-23, 기기 없이)
+
+WebGL 애드온은 **실제로 로드된다** — `terminal-webview-html.ts:777`의 `attachWebglAddon(true)`,
+빌드 소스도 `@xterm/addon-webgl`를 번들한다(`scripts/build-terminal-webview-engine.mjs:15`).
+그리고 프로브는 그 경우 **0을 반환하도록 의도돼 있다** (`terminal-webview-painted-cell-injected.ts:54-56`,
+근거는 같은 파일 헤더 `:19-21`: *WebGL은 `css.cell.width`로 캔버스를 잡으므로 그 값이 곧 도색이고,
+`.xterm-rows`는 DOM 렌더러가 처분돼 존재하지 않는다*).
+
+**그래서 갈림이 두 갈래로 좁혀진다 — 코드로는 더 못 좁힌다:**
+
+| 기기에서 `.xterm-rows`가 | 뜻 |
+|---|---|
+| **존재** (WebGL 컨텍스트 생성 실패 → DOM 렌더러) | §P의 위 설명이 성립하고 `ccbaafe4`가 실제로 동작한다 |
+| **null** (WebGL 활성) | `ccbaafe4`는 **설계상 무동작**이고, 그렇다면 캔버스가 `css.cell.width`로 잡히므로 9열 격차가 *애초에 생기면 안 된다* → **관측된 증상의 원인이 §P의 설명과 다르다** |
+
+즉 이 한 줄이 "수리가 동작하는가"와 "진단이 맞았는가"를 **동시에** 가른다. 다음 실기기 QA는 다른 무엇보다
+먼저 이걸 찍어라.
+
 ### §P2 — 같은 불일치가 탭·선택 좌표도 오염시킨다 (미수정)
 
 `terminal-webview-html.ts:1169-1177`이 `col = Math.floor(sx / getCellWidth())`,
