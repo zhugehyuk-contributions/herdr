@@ -19,7 +19,6 @@ import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.transport.verification.FingerprintVerifier
 import net.schmizz.sshj.transport.verification.PromiscuousVerifier
-import net.schmizz.sshj.userauth.keyprovider.OpenSSHKeyFile
 import net.schmizz.sshj.userauth.password.PasswordFinder
 import net.schmizz.sshj.userauth.password.Resource
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -82,26 +81,33 @@ object HerdrSshDialer {
     client.connection.keepAlive.keepAliveInterval =
       TimeUnit.MILLISECONDS.toSeconds(config.keepaliveIntervalMs.toLong()).toInt().coerceAtLeast(1)
 
-    val keys = OpenSSHKeyFile()
-    if (config.passphrase.isNullOrEmpty()) {
-      keys.init(config.privateKey, null)
-    } else {
+    // `client.loadKeys` and NOT `OpenSSHKeyFile` directly. The provider has to match the file
+    // format, and `OpenSSHKeyFile` only reads the classic PEM one (`BEGIN RSA PRIVATE KEY` and
+    // friends). Every key `ssh-keygen` has produced since OpenSSH 7.8 is the newer openssh-key-v1
+    // container (`BEGIN OPENSSH PRIVATE KEY`), which needs `OpenSSHKeyV1KeyFile`.
+    //
+    // The failure mode when this is wrong is quiet and misleading: the key simply does not load, so
+    // sshj offers the server no publickey method at all and reports
+    // `UserAuthException: Exhausted available authentication methods` — which reads like the server
+    // rejected us, when in fact we never asked. Observed on device 2026-08-22: the server's DEBUG3
+    // log showed a completed `curve25519-sha256` KEX and an accepted `ssh-userauth` service request
+    // followed by no authentication attempt whatsoever.
+    //
+    // `loadKeys` sniffs the header (`KeyProviderUtil.detectKeyFileFormat` -> `KeyFormat.OpenSSHv1`)
+    // and picks the registered provider (`DefaultConfig:158`), so both formats work and neither is
+    // hardcoded here.
+    val passwordFinder = config.passphrase?.takeIf { it.isNotEmpty() }?.let { passphrase ->
       // NOT a lambda: `PasswordFinder` declares two abstract methods (`reqPassword` and
       // `shouldRetry`, sshj 0.40.0 PasswordFinder.java:13,25), so Kotlin SAM conversion does not
-      // apply and `{ ... }` here does not compile. `shouldRetry = false` is the deliberate half:
-      // the passphrase came from the caller in one shot, so retrying just re-offers the same wrong
-      // secret and burns auth attempts against the server.
-      val passphrase = config.passphrase!!
-      keys.init(
-        config.privateKey,
-        null,
-        object : PasswordFinder {
-          override fun reqPassword(resource: Resource<*>?): CharArray = passphrase.toCharArray()
+      // apply. `shouldRetry = false` is the deliberate half: the passphrase came from the caller in
+      // one shot, so retrying just re-offers the same wrong secret and burns auth attempts.
+      object : PasswordFinder {
+        override fun reqPassword(resource: Resource<*>?): CharArray = passphrase.toCharArray()
 
-          override fun shouldRetry(resource: Resource<*>?): Boolean = false
-        }
-      )
+        override fun shouldRetry(resource: Resource<*>?): Boolean = false
+      }
     }
+    val keys = client.loadKeys(config.privateKey, null, passwordFinder)
     client.authPublickey(config.username, keys)
     return client
   }
