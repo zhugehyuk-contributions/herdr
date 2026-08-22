@@ -327,6 +327,12 @@ pub(crate) enum ServerEvent {
         target: String,
         takeover: bool,
     },
+    /// An established terminal session client asked to move to another target and/or mode (B6).
+    ClientRetargetTerminal {
+        client_id: u64,
+        target: String,
+        mode: crate::protocol::TerminalSessionMode,
+    },
     /// A direct terminal attach client requested scrollback movement.
     ClientAttachScroll {
         client_id: u64,
@@ -860,6 +866,13 @@ fn client_read_loop(
                     client_id,
                     target,
                     takeover,
+                }
+            }
+            ClientMessage::RetargetTerminal { target, mode } => {
+                ServerEvent::ClientRetargetTerminal {
+                    client_id,
+                    target,
+                    mode,
                 }
             }
             ClientMessage::ClipboardImage { extension, data } => {

@@ -135,6 +135,17 @@ export const CLIENT_LAUNCH_MODE_ORDER = ["App", "TerminalAttach"] as const;
 export const ClientMessageTag = {
   Hello: 0,
   /**
+   * `ClientMessage::Resize` (`src/protocol/wire.rs`), frozen at 3 by
+   * `client_message_wire_tags_preserve_protocol_15_order`.
+   *
+   * For a client in `TerminalObserve` mode this changes **only the grid the server renders frames
+   * at** — it updates `terminal_size` and requests a repaint and does not touch the observed pane's
+   * PTY (`src/server/headless.rs`, the `TerminalObserve` arm of the `ClientResize` handler, against
+   * the `TerminalAttach` arm directly above it which does call `runtime.resize`). That asymmetry is
+   * what lets a retargeting observer re-size itself to the pane it just moved to.
+   */
+  Resize: 3,
+  /**
    * `src/protocol/wire.rs:462-467` — a **unit** variant, so the encoded message is the tag byte and
    * nothing else. Frozen at 11 by `client_message_wire_tags_preserve_protocol_15_order`
    * (`src/protocol/wire.rs:1447`).
@@ -149,6 +160,31 @@ export const ClientMessageTag = {
    * `client_message_wire_tags_preserve_protocol_15_order` (`src/protocol/wire.rs:1448`).
    */
   ObserveTerminal: 12,
+  /**
+   * `ClientMessage::RetargetTerminal { target, mode }` — moves an **already-established** terminal
+   * session to another target and/or another mode, on the same socket (`mobile/.prd/03-blockers.md`
+   * B6, milestone M6). Appended at the enum tail, which is why every tag above kept its value.
+   *
+   * ⚠️ **mx-only, and epoch-2-only.** This is the message the wire-ABI epoch bumped for: a server
+   * built at epoch 1 has no tag 14 and drops the connection on the bincode decode rather than
+   * answering. `./abi.ts` refuses such a peer on its prelude before this can ever be sent, which is
+   * exactly why epoch 1 is NOT in the accepted table.
+   */
+  RetargetTerminal: 14,
+} as const;
+
+/**
+ * `TerminalSessionMode` (`src/protocol/wire.rs`), the nested enum inside
+ * {@link ClientMessageTag.RetargetTerminal}. Its ordinals are wire too.
+ *
+ * `Observe` is a **unit** variant — one tag byte and nothing after it. `Control` carries a
+ * `takeover: bool`, so a control retarget frame is exactly one byte longer. Frozen by
+ * `terminal_session_mode_wire_tags_are_frozen` and pinned byte-for-byte by the
+ * `retarget_terminal_observe` / `retarget_terminal_control` vectors in the fixture corpus.
+ */
+export const TerminalSessionModeTag = {
+  Observe: 0,
+  Control: 1,
 } as const;
 
 /** `ServerMessage` wire tags (`src/protocol/wire.rs:797`). Only `Welcome` and `Terminal` decode. */

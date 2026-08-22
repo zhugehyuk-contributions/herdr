@@ -29,7 +29,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import type { JsonApiClient } from '@herdr/client-ts'
+import { HerdrChannelKind, type JsonApiClient } from '@herdr/client-ts'
 import {
   SERVER_BINARY,
   serverBinaryExists,
@@ -217,8 +217,14 @@ async function settledPanePtySize(api: JsonApiClient, paneId: string, tag: strin
   throw new Error(`pane PTY size never settled (last reading ${last})`)
 }
 
-/** Polls the xterm buffer until `needle` shows up on some row, or the deadline passes. */
-async function waitForScreen(needle: string, timeoutMs: number): Promise<string[]> {
+/**
+ * Polls the xterm buffer until `needle` shows up on some row, or the deadline passes.
+ *
+ * `pollMs` is the measurement granularity, and the M6 timing receipt is the one caller that cares:
+ * at the default 120 ms an 8 ms wire event reads as anything up to 128 ms of "latency" that is
+ * entirely this loop's sleep. Pass a small value when the elapsed time is the assertion.
+ */
+async function waitForScreen(needle: string, timeoutMs: number, pollMs = 120): Promise<string[]> {
   const deadline = Date.now() + timeoutMs
   let lines: string[] = []
   for (;;) {
@@ -234,7 +240,7 @@ async function waitForScreen(needle: string, timeoutMs: number): Promise<string[
       )
     }
     await act(async () => {
-      await delay(120)
+      await delay(pollMs)
     })
   }
 }
@@ -385,6 +391,14 @@ describe.skipIf(reason !== null)('live: the pane viewer against a real herdr ser
     const target = renderer as unknown as ReactTestRenderer
     const beforeB = await settledPanePtySize(api, paneB, 'SZB')
     bridge().reset()
+    // M6/B6. Counted per KIND, not in total: the snapshot poller opens `api-request` channels
+    // continuously (the JSON API answers one line per connection), so a total would drown the
+    // claim. `client-stream` is the resident bridge — a remote `herdr remote-client-bridge`
+    // process plus a handshake plus a fresh full ANSI baseline — and the switch below must cost
+    // none of them.
+    const clientStreamsBefore = transport.channelCountOfKind(HerdrChannelKind.ClientStream)
+    const channelsBefore = transport.channelCount
+    const startedAt = Date.now()
 
     await act(async () => {
       target.update(
@@ -401,15 +415,34 @@ describe.skipIf(reason !== null)('live: the pane viewer against a real herdr ser
         .props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'web-ready' }) } })
     })
 
-    const lines = await waitForScreen(MARKER_B, 60_000)
+    const lines = await waitForScreen(MARKER_B, 60_000, 10)
+    const elapsed = Date.now() - startedAt
     dumpScreen(`pane ${paneB}`, lines)
+    process.stdout.write(
+      `[pane-viewer] chip swap ${paneA} -> ${paneB} in ${elapsed}ms; ` +
+        `client-stream channels ${clientStreamsBefore} -> ` +
+        `${transport.channelCountOfKind(HerdrChannelKind.ClientStream)}; ` +
+        `all channels ${channelsBefore} -> ${transport.channelCount} ` +
+        `connections=${transport.connectionCount}\n`
+    )
     // The target really moved: the new pane's marker is on screen and the old one's is gone,
     // because `init` rebuilt the buffer from the new stream's first full frame.
     expect(lines.some((line) => line.includes(MARKER_B))).toBe(true)
     expect(lines.some((line) => line.includes(MARKER_A))).toBe(false)
-    // A new observe session, not a continuation: the swap re-handshakes, so the first screen
-    // command after the reset is another `init`.
+    // The buffer was rebuilt rather than written over: `PaneObserver.retarget` resets the sink, so
+    // the server's post-retarget full frame arrives as an `init` at the (possibly new) geometry.
     expect(bridge().commands.map((command) => command.type).find(isScreenCommand)).toBe('init')
+    // The receipt this milestone is measured on: the swap opened **no** new ssh channel, on a
+    // transport that would otherwise have spawned a bridge process per pane tap.
+    // M6's "됐다" is a pane switch under 200 ms. Asserted loosely (an ssh round trip plus a React
+    // commit on a loaded box is not a 200 ms guarantee) but PRINTED exactly, and the tight number
+    // lives one layer down where there is no React and no xterm:
+    // `packages/herdr-client-ts/test/live-ssh` measures retarget-to-frame at 8 ms over this same
+    // ssh transport, and `tests/observe_terminal_ansi.rs` at 21 ms over a unix socket.
+    expect(elapsed).toBeLessThan(5_000)
+    expect(transport.channelCountOfKind(HerdrChannelKind.ClientStream)).toBe(clientStreamsBefore)
+    expect(clientStreamsBefore).toBe(1)
+    expect(transport.connectionCount).toBe(1)
 
     const afterB = await settledPanePtySize(api, paneB, 'SZB2')
     process.stdout.write(`[pane-viewer] pane ${paneB} PTY ${beforeB} -> ${afterB}\n`)

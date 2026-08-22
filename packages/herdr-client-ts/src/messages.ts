@@ -7,6 +7,7 @@ import {
   RenderEncoding,
   SERVER_MESSAGE_VARIANT_NAMES,
   ServerMessageTag,
+  TerminalSessionModeTag,
 } from "./constants.js";
 import { ByteCursor } from "./cursor.js";
 import {
@@ -134,6 +135,119 @@ export function encodeObserveTerminal(target: string): Uint8Array {
 /** {@link encodeObserveTerminal} wrapped in the `[u32 LE length][payload]` envelope. */
 export function encodeObserveTerminalFrame(target: string): Uint8Array {
   return frameMessage(encodeObserveTerminal(target));
+}
+
+// ---------------------------------------------------------------------------
+// Client -> Server: Resize
+// ---------------------------------------------------------------------------
+
+/**
+ * Encodes `ClientMessage::Resize` (variant 3): `cols, rows, cell_width_px, cell_height_px`, all
+ * varints, same order as `Hello`'s middle four fields.
+ *
+ * ⚠️ **Mode-dependent, and the difference is a desktop pane.** Sent by a `TerminalObserve` client
+ * this only changes the grid the server *renders frames at* and asks for a repaint. Sent by a
+ * `TerminalAttach` (control) client the very next line resizes the observed pane's PTY
+ * (`src/server/headless.rs`, `ClientResize`). So this is safe to send while observing and must not
+ * be sent while promoted, unless reshaping the desktop's pane is the intent.
+ *
+ * Why an observer would send it at all: {@link encodeRetargetTerminal} moves the target but not the
+ * geometry, and geometry was chosen from the *first* pane's layout (`mobile/.prd/03-blockers.md`
+ * B4 — observe crops at the top-left rather than reflowing). A retarget to a wider pane without
+ * this would show its left-hand columns only.
+ */
+export function encodeResize(params: {
+  cols: number;
+  rows: number;
+  cellWidthPx?: number;
+  cellHeightPx?: number;
+}): Uint8Array {
+  return new ByteWriter(8)
+    .writeVarint(ClientMessageTag.Resize)
+    .writeVarint(requireUint(params.cols, U16_MAX, "cols"))
+    .writeVarint(requireUint(params.rows, U16_MAX, "rows"))
+    .writeVarint(requireUint(params.cellWidthPx ?? 0, U32_MAX, "cellWidthPx"))
+    .writeVarint(requireUint(params.cellHeightPx ?? 0, U32_MAX, "cellHeightPx"))
+    .toBytes();
+}
+
+/** {@link encodeResize} wrapped in the `[u32 LE length][payload]` envelope. */
+export function encodeResizeFrame(params: {
+  cols: number;
+  rows: number;
+  cellWidthPx?: number;
+  cellHeightPx?: number;
+}): Uint8Array {
+  return frameMessage(encodeResize(params));
+}
+
+// ---------------------------------------------------------------------------
+// Client -> Server: RetargetTerminal
+// ---------------------------------------------------------------------------
+
+/** What {@link encodeRetargetTerminal} asks the connection to become. */
+export type TerminalSessionMode =
+  | { kind: "observe" }
+  | { kind: "control"; takeover: boolean };
+
+/** Read-only. Neither resizes the target's PTY nor takes its lock. */
+export const OBSERVE_MODE: TerminalSessionMode = Object.freeze({ kind: "observe" });
+
+/**
+ * Encodes `ClientMessage::RetargetTerminal` (variant 14).
+ *
+ * ## What it replaces
+ *
+ * `ObserveTerminal` can only be sent by a connection that is still `pending_terminal_attach`
+ * (`src/server/headless.rs`, `client_is_pending_terminal_mode`), so before this message the only
+ * way to look at a second pane was a second connection. On the mobile bridge that is an ssh exec
+ * channel, a fresh `Hello`/`Welcome`, and a fresh full ANSI baseline — measured at ~56 KB
+ * uncompressed for a 100x30 client, per pane tap (`mobile/.prd/03-blockers.md` B13). This message
+ * reuses all three; measured retarget-to-first-frame on a local socket: **21 ms**
+ * (`tests/observe_terminal_ansi.rs`, `retarget_terminal_moves_the_session_and_restores_the_pane_grid`).
+ *
+ * ## Shape
+ *
+ * `target` is a bincode `String` (varint UTF-8 **byte** length + bytes), then the nested
+ * `TerminalSessionMode`: `Observe` is the bare tag `0x00`, `Control` is `0x01` followed by the
+ * `takeover` bool. Encoding a trailing `false` after `Observe` appends a byte the server reads as
+ * the start of the next message.
+ *
+ * ## ⚠️ Control resizes a desktop pane
+ *
+ * `{kind: "control"}` puts this connection in `TerminalAttach` mode, which resizes the shared PTY
+ * to the grid this client declared in `Hello` and locks it against the desktop's layout
+ * (`attach_terminal_client`). The contract is to hold it across one input and retarget straight
+ * back to {@link OBSERVE_MODE}, which restores the grid recorded at promotion
+ * (`release_terminal_control`). A client that promotes and forgets leaves a desktop pane reshaped
+ * to a phone.
+ *
+ * ## Failure
+ *
+ * A refused retarget (target gone, someone else holds the lock without `takeover`, no session yet)
+ * does **not** close the connection: the server keeps the current session and answers with a
+ * `Notify`, which this codec counts as undecodable traffic. So a caller cannot read success off
+ * the socket state — it reads it off the frames, which start describing the new target.
+ */
+export function encodeRetargetTerminal(target: string, mode: TerminalSessionMode): Uint8Array {
+  const writer = new ByteWriter(16)
+    .writeVarint(ClientMessageTag.RetargetTerminal)
+    .writeString(target);
+  if (mode.kind === "observe") {
+    return writer.writeVarint(TerminalSessionModeTag.Observe).toBytes();
+  }
+  return writer
+    .writeVarint(TerminalSessionModeTag.Control)
+    .writeBool(mode.takeover)
+    .toBytes();
+}
+
+/** {@link encodeRetargetTerminal} wrapped in the `[u32 LE length][payload]` envelope. */
+export function encodeRetargetTerminalFrame(
+  target: string,
+  mode: TerminalSessionMode = OBSERVE_MODE,
+): Uint8Array {
+  return frameMessage(encodeRetargetTerminal(target, mode));
 }
 
 // ---------------------------------------------------------------------------

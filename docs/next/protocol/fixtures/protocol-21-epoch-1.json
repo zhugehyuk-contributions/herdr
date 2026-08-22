@@ -4,15 +4,15 @@
     "accepted_peer_abis": [
       {
         "protocol_version": 21,
-        "schema_fingerprint": "827ef6800c3af3ee",
-        "wire_abi_epoch": 2
+        "schema_fingerprint": "3ce2d29b371f9dbe",
+        "wire_abi_epoch": 1
       }
     ],
     "fork": "herdr-mx",
     "note": "Tags are fork-local; see mobile/.prd/03-blockers.md B1. PROTOCOL_VERSION is NOT a layout identifier — herdr-mx and upstream both shipped 20 with different tags — so the layout identity is (fork, wire_abi_epoch, schema_fingerprint), announced in the `wire_abi_prelude` vector below and checked before any bincode is decoded. `accepted_peer_abis` is the compatibility window (M0-b): an explicit table, not a version range. Its history and the decision behind every row is docs/next/protocol/abi-history.json.",
     "prelude_len": 28,
-    "schema_fingerprint": "827ef6800c3af3ee",
-    "wire_abi_epoch": 2
+    "schema_fingerprint": "3ce2d29b371f9dbe",
+    "wire_abi_epoch": 1
   },
   "enums": {
     "ClientLaunchMode": [
@@ -20,8 +20,7 @@
       "TerminalAttach"
     ],
     "ClientMessage": {
-      "ObserveTerminal": 12,
-      "RetargetTerminal": 14
+      "ObserveTerminal": 12
     },
     "RenderEncoding": [
       "SemanticFrame",
@@ -30,11 +29,7 @@
     "ServerMessage": {
       "Terminal": 13,
       "Welcome": 0
-    },
-    "TerminalSessionMode": [
-      "Observe",
-      "Control"
-    ]
+    }
   },
   "framing": {
     "bincode": "bincode 2.x `config::standard()` — varint ints, LE, no fixed-width headers; enum discriminants are varints, `Option` is a 0x00/0x01 tag, `Vec<u8>`/`String` are varint length + raw bytes.",
@@ -184,49 +179,16 @@
         "schema_fingerprint"
       ],
       "fields": {
-        "abi_epoch": 2,
+        "abi_epoch": 1,
         "fork": "herdr-mx",
         "magic": "HRDR",
         "protocol_version": 21,
-        "schema_fingerprint": "827ef6800c3af3ee"
+        "schema_fingerprint": "3ce2d29b371f9dbe"
       },
-      "framed_hex": "4852445268657264722d6d780200000015000000827ef6800c3af3ee",
+      "framed_hex": "4852445268657264722d6d7801000000150000003ce2d29b371f9dbe",
       "message": "WirePrelude",
       "name": "wire_abi_prelude",
       "note": "NOT bincode and NOT length-prefixed: a fixed 28-byte block, magic(4) + fork(8) + abi_epoch(u32LE) + protocol_version(u32LE) + schema_fingerprint(8), written before the first framed message by BOTH peers. It sits ahead of every bincode decode on purpose — the first value the forks disagree on (ClientLaunchMode) is a FIELD OF Hello, and the side that decodes Hello is the server, so a fingerprint carried in Welcome would arrive after the mis-parse it was meant to prevent. The magic reads as u32LE 1380208712, above both frame caps, so it can never collide with a legacy peer's length prefix (src/protocol/abi.rs). A peer that sends no prelude is rejected, not guessed at."
-    },
-    {
-      "direction": "client_to_server",
-      "field_order": [
-        "target",
-        "mode"
-      ],
-      "fields": {
-        "mode": "Observe",
-        "mode_tag": 0,
-        "target": "한글:터미널"
-      },
-      "framed_hex": "130000000e10ed959ceab8803aed84b0ebafb8eb849000",
-      "message": "RetargetTerminal",
-      "name": "retarget_terminal_observe",
-      "note": "Appended at the ClientMessage TAIL (tag 14): every tag 0..13 kept its value, which is this fork's merge contract (client_message_wire_tags_preserve_protocol_15_order). `TerminalSessionMode::Observe` is a UNIT variant — one tag byte, nothing after it. Encoding it as tag+false appends a byte the server reads as the start of the next message. Unlike ObserveTerminal, this is legal only on a connection that ALREADY has a terminal session; on a fresh one the server refuses it with a Notify and keeps the connection (src/server/headless.rs, retarget_terminal_client)."
-    },
-    {
-      "direction": "client_to_server",
-      "field_order": [
-        "target",
-        "mode"
-      ],
-      "fields": {
-        "mode": "Control",
-        "mode_tag": 1,
-        "takeover": true,
-        "target": "한글:터미널"
-      },
-      "framed_hex": "140000000e10ed959ceab8803aed84b0ebafb8eb84900101",
-      "message": "RetargetTerminal",
-      "name": "retarget_terminal_control",
-      "note": "`Control { takeover }` is a tag byte followed by the bool, so this frame is exactly one byte longer than retarget_terminal_observe. ⚠️ Control RESIZES the shared PTY to this client's Hello grid and takes its lock (attach_terminal_client) — a phone that declares its own screen size here reshapes a desktop pane. The mobile contract is to hold it across one input and retarget straight back to Observe, which restores the grid recorded at promotion (release_terminal_control)."
     }
   ]
 }

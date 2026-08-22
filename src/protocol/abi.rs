@@ -42,7 +42,8 @@ use super::wire::{
     AttachScrollDirection, AttachScrollSource, CellData, ClientInputEvent, ClientKeyCode,
     ClientKeyKind, ClientKeySource, ClientKeybindings, ClientLaunchMode, ClientMessage,
     ClientMouseButton, ClientMouseKind, ClientSurfaceMode, CursorState, FrameData, FrameDelta,
-    FramingError, NotifyKind, RenderEncoding, ServerMessage, TerminalFrame, PROTOCOL_VERSION,
+    FramingError, NotifyKind, RenderEncoding, ServerMessage, TerminalFrame, TerminalSessionMode,
+    PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,13 @@ pub const WIRE_ABI_FORK: [u8; 8] = *b"herdr-mx";
 ///
 /// Epoch 1 is the first epoch. Epoch 0 is reserved for "no prelude" (herdr-mx ≤ protocol 20), which
 /// never appears on the wire and exists only as a name in `docs/next/protocol/abi-history.json`.
-pub const WIRE_ABI_EPOCH: u32 = 1;
+///
+/// Epoch 2 adds `ClientMessage::RetargetTerminal` at the enum tail (M6/B6). No existing tag moved
+/// and no payload changed, but the fingerprint sweeps the exemplar list and the list grew, so the
+/// layout generation moved and says so. `PROTOCOL_VERSION` deliberately did **not** move: the
+/// handshake's byte stream is identical, and mixing a layout change into the negotiation axis is
+/// the exact conflation this module exists to undo.
+pub const WIRE_ABI_EPOCH: u32 = 2;
 
 /// `magic(4) + fork(8) + abi_epoch(4) + protocol_version(4) + schema_fingerprint(8)`.
 pub const WIRE_ABI_PRELUDE_LEN: usize = 28;
@@ -345,7 +352,7 @@ pub fn legacy_peer_rejection() -> String {
 ///      `docs/next/protocol/abi-history.json` declaring whether the outgoing ABI stays accepted.
 ///
 /// Repinning without (1) and (3) is the laundering this whole module exists to prevent.
-pub const WIRE_SCHEMA_FINGERPRINT: [u8; 8] = [0x3c, 0xe2, 0xd2, 0x9b, 0x37, 0x1f, 0x9d, 0xbe];
+pub const WIRE_SCHEMA_FINGERPRINT: [u8; 8] = [0x82, 0x7e, 0xf6, 0x80, 0x0c, 0x3a, 0xf3, 0xee];
 
 /// A digest over the *encoded bytes* of one exemplar of every `ClientMessage` and `ServerMessage`
 /// variant, plus a sweep of the nested enums and payload structs they reach.
@@ -657,6 +664,20 @@ fn client_message_exemplars() -> Vec<ClientMessage> {
             target: EX_STR.to_owned(),
             takeover: true,
         },
+        // Both `TerminalSessionMode` variants: the nested enum is wire too, and `Control`'s payload
+        // is the only place a `bool` rides behind a nested tag on this message.
+        ClientMessage::RetargetTerminal {
+            target: EX_STR.to_owned(),
+            mode: TerminalSessionMode::Observe,
+        },
+        ClientMessage::RetargetTerminal {
+            target: EX_STR.to_owned(),
+            mode: TerminalSessionMode::Control { takeover: true },
+        },
+        ClientMessage::RetargetTerminal {
+            target: EX_STR.to_owned(),
+            mode: TerminalSessionMode::Control { takeover: false },
+        },
     ]);
 
     exemplars
@@ -837,6 +858,7 @@ mod tests {
                 ClientMessage::RequestFullFrame => "RequestFullFrame",
                 ClientMessage::ObserveTerminal { .. } => "ObserveTerminal",
                 ClientMessage::ControlTerminal { .. } => "ControlTerminal",
+                ClientMessage::RetargetTerminal { .. } => "RetargetTerminal",
             }
         }
         fn server_name(message: &ServerMessage) -> &'static str {
@@ -863,7 +885,7 @@ mod tests {
             client_message_exemplars().iter().map(client_name).collect();
         assert_eq!(
             client_covered.len(),
-            14,
+            15,
             "ClientMessage exemplars cover {client_covered:?}; every variant needs one"
         );
 

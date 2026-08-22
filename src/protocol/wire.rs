@@ -487,6 +487,45 @@ pub enum ClientMessage {
         /// Replace an existing writable controller for this terminal.
         takeover: bool,
     },
+
+    /// Move an **already-established** terminal session to another target and/or another mode,
+    /// without dropping the connection (mobile blocker B6).
+    ///
+    /// `ObserveTerminal`/`ControlTerminal` are one-shot: both refuse a connection that is not
+    /// still `pending_terminal_attach` (`src/server/headless.rs`,
+    /// `client_is_pending_terminal_mode`), so today the only way to look at a second pane is a new
+    /// socket — on the mobile bridge, a new ssh exec channel plus a handshake plus a full ~56 KB
+    /// ANSI baseline per swipe. This message reuses all three.
+    ///
+    /// Appended at the **tail**: this fork's merge convention is that upstream-inserted variants go
+    /// to the tail so existing wire tags never move (`ObserveTerminal`'s note above, and
+    /// `client_message_wire_tags_preserve_protocol_15_order`).
+    RetargetTerminal {
+        /// Pane, terminal, or agent target to move to. May be the current target — a retarget that
+        /// only changes `mode` is how the control contract promotes and releases.
+        target: String,
+        /// The mode the connection should be in after the move.
+        mode: TerminalSessionMode,
+    },
+}
+
+/// What a [`ClientMessage::RetargetTerminal`] asks the connection to become.
+///
+/// A nested enum rather than `control: bool, takeover: bool` because `takeover` is meaningless
+/// while observing, and a wire shape that can encode a meaningless state is a shape a hand-written
+/// client will eventually encode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TerminalSessionMode {
+    /// Read-only. The server neither resizes the target's PTY nor takes its attach lock
+    /// (`observe_terminal_client`), which is what makes a phone safe to point at a desktop pane.
+    Observe,
+    /// Writable. This **does** resize the shared PTY to the client's grid and lock it
+    /// (`attach_terminal_client`), so the mobile contract is to hold it only across an input and
+    /// return to [`TerminalSessionMode::Observe`] immediately (mobile/.prd/02-architecture.md §2.3).
+    Control {
+        /// Replace an existing writable controller for this terminal.
+        takeover: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1475,6 +1514,51 @@ mod tests {
             }),
             13
         );
+        // M6/B6, appended at the tail so every tag above kept its value.
+        assert_eq!(
+            tag(&ClientMessage::RetargetTerminal {
+                target: "w1:p1".to_owned(),
+                mode: TerminalSessionMode::Observe,
+            }),
+            14
+        );
+    }
+
+    /// `TerminalSessionMode` is nested inside `RetargetTerminal`, so its ordinals are wire too and
+    /// a hand-written encoder (`packages/herdr-client-ts/src/messages.ts`) has to agree with them.
+    #[test]
+    fn terminal_session_mode_wire_tags_are_frozen() {
+        fn tag(mode: &TerminalSessionMode) -> u8 {
+            *bincode::serde::encode_to_vec(mode, bincode::config::standard())
+                .unwrap()
+                .first()
+                .expect("encoded mode should include enum tag")
+        }
+        assert_eq!(tag(&TerminalSessionMode::Observe), 0);
+        assert_eq!(tag(&TerminalSessionMode::Control { takeover: false }), 1);
+
+        // `Observe` is a unit variant: one byte after the message tag, and NOT a tag plus a
+        // trailing `false`. Encoding the two-field shape would leave a byte the server reads as
+        // the start of the next message.
+        let observe = bincode::serde::encode_to_vec(
+            ClientMessage::RetargetTerminal {
+                target: "p1".to_owned(),
+                mode: TerminalSessionMode::Observe,
+            },
+            bincode::config::standard(),
+        )
+        .unwrap();
+        assert_eq!(observe, vec![14, 2, b'p', b'1', 0]);
+
+        let control = bincode::serde::encode_to_vec(
+            ClientMessage::RetargetTerminal {
+                target: "p1".to_owned(),
+                mode: TerminalSessionMode::Control { takeover: true },
+            },
+            bincode::config::standard(),
+        )
+        .unwrap();
+        assert_eq!(control, vec![14, 2, b'p', b'1', 1, 1]);
     }
 
     /// The mirror of `client_message_wire_tags_preserve_protocol_15_order`, for the enum the

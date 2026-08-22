@@ -129,6 +129,7 @@ export class SshHerdrTransport implements HerdrTransport {
   private readonly options: SshHerdrTransportOptions;
   private connections = 0;
   private channelsOpened = 0;
+  private readonly channelsOpenedByKind = new Map<HerdrChannelKind, number>();
   private ended = false;
   private suppressed = 0;
   private lastSuppressed: Error | undefined;
@@ -146,6 +147,19 @@ export class SshHerdrTransport implements HerdrTransport {
   /** Exec channels opened over the lifetime of this transport. */
   get channelCount(): number {
     return this.channelsOpened;
+  }
+
+  /**
+   * Exec channels opened for one kind.
+   *
+   * Needed because {@link channelCount} is dominated by `api-request` traffic — the JSON API
+   * answers one line per connection (`src/api/server.rs`), so a screen that polls a snapshot opens
+   * channels continuously. A claim about the *resident* client stream ("switching panes opened no
+   * new bridge", `mobile/.prd/04-milestones.md` M6) has to be made against
+   * {@link HerdrChannelKind.ClientStream} alone or it is drowned by the poller.
+   */
+  channelCountOfKind(kind: HerdrChannelKind): number {
+    return this.channelsOpenedByKind.get(kind) ?? 0;
   }
 
   /**
@@ -244,6 +258,7 @@ export class SshHerdrTransport implements HerdrTransport {
           return;
         }
         this.channelsOpened += 1;
+        this.channelsOpenedByKind.set(kind, (this.channelsOpenedByKind.get(kind) ?? 0) + 1);
         resolveChannel(new SshChannel(kind, stream, handlers));
       });
     });

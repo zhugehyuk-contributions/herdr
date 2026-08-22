@@ -19,8 +19,9 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use support::{
     cleanup_test_base, client_handshake_with, decode_varint_u32, inflate_compressed_frame,
     read_server_message, register_runtime_dir, register_spawned_herdr_pid, send_observe_terminal,
-    unregister_spawned_herdr_pid, wait_for_socket, CLIENT_LAUNCH_MODE_TERMINAL_ATTACH,
-    CURRENT_PROTOCOL, RENDER_ENCODING_TERMINAL_ANSI, SERVER_MESSAGE_TERMINAL,
+    send_retarget_terminal, unregister_spawned_herdr_pid, wait_for_socket,
+    CLIENT_LAUNCH_MODE_TERMINAL_ATTACH, CURRENT_PROTOCOL, RENDER_ENCODING_TERMINAL_ANSI,
+    SERVER_MESSAGE_TERMINAL,
 };
 
 const CLIENT_COLS: u16 = 100;
@@ -463,4 +464,212 @@ fn observe_terminal_streams_ansi_bytes_without_resizing_pane() {
     drop(stream);
     drop(spawned);
     cleanup_test_base(&base);
+}
+
+/// M6/B6, at the socket: one connection, two panes, and a control promotion that gives the pane's
+/// grid back.
+///
+/// The three things this asserts that a unit test cannot:
+///  1. the retarget happens on the **already open** `UnixStream` — no second connect, no second
+///     handshake. On the mobile bridge that stream is an ssh exec channel, so "no new stream" is
+///     the whole saving.
+///  2. the elapsed time from sending `RetargetTerminal` to the first frame carrying the other
+///     pane's marker, printed, against M6's 200 ms budget.
+///  3. the controlled pane's PTY grid, read from *inside* the pane with `stty size`, before
+///     promotion and after release. That is the "does not break the desktop" claim as a number.
+#[test]
+fn retarget_terminal_moves_the_session_and_restores_the_pane_grid() {
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+
+    let spawned = spawn_server(&config_home, &runtime_dir, &api_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(15));
+    wait_for_socket(&client_socket, Duration::from_secs(15));
+
+    let created = send_request(
+        &api_socket,
+        &format!(
+            r#"{{"id":"ws","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            base.display()
+        ),
+    );
+    assert_eq!(
+        created["result"]["type"], "workspace_created",
+        "workspace.create failed: {created}"
+    );
+    let pane_a = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .expect("root pane id")
+        .to_string();
+
+    let split = send_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "split",
+            "method": "pane.split",
+            "params": {"pane_id": pane_a, "direction": "right"}
+        })
+        .to_string(),
+    );
+    let pane_b = split["result"]["pane"]["pane_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("pane.split failed: {split}"))
+        .to_string();
+
+    let marker_a = "RETARGETA";
+    let marker_b = "RETARGETB";
+    for (pane, marker) in [(&pane_a, marker_a), (&pane_b, marker_b)] {
+        let echoed = send_request(
+            &api_socket,
+            &serde_json::json!({
+                "id": "marker",
+                "method": "pane.send_input",
+                "params": {"pane_id": pane, "text": format!("echo {marker}"), "keys": ["Enter"]}
+            })
+            .to_string(),
+        );
+        assert_eq!(echoed["result"]["type"], "ok", "send_input failed: {echoed}");
+    }
+
+    let size_b_before = settled_pane_pty_size(&api_socket, &pane_b, "BBEFORE");
+    println!("[retarget] pane_b PTY before = {size_b_before}");
+
+    let mut stream = UnixStream::connect(&client_socket).expect("connect to client socket");
+    let (version, error) = client_handshake_with(
+        &mut stream,
+        CURRENT_PROTOCOL,
+        CLIENT_COLS,
+        CLIENT_ROWS,
+        RENDER_ENCODING_TERMINAL_ANSI,
+        CLIENT_LAUNCH_MODE_TERMINAL_ATTACH,
+    )
+    .expect("handshake should succeed");
+    assert_eq!(version, CURRENT_PROTOCOL);
+    assert_eq!(error, None, "server rejected the terminal-ansi handshake");
+
+    send_observe_terminal(&mut stream, &pane_a).expect("send ObserveTerminal");
+    let first = read_frame_containing(&mut stream, marker_a, Duration::from_secs(30));
+    println!(
+        "[retarget] pane_a frame seq={} {}x{} full={} bytes={}",
+        first.seq,
+        first.width,
+        first.height,
+        first.full,
+        first.bytes.len()
+    );
+
+    // ---- 1. retarget A -> B on the SAME stream -------------------------------------------
+    let started = Instant::now();
+    send_retarget_terminal(&mut stream, &pane_b, None).expect("send RetargetTerminal");
+    let after = read_frame_containing(&mut stream, marker_b, Duration::from_secs(30));
+    let elapsed = started.elapsed();
+    println!(
+        "[retarget] pane_b frame seq={} {}x{} full={} bytes={} elapsed={:?}",
+        after.seq,
+        after.width,
+        after.height,
+        after.full,
+        after.bytes.len(),
+        elapsed
+    );
+    println!(
+        "[retarget] pane_b first 200 bytes: {}",
+        visualize(&after.bytes, 200)
+    );
+    let rendered = strip_ansi_text(&after.bytes);
+    assert!(
+        rendered.contains(marker_b),
+        "the retargeted stream did not carry pane B's text: {}",
+        visualize(&after.bytes, 400)
+    );
+    assert!(
+        after.full,
+        "the first frame after a retarget must be a full repaint, not a diff against pane A"
+    );
+    assert_eq!((after.width, after.height), (CLIENT_COLS, CLIENT_ROWS));
+    // Generous next to M6's 200 ms target, on purpose: the number that matters is the printed
+    // `elapsed`, and a tight bound here would flake on a loaded CI box while proving nothing extra.
+    // What this rules out is the failure mode — a retarget that silently reconnects or waits for a
+    // poll tick would be seconds, not milliseconds.
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "retarget took {elapsed:?}; that is reconnect latency, not retarget latency"
+    );
+
+    // ---- 2. promote to control, then drop straight back ----------------------------------
+    send_retarget_terminal(&mut stream, &pane_b, Some(false)).expect("send control retarget");
+    let controlled = wait_for_pane_pty_size(&api_socket, &pane_b, "CONTROL", |size| {
+        size == format!("{CLIENT_ROWS}x{CLIENT_COLS}")
+    });
+    println!("[retarget] pane_b PTY while controlled = {controlled}");
+    assert_eq!(
+        controlled,
+        format!("{CLIENT_ROWS}x{CLIENT_COLS}"),
+        "control must resize the shared PTY to the controller's grid, or the restore below \
+         proves nothing"
+    );
+
+    send_retarget_terminal(&mut stream, &pane_b, None).expect("send release retarget");
+    let restored = wait_for_pane_pty_size(&api_socket, &pane_b, "RELEASED", |size| {
+        size == size_b_before
+    });
+    println!("[retarget] pane_b PTY after release = {restored} (was {size_b_before})");
+    assert_eq!(
+        restored, size_b_before,
+        "releasing control must put the desktop's grid back ({size_b_before} -> {restored})"
+    );
+
+    // Still one live session on the original stream.
+    let still_streaming = read_terminal_frame(&mut stream, Duration::from_secs(20));
+    println!(
+        "[retarget] post-release frame seq={} {}x{} bytes={}",
+        still_streaming.seq, still_streaming.width, still_streaming.height,
+        still_streaming.bytes.len()
+    );
+
+    drop(stream);
+    drop(spawned);
+    cleanup_test_base(&base);
+}
+
+/// The first `Terminal` frame whose projected text carries `needle`.
+fn read_frame_containing(
+    stream: &mut UnixStream,
+    needle: &str,
+    timeout: Duration,
+) -> TerminalFrameWire {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or_else(|| panic!("no Terminal frame carrying {needle} within {timeout:?}"));
+        let frame = read_terminal_frame(stream, remaining);
+        if strip_ansi_text(&frame.bytes).contains(needle) {
+            return frame;
+        }
+    }
+}
+
+/// `stty size` from inside the pane, polled until it satisfies `accept` (or the last reading).
+///
+/// A resize is asynchronous — the server writes the new grid to the PTY and the shell answers when
+/// it answers — so a single reading right after the request is a race, not a measurement.
+fn wait_for_pane_pty_size(
+    socket_path: &Path,
+    pane_id: &str,
+    label: &str,
+    accept: impl Fn(&str) -> bool,
+) -> String {
+    let mut last = String::new();
+    for round in 0..12 {
+        last = pane_pty_size(socket_path, pane_id, &format!("{label}{round}"));
+        if accept(&last) {
+            return last;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    last
 }

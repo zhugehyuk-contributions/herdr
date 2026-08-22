@@ -34,6 +34,7 @@ export {
   RenderEncoding,
   SERVER_MESSAGE_VARIANT_NAMES,
   ServerMessageTag,
+  TerminalSessionModeTag,
   serverFrameSizeCap,
 } from "./constants.js";
 
@@ -100,10 +101,16 @@ export {
   encodeObserveTerminalFrame,
   encodeRequestFullFrame,
   encodeRequestFullFrameFrame,
+  encodeResize,
+  encodeResizeFrame,
+  encodeRetargetTerminal,
+  encodeRetargetTerminalFrame,
+  OBSERVE_MODE,
   type HandshakeExpectation,
   type HelloParams,
   type ServerMessage,
   type TerminalMessage,
+  type TerminalSessionMode,
   type WelcomeMessage,
 } from "./messages.js";
 export { ServerMessageReader, type ServerMessageReaderOptions } from "./stream.js";

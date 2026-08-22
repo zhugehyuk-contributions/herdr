@@ -71,6 +71,18 @@ pub(crate) struct ClientConnection {
     pub(crate) host_keyboard_report_all_active: Option<bool>,
     /// Temporary files staged from this client's local clipboard image pastes.
     pub(crate) staged_clipboard_files: Vec<PathBuf>,
+    /// The target's own PTY grid, `(rows, cols)` per `TerminalRuntime::current_size`, as it stood
+    /// the instant **this** client took writable control of it — and `None` whenever this client
+    /// holds no control.
+    ///
+    /// Taking control resizes the shared PTY to the controller's grid and locks it
+    /// (`attach_terminal_client`). Releasing control without disconnecting (M6's contract: promote
+    /// for one input, drop straight back to observe) therefore has to put the grid back, and the
+    /// layout pass cannot be relied on to do it: `resize_shared_runtime_to_effective_size` returns
+    /// immediately when there is no foreground app client, and the no-client virtual render only
+    /// resizes panes while `view.pane_infos` is still empty (`render_and_stream`). A headless box
+    /// whose only client is a phone would otherwise keep the phone's grid forever.
+    pub(crate) control_restore_grid: Option<(u16, u16)>,
     /// Channels for sending framed ServerMessage data to the client writer thread.
     pub(crate) writer: Option<ClientWriter>,
 }
@@ -135,6 +147,7 @@ impl ClientConnection {
             host_mouse_capture_active: None,
             host_keyboard_report_all_active: None,
             staged_clipboard_files: Vec::new(),
+            control_restore_grid: None,
             writer,
         }
     }

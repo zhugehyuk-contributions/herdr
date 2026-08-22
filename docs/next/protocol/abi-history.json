@@ -21,12 +21,23 @@
       "protocol_version": 21,
       "wire_abi_epoch": 1,
       "schema_fingerprint": "3ce2d29b371f9dbe",
+      "fixtures": "fixtures/protocol-21-epoch-1.json",
+      "fixtures_sha256": "778d63c09cf83bd74ab5b3cf80a90b1b0bfad84d68034b24a8c517fa48576092",
+      "accepted_by_current_server": false,
+      "decided_on": "2026-08-22",
+      "decision": "REJECTED, and the reason is asymmetry rather than ambiguity - unlike epoch 0, an epoch-1 peer identifies itself perfectly. Epoch 2 only APPENDS ClientMessage::RetargetTerminal at tag 14, so an epoch-1 client talking to this server is genuinely safe: it never emits tag 14 and every ServerMessage is byte-identical. The reverse is not. An epoch-2 client (the mobile app is the whole reason this axis exists) sends RetargetTerminal on its first pane swipe, and an epoch-1 server has no tag 14 - it fails the bincode decode and drops the connection. Since check_peer_abi is the same table on both ends, accepting epoch 1 here would accept it in BOTH directions and buy a working old-client/new-server pair at the price of a new-client/old-server pair that dies on the first swipe instead of refusing to connect. There is no capability negotiation in Welcome to split the two, so the honest window is the empty one. Second, smaller reason: epoch 1 was introduced earlier the same day on this same unmerged branch and never shipped, so accepting it would be declaring support for a peer that does not exist anywhere.",
+      "user_impact": "No user is affected: no epoch-1 build was ever released. If one is built from an intermediate commit of feat/mobile-client, it is refused on the prelude with the axis named ('incompatible wire ABI epoch: peer ... vs this build ...', src/protocol/abi.rs check_peer_abi), which is a diagnosable refusal rather than a mis-parse, and the existing pre-connection check (validate_running_server_compatibility, src/server/autodetect.rs) still prints the session restart guidance before a socket is opened."
+    },
+    {
+      "protocol_version": 21,
+      "wire_abi_epoch": 2,
+      "schema_fingerprint": "827ef6800c3af3ee",
       "fixtures": "fixtures.json",
       "fixtures_sha256": null,
       "accepted_by_current_server": true,
       "decided_on": "2026-08-22",
-      "decision": "ACCEPTED - this is the ABI this build speaks. Epoch 1 introduces the fixed 28-byte wire-ABI prelude ahead of the bincode Hello (src/protocol/abi.rs), so both peers identify each other's byte layout before either decodes anything. PROTOCOL_VERSION moves 20 -> 21 because the handshake's byte stream changed and 20 must not name two different handshakes.",
-      "user_impact": "No behaviour change between a client and server from this build. The desktop TUI, `herdr attach`, the observe/terminal-ANSI stream and the JSON API are byte-identical after the prelude; only the first 28 bytes of the client socket are new."
+      "decision": "ACCEPTED - this is the ABI this build speaks. Epoch 2 appends ClientMessage::RetargetTerminal {target, mode: TerminalSessionMode} at the enum TAIL (tag 14) so a mobile client can move an established observe session to another pane, and between observe and control, without a new ssh exec channel, a new handshake or a fresh ~56 KB uncompressed ANSI baseline (mobile/.prd/03-blockers.md B6, milestone M6). No existing wire tag moved and no existing payload changed - client_message_wire_tags_preserve_protocol_15_order still pins 0..13 and server_message_wire_tags_preserve_protocol_20_order is untouched - but wire_schema_fingerprint hashes an exemplar of every variant, so growing the enum moves the digest, and that is correct: the set of messages a peer may legally send IS its layout. PROTOCOL_VERSION deliberately stays at 21. The handshake's byte stream (28-byte prelude, then Hello, then Welcome) is unchanged, and M0-a's whole design is that the version names the negotiation while the epoch names the byte layout; bumping both for one layout change would put the two axes back into the single integer that B1 measured as dead.",
+      "user_impact": "No behaviour change between a client and a server from this build: the desktop TUI, herdr attach, the observe/terminal-ANSI stream and the JSON API all put the same bytes on the wire as epoch 1. What changes is what a client MAY send. A client built at epoch 1 cannot connect to this server and vice versa; that refusal is the epoch-1 row above and lands on the same already-built recovery path as any PROTOCOL_VERSION bump."
     }
   ]
 }

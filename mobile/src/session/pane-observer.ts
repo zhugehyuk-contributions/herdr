@@ -11,6 +11,29 @@
 // Deliberately framework-free: no React, no `react-native`, so the whole sequence is testable
 // against a fake transport and against a real server without mounting anything.
 //
+// ## Why there is still no scrollback here (blocker B5, judged at M6 and deferred)
+//
+// M6's plan was "widen `handle_terminal_attach_scroll` to `TerminalObserve`". Two code-level
+// findings say that is the wrong change, and the second one also kills the fallback the plan
+// named:
+//
+//  1. `AttachScroll` reaches `apply_terminal_attach_scroll` -> `TerminalRuntime::scroll_up/down`
+//     (`src/terminal/runtime.rs`) -> `GhosttyPaneTerminal` -> the ghostty terminal's own viewport
+//     offset. That offset lives on the **shared runtime**, and every client's frame is
+//     `render_terminal_virtual(runtime, area)` off that same object
+//     (`src/server/headless.rs`, the TerminalAttach/TerminalObserve arm of `render_and_stream`).
+//     A phone scrolling would move the desktop's view. Fixing that means a per-client viewport
+//     offset, which is the same server change B4 asks for — not a match widening.
+//  2. The plan's v1 fallback ("let xterm's own 5000-line scrollback do it") does not work on this
+//     render path either. `BlitEncoder` paints the visible grid with absolute cursor addressing
+//     (`ESC[row;colH` per run, `src/protocol/render_ansi.rs`); it never emits a line feed or a
+//     scroll region, so nothing is ever pushed into xterm's scrollback. The buffer is configured
+//     (`mobile/src/terminal/terminal-webview-html.ts`, `scrollback: 5000`) and stays empty.
+//
+// So scrollback is *one* piece of work — a per-client viewport in the server — and M6 ships the
+// retarget without it. What M6 does deliver on the reading axis is that a retarget re-declares the
+// geometry for the pane it moved to, so the viewer is never cropped to the previous pane's width.
+//
 // Read-only by construction — M2 sends no `pane.send_input` and never asks for
 // `ControlTerminal`. `TerminalObserve` is the mode in which the server *silently drops* input
 // (`src/server/headless.rs:2882-2886`) and, more importantly, the mode in which it neither resizes
@@ -19,11 +42,14 @@
 // message this file sends*, not of the UI above it.
 import {
   ClientLaunchMode,
+  OBSERVE_MODE,
   RenderEncoding,
   assertWelcomeAccepted,
   encodeHelloFrame,
   encodeObserveTerminalFrame,
   encodeRequestFullFrameFrame,
+  encodeResizeFrame,
+  encodeRetargetTerminalFrame,
   type HerdrChannelClose,
   type ServerMessage,
   type ServerMessageChannel,
@@ -34,7 +60,8 @@ import { createTerminalFrameSink, type TerminalFrameSinkTarget } from '../termin
 import {
   paneLayoutFromResult,
   resolveObserverGeometry,
-  type ObserverGeometry
+  type ObserverGeometry,
+  type PaneLayoutSnapshot
 } from './observer-geometry'
 import type { HerdrRemoteConnection } from '../transport/herdr-connection'
 
@@ -71,9 +98,15 @@ export type PaneObserverOptions = {
 export const DEFAULT_FIRST_TERMINAL_TIMEOUT_MS = 20_000
 
 /**
- * One pane, observed. Construct, `start()`, `close()` — and construct a new one to retarget, which
- * is what a chip tap does: the observe target is fixed at `ObserveTerminal` time and herdr has no
- * message to move it (B6, milestone M6).
+ * One pane, observed. Construct, `start()`, then `retarget(otherPaneId)` for every chip tap and
+ * `close()` at the end.
+ *
+ * `retarget` is milestone M6 and it is the whole reason `ClientMessage::RetargetTerminal` exists
+ * (blocker B6). Before it, the observe target was fixed at `ObserveTerminal` time, so switching
+ * panes meant closing this channel and opening another: on the ssh bridge a new exec channel, a new
+ * `Hello`/`Welcome`, and a fresh ~56 KB uncompressed ANSI baseline (B13) per tap. Measured
+ * retarget-to-first-frame against a real server on a unix socket: **21 ms**
+ * (`tests/observe_terminal_ansi.rs`).
  */
 export class PaneObserver {
   private readonly options: PaneObserverOptions
@@ -83,9 +116,17 @@ export class PaneObserver {
   private disposed = false
   private observing = false
   private frames = 0
+  /** The pane currently being observed. Moves with `retarget`; `options.paneId` is only the seed. */
+  private target: string
+  /** The grid this connection last declared, so a retarget only resizes when it has to. */
+  private geometry: ObserverGeometry | null = null
+  /** The last `pane.layout` snapshot. Covers every pane of that workspace, not just the one asked for. */
+  private layout: PaneLayoutSnapshot | null = null
+  private retargets = 0
 
   constructor(options: PaneObserverOptions) {
     this.options = options
+    this.target = options.paneId
     this.sink = createTerminalFrameSink(options.target, {
       // The sink refuses a diff it has no baseline for; the cure is the server's, and this class
       // holds the write end. `ServerMessageChannel` sends the same message for *decode* losses —
@@ -106,7 +147,12 @@ export class PaneObserver {
 
   /** The observed target, for a caller that wants to assert it changed. */
   get paneId(): string {
-    return this.options.paneId
+    return this.target
+  }
+
+  /** How many times this observer moved target without reconnecting. */
+  get retargetCount(): number {
+    return this.retargets
   }
 
   async start(): Promise<void> {
@@ -115,10 +161,11 @@ export class PaneObserver {
     }
     this.setStatus('connecting')
     try {
-      const geometry = await this.resolveGeometry()
+      const geometry = await this.resolveGeometry(this.target)
       if (this.disposed) {
         return
       }
+      this.geometry = geometry
       this.options.events?.onGeometry?.(geometry)
       const channel = await this.options.connection.openTerminalStream(
         {
@@ -157,6 +204,63 @@ export class PaneObserver {
     }
   }
 
+  /**
+   * Points this **open** stream at another pane — M6's swipe, and the reason `RetargetTerminal`
+   * was added to the wire (B6).
+   *
+   * Three messages, in this order, and the order is the design:
+   *
+   *  1. `pane.layout` for the new pane, because geometry does not travel with the target. An
+   *     observing client's frame is rendered into the rect it declared in `Hello`, and a pane wider
+   *     than that rect is **cropped at the top-left**, not reflowed (B4). Moving to a wider pane
+   *     without re-declaring would silently drop its right-hand columns.
+   *  2. `Resize`, but only when the grid actually changed. Safe here and *only* here: the
+   *     `TerminalObserve` arm of the server's resize handler updates the render rect and repaints,
+   *     while the `TerminalAttach` arm one branch above resizes the pane's PTY. This class never
+   *     holds control, so it always takes the first arm.
+   *  3. `RetargetTerminal{target, Observe}`.
+   *
+   * The sink is reset before any of it: the server resets this client's render baseline on a
+   * retarget (`retarget_terminal_client` -> `render_state.reset_baseline`), so the next frame is a
+   * full repaint, and a reset sink turns that frame into a fresh `init` at the new geometry instead
+   * of writing another pane's cells over this one's buffer. If the server ever failed to reset, the
+   * sink refuses the diff and asks for a full frame rather than painting a hybrid screen.
+   *
+   * A refused retarget (stale pane id, a controller holding the lock) does **not** close the
+   * connection — the server keeps the current session and answers with a `Notify` this codec does
+   * not decode. So a caller that must know whether the move landed reads the frames, not the
+   * socket.
+   */
+  async retarget(paneId: string): Promise<void> {
+    if (this.disposed || this.channel === null || !this.observing) {
+      // Not open yet: the caller is switching panes before the first stream came up. Move the seed
+      // so `onWelcome` observes the pane the user actually wants.
+      this.target = paneId
+      return
+    }
+    if (paneId === this.target) {
+      return
+    }
+    const channel = this.channel
+    const geometry = await this.resolveGeometry(paneId)
+    if (this.disposed || this.channel !== channel) {
+      return
+    }
+    this.target = paneId
+    this.retargets += 1
+    this.sink.reset()
+    try {
+      if (geometry.cols !== this.geometry?.cols || geometry.rows !== this.geometry?.rows) {
+        this.geometry = geometry
+        this.options.events?.onGeometry?.(geometry)
+        await channel.send(encodeResizeFrame({ cols: geometry.cols, rows: geometry.rows }))
+      }
+      await channel.send(encodeRetargetTerminalFrame(paneId, OBSERVE_MODE))
+    } catch (error: unknown) {
+      this.fail(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+
   /** Ends the stream. Idempotent; safe before `start()` has resolved. */
   close(): void {
     this.disposed = true
@@ -164,11 +268,26 @@ export class PaneObserver {
     this.channel = null
   }
 
-  private async resolveGeometry(): Promise<ObserverGeometry> {
+  private async resolveGeometry(paneId: string): Promise<ObserverGeometry> {
+    // `pane.layout` answers with the whole workspace snapshot — `area` plus a `rect` for EVERY pane
+    // in it — and `resolveObserverGeometry` takes the max of `area` and the pane's own rect. So a
+    // retarget inside a snapshot we already hold needs no round trip and, in the common case,
+    // computes the identical grid. That matters more than it sounds: the JSON API answers one
+    // request per connection (`src/api/server.rs`), so on the ssh bridge each call is an exec
+    // channel and a remote `herdr` process (blocker B8), and it was the dominant term in the
+    // measured swipe latency.
+    const cached = this.layout
+    if (cached?.panes.some((pane) => pane.pane_id === paneId)) {
+      return resolveObserverGeometry({
+        paneId,
+        layout: cached,
+        viewportRows: this.options.viewportRows ?? null
+      })
+    }
     let layout = null
     try {
       layout = paneLayoutFromResult(
-        await this.options.connection.api.request('pane.layout', { pane_id: this.options.paneId })
+        await this.options.connection.api.request('pane.layout', { pane_id: paneId })
       )
     } catch {
       // A box that cannot answer `pane.layout` still has a pane worth reading; the fallback is the
@@ -176,8 +295,9 @@ export class PaneObserver {
       // what that server renders at.
       layout = null
     }
+    this.layout = layout
     return resolveObserverGeometry({
-      paneId: this.options.paneId,
+      paneId,
       layout,
       viewportRows: this.options.viewportRows ?? null
     })
@@ -216,7 +336,7 @@ export class PaneObserver {
     }
     this.observing = true
     this.setStatus('observing')
-    const written = this.channel.send(encodeObserveTerminalFrame(this.options.paneId))
+    const written = this.channel.send(encodeObserveTerminalFrame(this.target))
     if (written !== undefined) {
       void written.catch((error: unknown) =>
         this.fail(error instanceof Error ? error : new Error(String(error)))

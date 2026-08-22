@@ -2,6 +2,10 @@
 // (Hello -> Welcome -> ObserveTerminal -> frames) is testable without mounting anything, which is
 // the P1 boundary the port map insists on (§3 P1: if the phone-less reproduction fails, do not
 // touch the UI).
+//
+// M6 changed the lifetime rule here, and that is the whole diff: the observer now lives as long as
+// the *connection*, not as long as the pane. A chip tap calls `PaneObserver.retarget`, which moves
+// the target on the open ssh channel; only a lost transport or an unmounted screen tears it down.
 import { useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { PaneObserver, type PaneObserverStatus } from './pane-observer'
 import type { ObserverGeometry } from './observer-geometry'
@@ -38,9 +42,38 @@ export function usePaneObserver({
   // nothing. It is read once, when the observer starts.
   const viewportRowsRef = useRef(viewportRows)
   viewportRowsRef.current = viewportRows
+  // Same reason, one step further: the observer is created once per *connection*, so the pane it
+  // starts on has to be read at construction time rather than captured by the effect's closure.
+  const paneIdRef = useRef(paneId)
+  paneIdRef.current = paneId
+  // Whether there is a pane at all, as opposed to *which* pane. This is the create effect's
+  // dependency: the observer must be built when the first pane id arrives (the snapshot loads
+  // asynchronously, so the first commit routinely has none) and torn down when the last one goes,
+  // but a change from one pane to another must NOT rebuild it — that is the retarget.
+  const hasPane = paneId !== null && paneId !== undefined
+
+  // The live observer, so a pane change can *move* it instead of replacing it (M6/B6). Keyed by
+  // connection: a new transport is a new socket and there is nothing to retarget on it.
+  const observerRef = useRef<PaneObserver | null>(null)
+
+  // Retarget, not remount. This effect deliberately does NOT list `connection`/`handleRef`: it runs
+  // on a pane change only, and the effect below owns the observer's lifetime. Ordering inside one
+  // commit is by declaration, so on the commit that also creates the observer this runs first and
+  // finds `null` — which is correct, because that observer is about to be constructed with the new
+  // `paneId` anyway.
+  useEffect(() => {
+    const observer = observerRef.current
+    if (!observer || !paneId || observer.paneId === paneId) {
+      return
+    }
+    void observer.retarget(paneId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paneId])
 
   useEffect(() => {
-    if (!connection || !paneId) {
+    const startingPaneId = paneIdRef.current
+    if (!connection || !hasPane || !startingPaneId) {
+      observerRef.current = null
       setView(IDLE)
       return
     }
@@ -48,7 +81,7 @@ export function usePaneObserver({
     setView(IDLE)
     const observer = new PaneObserver({
       connection,
-      paneId,
+      paneId: startingPaneId,
       viewportRows: viewportRowsRef.current,
       target: {
         // Read through the ref every call: the WebView's own handle is attached during commit and
@@ -76,15 +109,17 @@ export function usePaneObserver({
         }
       }
     })
+    observerRef.current = observer
     void observer.start()
     return () => {
       live = false
-      // The observe target is fixed at `ObserveTerminal` time and herdr has no message to move it
-      // (blocker B6, milestone M6), so switching panes *is* closing this channel and opening
-      // another one.
+      observerRef.current = null
+      // Only a lost transport or an unmounted screen gets here now. A pane change is handled by
+      // the retarget effect above, on the same ssh channel — closing here would be the reconnect
+      // milestone M6 exists to remove.
       observer.close()
     }
-  }, [connection, handleRef, paneId])
+  }, [connection, handleRef, hasPane])
 
   return view
 }

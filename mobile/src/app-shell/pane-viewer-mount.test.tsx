@@ -8,7 +8,8 @@
 //   1. the viewer mounts on mock data with no transport at all, and says so instead of pretending;
 //   2. with a connection, the handshake reaches the ported `TerminalWebView` as `init` + `write`
 //      commands — i.e. the wire really is joined to the renderer;
-//   3. a chip tap re-targets: a *second* `ObserveTerminal`, naming the other pane.
+//   3. a chip tap re-targets: `RetargetTerminal` on the SAME channel, naming the other pane
+//      (M6/B6 — it used to be a second channel and a second `ObserveTerminal`).
 //
 // What it does NOT prove: that any of this composes on a device, or that the bytes make a picture.
 // The WebView is a mock here and no build has been run; `test/live/paneViewer.live.test.tsx` runs
@@ -121,7 +122,9 @@ function scriptedServer(): Scripted {
         sent[index]!.push(toHex(payload))
         if (payload[0] === 0x00) {
           channel.emit(fromHex(frameHex(WELCOME_OK_ANSI_V21)))
-        } else if (payload[0] === 0x0c) {
+        } else if (payload[0] === 0x0c || payload[0] === 0x0e) {
+          // 0x0c ObserveTerminal, 0x0e RetargetTerminal (M6/B6). A real server answers both the
+          // same way: it resets this client's render baseline, so the next frame is a full one.
           channel.emit(fromHex(frameHex(TERMINAL_SMALL_FULL)))
           channel.emit(fromHex(frameHex(TERMINAL_SMALL_DIFF)))
         }
@@ -287,7 +290,7 @@ describe('pane viewer route', () => {
     expect(commands.some((command) => command['type'] === 'write')).toBe(true)
   })
 
-  it('re-targets on a chip tap — a second ObserveTerminal, naming the other pane', async () => {
+  it('re-targets on a chip tap — RetargetTerminal on the SAME channel, naming the other pane', async () => {
     const server = scriptedServer()
     const connection = createTransportConnection(REMOTE, server.transport)
     routerState.params = { remoteId: 'remote-1', paneId: 'ws-1-p1' }
@@ -323,15 +326,25 @@ describe('pane viewer route', () => {
     })
     await settle()
 
+    // M6/B6. Before `RetargetTerminal` this was two `ObserveTerminal`s on two channels; now it is
+    // one handshake, one observe, one retarget, all on the channel that was already open.
     const observes = server.sent.flat().filter((hex) => hex.startsWith('0c'))
-    expect(observes).toHaveLength(2)
-    // `0c` then a byte length then the target: ws-1-p1 first, ws-1-p3 second.
+    expect(observes).toHaveLength(1)
     expect(observes[0]).toContain(toHex(new TextEncoder().encode('ws-1-p1')))
-    expect(observes[1]).toContain(toHex(new TextEncoder().encode('ws-1-p3')))
-    // One resident client channel per observed pane, and the first one was closed on the swap.
+
+    const retargets = server.sent.flat().filter((hex) => hex.startsWith('0e'))
+    expect(retargets).toHaveLength(1)
+    expect(retargets[0]).toContain(toHex(new TextEncoder().encode('ws-1-p3')))
+    // `0e` <len> <target> then the nested TerminalSessionMode tag — `00` = Observe, a UNIT variant,
+    // so the frame ENDS there. A trailing `00` would be a `Control{takeover:false}` promotion that
+    // resizes a desktop pane to this phone's grid.
+    expect(retargets[0]).toBe(`0e07${toHex(new TextEncoder().encode('ws-1-p3'))}00`)
+
+    // One resident client channel for both panes, still open. This is the assertion the milestone
+    // is measured on: on the ssh bridge each of these is an exec channel plus a handshake plus a
+    // full ANSI baseline.
     const streams = server.transport.ofKind(HerdrChannelKind.ClientStream)
-    expect(streams).toHaveLength(2)
-    expect(streams[0]!.closed).toBe(true)
-    expect(streams[1]!.closed).toBe(false)
+    expect(streams).toHaveLength(1)
+    expect(streams[0]!.closed).toBe(false)
   })
 })

@@ -56,8 +56,15 @@ export const WIRE_ABI_MAGIC: Uint8Array = new Uint8Array([0x48, 0x52, 0x44, 0x52
 /** `src/protocol/abi.rs` `WIRE_ABI_FORK` — ASCII `herdr-mx`, fixed 8 bytes. */
 export const WIRE_ABI_FORK = "herdr-mx";
 
-/** `src/protocol/abi.rs` `WIRE_ABI_EPOCH`. */
-export const WIRE_ABI_EPOCH = 1;
+/**
+ * `src/protocol/abi.rs` `WIRE_ABI_EPOCH`.
+ *
+ * Epoch 2: `ClientMessage::RetargetTerminal` was appended at tag 14 (M6/B6), so the set of
+ * messages a peer may legally send grew and the schema fingerprint moved with it. No existing tag
+ * or payload changed, and `PROTOCOL_VERSION` deliberately stayed at 21 — the handshake's bytes are
+ * identical. The decision and its user impact are `docs/next/protocol/abi-history.json`.
+ */
+export const WIRE_ABI_EPOCH = 2;
 
 /**
  * `src/protocol/abi.rs` `WIRE_SCHEMA_FINGERPRINT`, hex.
@@ -67,7 +74,7 @@ export const WIRE_ABI_EPOCH = 1;
  * `test/fixtures.test.ts` fails if the generated corpus disagrees. That is the same contract the
  * enum tags in `constants.ts` already live under.
  */
-export const WIRE_SCHEMA_FINGERPRINT = "3ce2d29b371f9dbe";
+export const WIRE_SCHEMA_FINGERPRINT = "827ef6800c3af3ee";
 
 /** `magic(4) + fork(8) + abi_epoch(u32LE) + protocol_version(u32LE) + schema_fingerprint(8)`. */
 export const WIRE_ABI_PRELUDE_LEN = 28;

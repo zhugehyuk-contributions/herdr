@@ -20,6 +20,8 @@ import {
   encodeWirePrelude,
   encodeHelloFrame,
   encodeObserveTerminalFrame,
+  encodeRetargetTerminalFrame,
+  TerminalSessionModeTag,
   serverFrameSizeCap,
   utf8Encode,
   type HelloParams,
@@ -113,6 +115,13 @@ describe.skipIf(!HAS_FIXTURES)("docs/next/protocol/fixtures.json cross-check", (
       expect(ordinalOf(enums.ClientLaunchMode, name), `ClientLaunchMode::${name}`).toBe(index);
     });
     expect(ordinalOf(enums.ClientMessage, "ObserveTerminal")).toBe(ClientMessageTag.ObserveTerminal);
+    expect(ordinalOf(enums.ClientMessage, "RetargetTerminal")).toBe(
+      ClientMessageTag.RetargetTerminal,
+    );
+    // The nested mode enum is wire too — a codec that got `Control` wrong would promote a phone to
+    // writable control while believing it stayed read-only.
+    expect(ordinalOf(enums.TerminalSessionMode, "Observe")).toBe(TerminalSessionModeTag.Observe);
+    expect(ordinalOf(enums.TerminalSessionMode, "Control")).toBe(TerminalSessionModeTag.Control);
     expect(ordinalOf(enums.ServerMessage, "Welcome")).toBe(ServerMessageTag.Welcome);
     expect(ordinalOf(enums.ServerMessage, "Terminal")).toBe(ServerMessageTag.Terminal);
   });
@@ -317,6 +326,43 @@ describe.skipIf(!HAS_FIXTURES)("docs/next/protocol/fixtures.json cross-check", (
         expect(utf8Encode(target as string).length, `${vector.name}.target_utf8_len`).toBe(utf8Len);
       }
     }
+  });
+
+  /**
+   * M6/B6. The interesting byte is the *nested* mode tag: `Observe` is a bare tag and `Control`
+   * carries a bool behind it, so the two frames differ in length by exactly one. A codec that
+   * encoded one byte for both would re-encode `Observe` correctly and truncate `Control`, and a
+   * truncated control retarget is not an error on the server — it is a short read that eats the
+   * next message.
+   */
+  it("re-encodes both RetargetTerminal vectors to the same bytes", () => {
+    const vectors = (fixtures!.vectors ?? []).filter(
+      (vector) => vector.message === "RetargetTerminal" && typeof vector.framed_hex === "string",
+    );
+    expect(vectors.length, "the corpus must publish both RetargetTerminal modes").toBe(2);
+
+    const lengths: number[] = [];
+    for (const vector of vectors) {
+      const target = fieldOf(vector.fields ?? {}, "target");
+      expect(typeof target, `${vector.name}.target`).toBe("string");
+      const mode = fieldOf(vector.fields ?? {}, "mode");
+      const encoded =
+        mode === "Observe"
+          ? encodeRetargetTerminalFrame(target as string, { kind: "observe" })
+          : encodeRetargetTerminalFrame(target as string, {
+              kind: "control",
+              takeover: fieldOf(vector.fields ?? {}, "takeover") === true,
+            });
+      expect(toHex(encoded), vector.name).toBe(vector.framed_hex);
+      lengths.push(fromHex(vector.framed_hex!).length);
+    }
+
+    const observeLen = lengths[vectors.findIndex((v) => v.name.endsWith("observe"))]!;
+    const controlLen = lengths[vectors.findIndex((v) => v.name.endsWith("control"))]!;
+    expect(
+      controlLen - observeLen,
+      "Control carries a bool behind its tag and Observe does not",
+    ).toBe(1);
   });
 
   it("reports the same PROTOCOL_VERSION", () => {

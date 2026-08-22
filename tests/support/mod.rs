@@ -330,6 +330,13 @@ pub const CLIENT_LAUNCH_MODE_TERMINAL_ATTACH: u32 = 1;
 /// `ClientMessage::ObserveTerminal` wire tag, frozen by
 /// `client_message_wire_tags_preserve_protocol_15_order` (`src/protocol/wire.rs:1448`).
 pub const CLIENT_MESSAGE_OBSERVE_TERMINAL: u32 = 12;
+/// `ClientMessage::RetargetTerminal` (M6/B6). Appended at the enum tail; 0..13 are frozen by
+/// `client_message_wire_tags_preserve_protocol_15_order`.
+pub const CLIENT_MESSAGE_RETARGET_TERMINAL: u32 = 14;
+/// `TerminalSessionMode::Observe` — a UNIT variant, so it is one byte and nothing follows it.
+pub const TERMINAL_SESSION_MODE_OBSERVE: u32 = 0;
+/// `TerminalSessionMode::Control { takeover }` — the tag byte plus the bool.
+pub const TERMINAL_SESSION_MODE_CONTROL: u32 = 1;
 /// `ServerMessage::Terminal` variant index (`src/protocol/wire.rs:886`).
 pub const SERVER_MESSAGE_TERMINAL: u32 = 13;
 
@@ -391,6 +398,33 @@ pub fn send_observe_terminal(stream: &mut UnixStream, target: &str) -> Result<()
     stream
         .flush()
         .map_err(|e| format!("flush observe: {e}"))?;
+    Ok(())
+}
+
+/// `ClientMessage::RetargetTerminal { target, mode }` — moves an established terminal session
+/// without reconnecting (M6/B6). `takeover` is `None` for observe, `Some(_)` for control.
+pub fn send_retarget_terminal(
+    stream: &mut UnixStream,
+    target: &str,
+    takeover: Option<bool>,
+) -> Result<(), String> {
+    let mut buf = encode_varint_u32(CLIENT_MESSAGE_RETARGET_TERMINAL);
+    buf.extend_from_slice(&encode_varint_u32(target.len() as u32));
+    buf.extend_from_slice(target.as_bytes());
+    match takeover {
+        None => buf.extend_from_slice(&encode_varint_u32(TERMINAL_SESSION_MODE_OBSERVE)),
+        Some(takeover) => {
+            buf.extend_from_slice(&encode_varint_u32(TERMINAL_SESSION_MODE_CONTROL));
+            buf.push(u8::from(takeover));
+        }
+    }
+    let framed = frame_message(&buf);
+    stream
+        .write_all(&framed)
+        .map_err(|e| format!("write retarget: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("flush retarget: {e}"))?;
     Ok(())
 }
 

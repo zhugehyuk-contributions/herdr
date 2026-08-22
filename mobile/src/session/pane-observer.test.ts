@@ -71,7 +71,9 @@ function welcomePayloadHex(encoding: RenderEncoding): string {
  * A fake herdr: answers `pane.layout` on the API bridge, and on the client bridge replies to
  * `Hello` with `welcome` and to `ObserveTerminal` with the two golden `Terminal` frames.
  */
-function scriptedServer(options: { welcome?: string } = {}): Recorded {
+function scriptedServer(
+  options: { welcome?: string; layoutFor?: (paneId: string) => typeof LAYOUT } = {}
+): Recorded {
   const transport = new FakeTransport()
   const clientMessages: string[] = []
   const apiRequests: Recorded['apiRequests'] = []
@@ -92,7 +94,9 @@ function scriptedServer(options: { welcome?: string } = {}): Recorded {
         clientMessages.push(toHex(payload))
         if (payload[0] === 0x00) {
           channel.emit(fromHex(frameHex(options.welcome ?? WELCOME_OK_ANSI_V21)))
-        } else if (payload[0] === 0x0c) {
+        } else if (payload[0] === 0x0c || payload[0] === 0x0e) {
+          // 0x0c ObserveTerminal, 0x0e RetargetTerminal (M6/B6). A real server answers both the
+          // same way: `render_state.reset_baseline()`, so the next frame is a full repaint.
           channel.emit(fromHex(frameHex(TERMINAL_SMALL_FULL)))
           channel.emit(fromHex(frameHex(TERMINAL_SMALL_DIFF)))
         }
@@ -104,8 +108,12 @@ function scriptedServer(options: { welcome?: string } = {}): Recorded {
         }
         const request = JSON.parse(line) as Recorded['apiRequests'][number]
         apiRequests.push(request)
+        const paneId = (request.params?.['pane_id'] as string | undefined) ?? 'w1:p1'
         channel.emitLine(
-          JSON.stringify({ id: request.id, result: { type: 'pane_layout', layout: LAYOUT } })
+          JSON.stringify({
+            id: request.id,
+            result: { type: 'pane_layout', layout: options.layoutFor?.(paneId) ?? LAYOUT }
+          })
         )
       }
     }
@@ -227,6 +235,115 @@ describe('pane observer', () => {
     expect(server.transport.ofKind(HerdrChannelKind.ApiRequest)).toHaveLength(1)
     observer.close()
     expect(server.transport.ofKind(HerdrChannelKind.ClientStream)[0]!.closed).toBe(true)
+  })
+
+  it('retargets on the SAME channel: no new stream, no second Hello (M6/B6)', async () => {
+    const server = scriptedServer()
+    const applied: Applied[] = []
+    const observer = new PaneObserver({
+      connection: createTransportConnection(REMOTE, server.transport),
+      paneId: 'w1:p1',
+      target: recordingTarget(applied)
+    })
+    await observer.start()
+    await settle()
+    const framesBefore = observer.frameCount
+
+    await observer.retarget('w1:p2')
+    await settle()
+
+    // One handshake, one observe, one retarget — in that order, on one channel.
+    expect(server.clientMessages.map((hex) => hex.slice(0, 2))).toEqual(['00', '0c', '0e'])
+    // `0e` <len 05> "w1:p2" <mode 00 = Observe>. Observe is a UNIT variant, so the frame ends
+    // there; a trailing `00` would encode `Control{takeover:false}` and resize the desktop's pane.
+    expect(server.clientMessages[2]).toBe('0e0577313a703200')
+    expect(server.transport.ofKind(HerdrChannelKind.ClientStream)).toHaveLength(1)
+    expect(server.transport.ofKind(HerdrChannelKind.ClientStream)[0]!.closed).toBe(false)
+    expect(observer.paneId).toBe('w1:p2')
+    expect(observer.retargetCount).toBe(1)
+    // The new target's frames landed, and the buffer was rebuilt rather than written over: the
+    // sink is reset on retarget, so the first frame of the new stream is an `init`, not a `write`.
+    expect(observer.frameCount).toBeGreaterThan(framesBefore)
+    const afterRetarget = applied.slice(applied.findIndex((entry) => entry.call === 'write') + 1)
+    expect(afterRetarget[0]!.call).toBe('init')
+  })
+
+  it('re-declares its grid when the new pane is wider, and only then', async () => {
+    const wide = {
+      ...LAYOUT,
+      focused_pane_id: 'w1:p2',
+      panes: [{ pane_id: 'w1:p2', focused: true, rect: { x: 0, y: 0, width: 300, height: 50 } }]
+    }
+    const server = scriptedServer({ layoutFor: (paneId) => (paneId === 'w1:p2' ? wide : LAYOUT) })
+    const observer = new PaneObserver({
+      connection: createTransportConnection(REMOTE, server.transport),
+      paneId: 'w1:p1',
+      target: recordingTarget([])
+    })
+    await observer.start()
+    await settle()
+
+    await observer.retarget('w1:p2')
+    await settle()
+    // Resize (0x03) BEFORE the retarget (0x0e): an observing client's frames are rendered into the
+    // rect it declared, and a pane wider than that rect is cropped at the top-left, not reflowed
+    // (B4). Declaring after the move would show one cropped frame first.
+    expect(server.clientMessages.map((hex) => hex.slice(0, 2))).toEqual(['00', '0c', '03', '0e'])
+    // tag 03, then cols/rows/cell_width_px/cell_height_px as varints. 300 crosses bincode's
+    // one-byte ceiling (250) so it is `fb 2c 01` — the same encoding the independently generated
+    // golden `HELLO_ANSI_ATTACH_300X100` carries for its 300 — while 50 stays a bare `32`.
+    expect(server.clientMessages[2]).toBe('03fb2c01320000')
+
+    // Back to the original pane: same width again, so no second Resize.
+    await observer.retarget('w1:p1')
+    await settle()
+    expect(server.clientMessages.map((hex) => hex.slice(0, 2))).toEqual([
+      '00',
+      '0c',
+      '03',
+      '0e',
+      '03',
+      '0e'
+    ])
+
+    // A retarget to the pane already being observed is a no-op, not another round trip.
+    const before = server.clientMessages.length
+    await observer.retarget('w1:p1')
+    await settle()
+    expect(server.clientMessages).toHaveLength(before)
+    observer.close()
+  })
+
+  it('reuses the layout snapshot it already has instead of asking again', async () => {
+    // Both panes in ONE snapshot, which is what a real `pane.layout` returns: `area` plus a rect
+    // per pane of that workspace.
+    const both = {
+      ...LAYOUT,
+      panes: [
+        { pane_id: 'w1:p1', focused: true, rect: { x: 0, y: 0, width: 27, height: 23 } },
+        { pane_id: 'w1:p2', focused: false, rect: { x: 27, y: 0, width: 27, height: 23 } }
+      ]
+    }
+    const server = scriptedServer({ layoutFor: () => both })
+    const observer = new PaneObserver({
+      connection: createTransportConnection(REMOTE, server.transport),
+      paneId: 'w1:p1',
+      target: recordingTarget([])
+    })
+    await observer.start()
+    await settle()
+    expect(server.apiRequests.map((request) => request.method)).toEqual(['pane.layout'])
+
+    await observer.retarget('w1:p2')
+    await settle()
+
+    // No second `pane.layout`. On the ssh bridge that call is an exec channel and a remote herdr
+    // process (B8), and it was the dominant term in the measured swipe latency.
+    expect(server.apiRequests.map((request) => request.method)).toEqual(['pane.layout'])
+    // …and no Resize either: `resolveObserverGeometry` maxes with the workspace `area`, which both
+    // panes share, so the declared grid is unchanged.
+    expect(server.clientMessages.map((hex) => hex.slice(0, 2))).toEqual(['00', '0c', '0e'])
+    observer.close()
   })
 
   it('closes the stream even when close() beats the handshake', async () => {

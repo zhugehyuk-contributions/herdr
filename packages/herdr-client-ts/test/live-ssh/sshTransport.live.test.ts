@@ -29,8 +29,10 @@ import {
   createTransportJsonApiClient,
   describeClose,
   describeWireAbi,
+  OBSERVE_MODE,
   encodeHelloFrame,
   encodeObserveTerminalFrame,
+  encodeRetargetTerminalFrame,
   type JsonApiClient,
   type ServerMessage,
   type TerminalMessage,
@@ -83,6 +85,7 @@ describe.skipIf(skipReason !== null)("live: herdr over an ssh transport", () => 
   let transport: SshHerdrTransport;
   let api: JsonApiClient;
   let paneId: string;
+  let paneIdB: string;
 
   beforeAll(async () => {
     server = await spawnServer();
@@ -112,7 +115,10 @@ describe.skipIf(skipReason !== null)("live: herdr over an ssh transport", () => 
       "workspace_created",
     );
     paneId = (created["root_pane"] as { pane_id: string }).pane_id;
+    const split = await api.request("pane.split", { pane_id: paneId, direction: "right" });
+    paneIdB = (split["pane"] as { pane_id: string }).pane_id;
     await sendInput(api, paneId, `echo ${MARKER}`);
+    await sendInput(api, paneIdB, `echo ${MARKER}B`);
 
     process.stdout.write(
       `[ssh] server pid=${server.pid} sshd pid=${sshd.pid} port=${sshd.port} pane=${paneId}\n`,
@@ -291,6 +297,120 @@ describe.skipIf(skipReason !== null)("live: herdr over an ssh transport", () => 
 
     stream.close();
   }, 120_000);
+
+  /**
+   * M6/B6, over the transport the app actually uses: **a pane switch that opens no channel.**
+   *
+   * This is the assertion the milestone is measured on. `transport.channelCount` is incremented in
+   * `SshHerdrTransport`'s own `openChannel` (`src/node/sshTransport.ts`), so it counts real ssh exec
+   * channels — each of which is a remote `herdr remote-client-bridge` process plus a handshake plus
+   * a fresh ~56 KB uncompressed ANSI baseline (B13). Before `RetargetTerminal`, a chip tap cost all
+   * three; the number below has to stay put across the switch.
+   *
+   * The elapsed time is printed rather than tightly bounded — a live ssh test on a loaded box is
+   * the wrong place for a 200 ms assertion — but the loose bound still separates the two regimes:
+   * a retarget is tens of milliseconds, a reconnect is a channel open and a handshake.
+   */
+  it("switches pane on the SAME ssh channel — no new channel, no second handshake", async () => {
+    const messages: ServerMessage[] = [];
+    let closed: string | null = null;
+    let wake: (() => void) | null = null;
+    const bump = (): void => {
+      const fire = wake;
+      wake = null;
+      fire?.();
+    };
+    const nextFrameWith = async (needle: string, timeoutMs: number): Promise<TerminalMessage> => {
+      const deadline = Date.now() + timeoutMs;
+      let cursor = 0;
+      for (;;) {
+        while (cursor < messages.length) {
+          const message = messages[cursor] as ServerMessage;
+          cursor += 1;
+          if (message.type === "terminal" && stripAnsiText(message.bytes).includes(needle)) {
+            return message;
+          }
+        }
+        if (closed !== null) {
+          throw new Error(`waiting for ${needle}: ${closed}`);
+        }
+        if (Date.now() > deadline) {
+          throw new Error(
+            `no Terminal frame carrying ${needle} within ${timeoutMs}ms ` +
+              `(${messages.map((m) => m.type).join(",")})`,
+          );
+        }
+        await new Promise<void>((resolveWake) => {
+          const timer = setTimeout(() => {
+            wake = null;
+            resolveWake();
+          }, 50);
+          wake = () => {
+            clearTimeout(timer);
+            resolveWake();
+          };
+        });
+      }
+    };
+
+    const channelsBefore = transport.channelCount;
+    const stream = await ServerMessageChannel.open(transport, {
+      onMessage: (message) => {
+        messages.push(message);
+        bump();
+      },
+      onError: (error) => {
+        closed ??= error.message;
+        bump();
+      },
+      onClose: (close) => {
+        closed ??= describeClose("client bridge closed", close);
+        bump();
+      },
+    });
+    await stream.send(
+      encodeHelloFrame({
+        cols: CLIENT_COLS,
+        rows: CLIENT_ROWS,
+        requestedEncoding: RenderEncoding.TerminalAnsi,
+        launchMode: ClientLaunchMode.TerminalAttach,
+      }),
+    );
+    await stream.send(encodeObserveTerminalFrame(paneId));
+    const first = await nextFrameWith(MARKER, 60_000);
+    const channelsAfterObserve = transport.channelCount;
+
+    // ---- the switch --------------------------------------------------------------------
+    const started = Date.now();
+    await stream.send(encodeRetargetTerminalFrame(paneIdB, OBSERVE_MODE));
+    const moved = await nextFrameWith(`${MARKER}B`, 60_000);
+    const elapsed = Date.now() - started;
+
+    process.stdout.write(
+      `[ssh] retarget ${paneId} -> ${paneIdB} in ${elapsed}ms; ` +
+        `channels ${channelsBefore} -> ${channelsAfterObserve} -> ${transport.channelCount} ` +
+        `connections=${transport.connectionCount}\n` +
+        `[ssh] frame before seq=${first.seq} ${first.width}x${first.height} full=${first.full} ` +
+        `bytes=${first.bytes.length}\n` +
+        `[ssh] frame after  seq=${moved.seq} ${moved.width}x${moved.height} full=${moved.full} ` +
+        `bytes=${moved.bytes.length}\n` +
+        `[ssh] after first 200 bytes: ${visualize(moved.bytes, 200)}\n`,
+    );
+
+    // The receipt: the switch cost zero ssh channels.
+    expect(transport.channelCount).toBe(channelsAfterObserve);
+    expect(channelsAfterObserve - channelsBefore).toBe(1);
+    // …and no second handshake: exactly one Welcome on this stream, ever.
+    expect(messages.filter((message) => message.type === "welcome")).toHaveLength(1);
+    // The screen really moved, and it moved as a full repaint (the server reset this client's
+    // baseline), so pane A's cells cannot survive underneath.
+    expect(moved.full).toBe(true);
+    expect(stripAnsiText(moved.bytes)).toContain(`${MARKER}B`);
+    expect(moved.seq > first.seq).toBe(true);
+    expect(elapsed).toBeLessThan(10_000);
+
+    stream.close();
+  }, 180_000);
 
   /**
    * The multiplexing contract of `mobile/.prd/02-architecture.md` §2.4, measured.

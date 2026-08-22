@@ -135,6 +135,24 @@ rules, each mechanized:
 6. Update `packages/herdr-client-ts/src/abi.ts` (`WIRE_ABI_EPOCH`, `WIRE_SCHEMA_FINGERPRINT`);
    `test/fixtures.test.ts` fails until the transcription matches the generated corpus.
 
+**Worked example — epoch 1 → 2 (2026-08-22, M6/B6).** `ClientMessage::RetargetTerminal` was appended
+at tag 14. No existing tag or payload moved, so this is the *cheapest possible* wire change, and it
+still cost every step above: the fingerprint went `3ce2d29b371f9dbe` → `827ef6800c3af3ee` because
+the exemplar list grew, `fixtures.json` was archived as `fixtures/protocol-21-epoch-1.json` with its
+sha256 pinned, and the ledger gained a row. Two things that example settles:
+
+- **`PROTOCOL_VERSION` did not move**, and that is the design working. The handshake's byte stream
+  is identical; only the set of messages a peer may legally send grew. Bumping the version too would
+  fold the layout axis back into the negotiation axis, which is the defect this whole mechanism
+  exists to undo.
+- **The outgoing epoch was *rejected*, and not for the epoch-0 reason.** Epoch 1 identifies itself
+  perfectly, and an epoch-1 *client* against this server would in fact be safe — it can never emit
+  tag 14. The reverse cannot be: an epoch-2 client sends `RetargetTerminal` on its first pane swipe
+  and an epoch-1 server fails the decode. `check_peer_abi` is one table used by both ends, so
+  accepting epoch 1 would buy the safe direction at the price of the unsafe one. A tail-only
+  addition is therefore **not** automatically window-compatible; without per-capability negotiation
+  in `Welcome`, the honest window stays empty.
+
 ## Where the tests are
 
 | claim | test |
