@@ -1,5 +1,35 @@
 # 04 — 마일스톤
 
+> **먼저 [`00-driver.md`](./00-driver.md)를 읽어라** — 현재 어느 마일스톤에 있고 다음 행동이 무엇인지는 거기 있다.
+> 이 파일은 각 마일스톤이 **무엇이며 무엇으로 닫히는가**의 정의다.
+
+## 완료의 정의가 바뀌었다 (2026-08-23)
+
+아래 마일스톤들은 원래 **herdr-mx 쪽 코드와 앱 코드** 기준으로 쓰였다. 유저 목표가 확정되면서
+각 마일스톤은 이제 **플랫폼별로 닫힌다**:
+
+```
+Mn 코드 완료  →  Mn Android QA PASS  →  Mn iOS QA PASS  →  Mn 닫힘
+                 (별도 에이전트 판정)     (별도 에이전트 판정)
+```
+
+- **QA 판정은 반드시 별도 에이전트가** 내린다 ([`10-mobile-qa.md`](./10-mobile-qa.md) §자기 인증 금지).
+  구현자도 디스패처도 자기 작업을 통과시킬 수 없다.
+- 아래 각 마일스톤의 **"됐다"는 그 QA의 시나리오 목록**으로 읽는다. QA 에이전트가 실행할 대본이다.
+- M-1·M0·M1은 앱 코드 0줄(herdr-mx 쪽 / 헤드리스 TS)이라 이 게이트가 적용되지 않는다.
+
+## iOS 트랙
+
+iOS는 별도 마일스톤이 아니라 **M2~M6 각각의 두 번째 플랫폼**이다. 순서·수용 기준은 Android와 동일하다.
+
+**선행 조건 하나가 유저 게이트다**: `Xcode` 설치. 2026-08-23 실측 — `xcode-select -p`가
+`/Library/Developer/CommandLineTools`, `/Applications/Xcode.app` 없음, 시뮬레이터 0개, `mobile/ios/` 없음.
+빌드는 EAS 클라우드로 우회 가능하나 **QA에는 시뮬레이터/실기기가 필요**하고 시뮬레이터는 Xcode에 딸려온다.
+설치되면 [`06-open-decisions.md`](./06-open-decisions.md) 결정 7(Citadel + `Wellz26/swift-nio-ssh` 정확 핀)을
+**첫 빌드 전에** 확정한다 — 그날 비용이 무한이고 오늘 비용이 0인 종류다.
+
+---
+
 각 단계가 **단독으로 쓸모 있게** 끊었다. M-1과 M0는 앱 코드 0줄이며 앱과 무관하게 **#70이 제기한 문제를 해소한다**
 (#70을 *닫는다*고는 쓰지 않는다 — 이슈 본문의 acceptance가 M0-a~e와 일치한다는 증거가 없다. 닫으려면 이슈 본문을 새 acceptance로 갱신하는 게 먼저다).
 
@@ -124,7 +154,13 @@ observe 세션 상태기계.
 자동 복구. **강제종료로만 낫는 상태 0건.**
 
 ### M5 — 푸시 (blocked 한정)
-herdr 플러그인 1개 — `pane.agent_status_changed`(`src/api/schema/events.rs:75, 222, 253` `[v]`)에 훅을 걸고,
+herdr 플러그인 1개 — `pane.agent_status_changed`에 훅을 걸고,
+> ⚠️ **이 절의 인용 3개는 틀렸다** (`.prd/09` §B4 P1이 실측 정정). `events.rs:75`는 `Subscription` variant,
+> `:222`/`:253`은 `EventKind`/`dot_name`이며 **어느 것도 페이로드가 아니다.** 실제 페이로드는
+> **`EventData::PaneAgentStatusChanged` (`src/api/schema/events.rs:543-556`)** — `pane_id`/`workspace_id`가 필수다.
+> 구현 전에 P2(presentation 변경만으로도 재발화 → 센더 쪽 coalesce)와 P3(`runtime.rs`의 in-flight 32 상한이
+> 초과분을 **버린다** — 훅 경로 고유의 drop cliff)를 설계에 반영하라.
+
 `HERDR_PLUGIN_EVENT_JSON`을 읽어 **네트워크를 치지 않고** 큐 파일에 append만 한다. 드레인은 별도
 launchd/systemd 센더가. 훅 런타임에 타임아웃·재시도·DLQ가 없기 때문 `[i]`.
 훅은 `event_hub.push`보다 **먼저** 실행되므로(`src/app/api.rs:782-784` `[v]`) 링 축출·드레인 상한(B9)을
