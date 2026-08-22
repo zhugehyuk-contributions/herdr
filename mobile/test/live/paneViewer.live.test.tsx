@@ -109,6 +109,8 @@ vi.mock('react-native', () => {
       create: (styles: unknown) => styles
     },
     Text: 'Text',
+    // M3: the route now mounts `src/session/PaneInputBar.tsx`, which is a real `TextInput`.
+    TextInput: 'TextInput',
     View: 'View'
   }
 })

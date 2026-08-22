@@ -16,13 +16,20 @@
 //   · the status line's *shape* — `:4191-4203`, a single right-aligned summary that doubles as the
 //     connection verdict.
 //
+//   · **M3, the write path** — `src/session/PaneInputBar.tsx` (the quick-command row, the accessory
+//     key row and the text field, i.e. orca's `:4413-4460` neighbourhood rebuilt against
+//     `pane.send_input`), plus `onTerminalInput`: the WebView's own keyboard/IME path (xterm
+//     `onData`) routed to `pane.send_input{text}`. It is *not* routed to the wire — `ObserveTerminal`
+//     drops client input on purpose (`src/server/headless.rs:2882-2886`) and every wire alternative
+//     resizes the shared PTY (`:2665-2675`). That is 02-architecture.md §2.3 in one prop.
+//
 // Left behind, and why (each is a whole subsystem in that file, not a line):
-//   · every write path — `pane.send_input`, the accessory key row, quick commands, the native chat
-//     overlay, dictation. Milestone M3; this viewer is read-only and the *server* enforces it
-//     (`TerminalObserve` drops input, `src/server/headless.rs:2882-2886`).
+//   · the native chat overlay, dictation, paste, and the reorderable/configurable form of the
+//     accessory row — see the header of `src/session/PaneInputBar.tsx`.
 //   · the keyboard-avoidance machinery (`:4205-4211` and `computeActiveTerminalKeyboardLift`) —
-//     it exists to keep a caret above a soft keyboard, and nothing here opens one. `keyboardLift`
-//     is passed as 0 so the ported component keeps its prop.
+//     it exists to keep a caret above a soft keyboard, and the lift needs the metrics stream plus a
+//     measured layout this screen does not have. `keyboardLift` stays 0; the input bar is below the
+//     terminal frame in normal flow, so it is the bar, not the caret, the keyboard meets first.
 //   · files / source-control / PR / diff / tasks / browser panels — no `git.*` or `files.*` in
 //     herdr's JSON API (§2.2).
 //   · `mobile-terminal-viewport-resubscribe` — the fit loop that resizes the *desktop* PTY to the
@@ -47,6 +54,8 @@ import { TerminalPaneView } from '../../../../src/session/TerminalPaneView'
 import { buildPaneChips, resolveActivePaneChip } from '../../../../src/session/pane-chips'
 import { paneHref } from '../../../../src/agents/fleet-agents'
 import { usePaneObserver } from '../../../../src/session/use-pane-observer'
+import { usePaneInput } from '../../../../src/session/use-pane-input'
+import { PaneInputBar } from '../../../../src/session/PaneInputBar'
 import { mono } from '../../../../src/theme/monotone'
 import type { TerminalWebViewHandle } from '../../../../src/terminal/terminal-webview-contract'
 import type { PaneInfo } from '../../../../src/api/herdr-api-types'
@@ -125,6 +134,23 @@ export function PaneViewerScreen({
     viewportRows: activePane?.scroll?.viewport_rows ?? null,
     handleRef
   })
+  // Targets the *active chip's* pane, exactly like the observer above, so the screen you are
+  // reading and the pane you are typing into cannot drift apart. `usePaneInput` rebuilds its sender
+  // when that id changes and drops anything unsent (`src/session/pane-input.ts`, `close`).
+  const input = usePaneInput({ connection, paneId: active?.paneId ?? null })
+
+  // The soft keyboard, when it is opened by tapping the terminal itself: xterm's textarea receives
+  // the IME and emits `onData`, the document forwards it, and it arrives here as bytes. They go out
+  // as `text` — `encode_api_text` (`src/app/api_helpers.rs:24-33`) sends them raw (bracketed when
+  // the pane asked for it), which is the right shape for typed prose. Named keys are the *other*
+  // path (`PaneInputBar`), because a key has to be encoded by the pane, not by the phone.
+  const { send: sendInput } = input
+  const onTerminalInput = useCallback(
+    (_handle: string, bytes: string) => {
+      void sendInput({ text: bytes, keys: [] })
+    },
+    [sendInput]
+  )
 
   return (
     <View style={styles.screen}>
@@ -195,7 +221,7 @@ export function PaneViewerScreen({
           onModesChanged={NOOP}
           onKeyboardAvoidanceMetrics={NOOP}
           onHaptic={NOOP}
-          onTerminalInput={NOOP}
+          onTerminalInput={onTerminalInput}
           onTerminalQueryReply={NOOP}
           onTerminalTap={NOOP}
           onFileTap={NOOP}
@@ -203,6 +229,8 @@ export function PaneViewerScreen({
           onTextScaleChange={NOOP}
         />
       </View>
+
+      <PaneInputBar input={input} />
     </View>
   )
 }

@@ -82,6 +82,8 @@ vi.mock('react-native', () => {
       create: (styles: unknown) => styles
     },
     Text: 'Text',
+    // M3: the route now mounts `src/session/PaneInputBar.tsx`, which is a real `TextInput`.
+    TextInput: 'TextInput',
     View: 'View'
   }
 })
@@ -279,9 +281,11 @@ describe('pane viewer route', () => {
     const target = await mount(createElement(PaneViewerRoute), [connection])
     await settle()
 
+    // `tab ` prefix, not "every labelled Pressable": since M3 the screen also carries the input
+    // bar's quick-command and accessory keys, which are Pressables with labels of their own.
     const chips = target.root
       .findAllByType(host('Pressable'))
-      .filter((node) => typeof node.props.accessibilityLabel === 'string')
+      .filter((node) => String(node.props.accessibilityLabel).startsWith('tab '))
     expect(chips.map((node) => node.props.accessibilityLabel)).toEqual([
       'tab 1 · herdr 1 1-1',
       'tab 1 · herdr 1 1-2',
