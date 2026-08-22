@@ -103,33 +103,18 @@
 - **runtime/client 가이드레일** — 처음 "위반"으로 제기했으나 **`[기각]`**. 가이드레일은 *"Before **adding** state, API fields, events, commands, or socket messages"*를 게이트하는데 이 작업은 그중 아무것도 추가하지 않았고, `ObserveTerminal`은 `bffc4a82`(2026-06-30)로 **2개월 선행**한다 `[v]`. 기존 채널의 **두 번째 소비자**일 뿐이다. → 남은 것은 규칙이 아니라 **의존성 전략**이며 [`02-architecture.md`](./02-architecture.md) §Tensions의 **D8**로 재정의됨.
 - **"No god objects"** (`AGENTS.md` §Universal Project Rules) — `src/transport.ts` 591줄이 채널 분류·브리지 커맨드·호스트 타이머·NDJSON 버퍼링·구독·프레임 디코딩·진단·셸 인용을 전부 소유한다. **C2와 같이 처리하는 게 옳다** — 정책 통일과 모듈 분할은 같은 작업이다.
 
-## E. 게이트 위생 — `format:check`는 태어난 날부터 red다
+## E. `format:check` — 닫힘 (2026-08-22)
 
-`npm run format:check`(oxfmt 0.52.0)는 **`f8aa2a44`에서 `.prd/`가 착륙한 이래 한 번도 green인 적이
-없다** `[v]` — 2026-08-22 실측: `exit=2`, `.prd/assets/mockup-v5-original.html`에서
-`SyntaxError: Unexpected closing tag "section"`으로 중단. 파서를 막는 그 파일을 제외해도
-**222개 중 216개**가 불일치다.
+3갈래 결정으로 올려뒀던 것을 **②(범위 축소 + 채택)**로 실행했다. 근거는 유저가 Rust 쪽에서 같은
+딜레마에 낸 답이다 — `808b5ca7 style: rustfmt the tree ... kept separate from the feature commit so
+that diff stays scoped`: 우회가 아니라 트리를 고치되 커밋을 분리한다.
 
-원인은 코드가 더럽다가 아니라 **설정 부재**다(`No config found, using defaults`). 이 코드베이스는
-세미콜론 없음·홑따옴표인데 oxfmt 기본값은 그 반대다. `{semi:false, singleQuote:true,
-printWidth:100, trailingComma:"none"}`까지 맞추면 216 → **65개**로 떨어지지만 0이 되지 않는다 —
-남는 축은 실제 printWidth(≥106자 import가 존재)와 **oxfmt가 마크다운도 포맷한다**는 사실이다.
-후자는 `.prd/*.md` 전부를 재작성하며, 목업은 같은 URL 재발행 규율(`01-spec`)과 정면 충돌한다.
+`.oxfmtrc.json` 신설(`semi:false`, `singleQuote`, `printWidth:100`, `trailingComma:"none"`,
+`ignorePatterns:[".prd/", "**/*.md"]`) 후 `npm run format` 1회. **printWidth 100은 취향이 아니라
+실측이다** — 110이면 불일치 파일이 85개, 120이면 111개로 **늘어난다**(넓은 한계가 저자가 일부러 끊은
+줄을 합치기 때문). 56파일 재포맷, 동작 변경 없음, 별도 커밋.
 
-**결정 필요 — 세 갈래, 조용히 고를 수 없다:**
-1. **채택** — 설정을 확정하고 `npm run format` 1회로 65~222파일 재포맷 커밋. 이후 green 유지.
-   비용은 리뷰 노이즈(기능 diff와 섞임) + 문서 재작성.
-2. **범위 축소** — `ignorePatterns`로 `.prd/` 전체를 빼고 소스에만 적용. 문서 churn은 없고
-   재포맷은 코드에만.
-3. **삭제** — `format`/`format:check` 스크립트와 oxfmt 의존을 제거. mobile은 **어떤 CI에도
-   배선돼 있지 않다** `[v]`(`.github/workflows/*.yml`·`justfile`에 `mobile` 참조 0건) — 아무도
-   돌리지 않는 red 스크립트는 게이트가 아니라 소음이다.
-
-**권고: ②.** 포맷터의 값어치는 코드에 있고 문서 재작성은 순손실이다. 다만 ③도 정직한 선택이며,
-어느 쪽이든 **"항상 red인 스크립트를 그대로 두는 것"만은 답이 아니다** — 그건 다음 사람에게
-게이트를 무시하도록 가르친다.
-
----
+`format:check`가 처음으로 **exit 0**이며 이제 실제 신호다.
 
 ## F. Rust 테스트 게이트 — 실패 7건 중 6건은 테스트 결함이었다 (2026-08-22)
 
@@ -157,29 +142,17 @@ M-1 업스트림 머지가 만든 신규 실패는 **0건**이다 `[v]`.
 비우거나, `main_server_remote_targets()`를 주입 가능하게 만든다. 지금은 **테스트 결함**이지
 제품 결함이 아니다 — 실사용에서는 자기 세션을 원격으로 다시 등록하는 것을 막는 의도된 동작이다.
 
-**잔존 1건 — `live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session` (분류 완료, 미수리)**
+**잔존 1건 — 닫힘 (2026-08-22, `origin/mx` 머지로).**
+`live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session`은 머지 전 단독 실행에서 3/3 실패
+(`agent.get` → `agent_not_found`, `tests/live_handoff.rs:1306`)였고, `origin/mx` 16커밋을 머지한 뒤
+**3/3 통과**한다. 전량도 **3981 passed / 0 failed**.
 
-머지 전 베이스라인에서 **1.761초 PASS**, 지금은 데드라인 초과. 실패 지점과 응답을 실측했다 `[v]`:
-`tests/live_handoff.rs:1306`에서 `agent.get{target:"w1:p1"}`이 5초 내내
-`{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"}}`를 돌려준다.
+**내 예측이 틀렸다는 것을 함께 남긴다.** 나는 "16커밋이 `src/detect/`·`src/pane.rs`를 건드리지 않으니
+이 실패는 머지로 해결되지 않는다"고 적었다. 파일 집합만 보고 인과를 추론한 것이고, 실제 수정은
+세션 프로브/wedged-server 계열(`7babe1a3`, `2461f4d0`, `c290ae61`)에서 왔다. 어느 커밋인지는
+bisect하지 않았으므로 **미확정으로 남긴다** — "머지가 고쳤다"까지만이 실측이다.
 
-경로를 열어 확인한 것:
-- 테스트는 `HERDR_AGENT=pi`를 export하고 `exec /bin/sleep 30`하는 가짜 스크립트를 pane에 보낸다.
-  **스크립트는 실제로 돈다** — 그 앞의 `wait_for_file(&started_marker, 5s)`가 통과한다.
-- `pi`는 **유효한 에이전트 라벨이다** — `src/detect/manifests/pi.toml` 존재,
-  `src/detect/mod.rs:190` `"pi" => Some(Agent::Pi)`. 라벨 검증 실패가 아니다.
-- 환경 힌트 경로는 `src/platform/mod.rs:323-331` `parse_agent_env_hint` → `parse_agent_label`.
-  이 파일의 머지 diff(+26/-6)는 클립보드·capability·`open_url` 시그니처뿐으로 **탐지와 무관**하다.
-- 실제로 바뀐 것은 탐지 본체다: 머지가 `src/detect/mod.rs` **+161**, `src/pane.rs` **+380**을
-  건드렸고 매니페스트 5종 수정 + `qwen.toml` 추가가 함께 왔다.
-
-**심각도 한정**: 같은 바이너리의 **20건 중 19건이 통과한다** → 에이전트 탐지가 통째로 깨진 게 아니라
-이 테스트의 특정 경로(비관리 에이전트 이름을 저장된 세션에 바인딩)만 회귀했다. 앱이 쓰는 `agent.list`는
-`pane.report_agent`만으로 동작하는 것을 격리 서버에서 실측했으므로 모바일 경로와는 별개다.
-
-**이건 herdr 코어 문제이지 모바일 작업의 산물이 아니다** — 모바일 커밋은 Rust를 한 줄도 건드리지 않는다.
-**mx 머지가 착륙하기 전에 닫아야 할 1순위**이며, 수리는 `src/detect/mod.rs`/`src/pane.rs`의
-머지 diff에서 시작한다. 여기서는 수리하지 않는다(범위 밖, 별도 단위).
+**따라서 herdr 코어 잔여 결함은 없다.** 게이트는 전부 green이다.
 
 ---
 
@@ -217,35 +190,19 @@ M-1 업스트림 머지가 만든 신규 실패는 **0건**이다 `[v]`.
 
 ---
 
-## H. 머지 전 반드시 처리 — 이 브랜치의 #68 해법이 유저의 mx 해법과 충돌한다 (2026-08-22)
+## H. mx 머지 충돌 — 처리 완료 (2026-08-22)
 
-`origin/mx`가 움직였다. 이 브랜치는 **16커밋 뒤**다(`git rev-list --count feat/mobile-client..origin/mx`
-= 16). 그중 하나가 정면으로 부딪힌다.
+적발했던 충돌(이 브랜치의 #68 해법 = `just ci` → **`ci-mx`(fmt 우회)** vs 유저의 mx 해법 =
+`808b5ca7`로 **트리를 rustfmt**)을 유저 쪽에 맞춰 해소했다.
 
-- **우리 브랜치** `02e82f51 ci: run the check workflow on mx pushes (#68)` — ci.yml에 `mx`를 추가하고
-  `just ci` → **`just ci-mx`**로 바꿨다. `ci-mx`는 `lint-no-fmt`를 쓰는, 즉 **`cargo fmt --check`를
-  건너뛰는** 포크 전용 레시피다. justfile의 근거는 "이 포크는 트리를 rustfmt-clean으로 유지하지 않는다".
-- **유저의 mx** `808b5ca7 style: rustfmt the tree under the pinned toolchain` (08-22 01:15) — 커밋
-  메시지: *"`cargo fmt --check` was already failing on mx for 10 files / 12 locations ... so
-  `just lint` and `just check` could not pass on the default branch."* 즉 **우회 대신 트리를 고쳤다.**
-- 결과: `origin/mx`의 justfile에는 `lint-no-fmt`도 `ci-mx`도 **없다** `[v]`. 우리 브랜치에만 있다.
+실행한 것: `origin/mx` 16커밋 머지(충돌은 `docs/next/CHANGELOG.md` 1건 — mx의 Unreleased 항목을
+위에, 업스트림에서 온 `[0.8.2]` 릴리즈 절을 아래에 두어 **양쪽 다 보존**) → `lint-no-fmt`·`ci-mx`
+**삭제** → ci.yml을 모든 브랜치 `just ci` 단일 스텝으로(단, `branches:`의 `mx`는 유지 = #68이
+실제로 필요로 한 부분) → `cargo fmt` (10파일 65줄; 머지가 이미 대부분 정리했다).
+Windows 제외(#63)는 별개 결정이라 손대지 않았다.
 
-**우리 브랜치를 그대로 머지하면 유저가 방금 없앤 우회를 되살리고**, 게다가 이 브랜치는
-`cargo fmt --check`에서 **48곳**이 어긋난다(실측, `rustup run 1.96.1 cargo fmt --check` exit 1).
-그중 다수는 upstream v0.8.2 머지가 들여온 것이고 `src/protocol/abi.rs`·`wire_fixtures.rs`처럼
-이 작업이 만든 파일도 포함된다.
-
-**머지 전 순서 (권고)**:
-1. `origin/mx`(16커밋)를 이 브랜치로 머지한다 — 그러면 rustfmt된 트리가 베이스가 된다.
-2. `cargo fmt`를 돌려 남은 48곳을 정리한다.
-3. `lint-no-fmt` / `ci-mx`를 **삭제**하고 ci.yml을 `just ci`로 되돌리되 `branches:`의 `mx`는 유지한다
-   — #68(여전히 OPEN)의 해법은 그대로 살고, 우회만 사라진다.
-4. 그 뒤 trinity 리뷰 → push.
-
-**주의**: 16커밋은 `src/detect/`·`src/pane.rs`를 건드리지 않는다 `[v]` → 섹션 F의 잔존 테스트 실패는
-이 머지로 해결되지 않는다. 별개로 남는다.
-
----
+**머지 후 게이트**: clippy exit 0 · nextest **3981 passed / 0 failed / 1 skipped** ·
+`cargo fmt --check` exit 0 (herdr env 벗긴 러너 기준). 섹션 F의 잔존 실패도 이 머지로 사라졌다.
 
 ## I. RSA 키 경로 판별 완료 + 재발 방지 게이트 (2026-08-22)
 
