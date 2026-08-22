@@ -62,15 +62,19 @@
 넓은 pane에서 폰트 크기는 줌 손잡이가 될 수 없다. 그래서 배율이 프레임을 넘어 살아남아야 했다.
 orca의 나머지 절반(PTY 리사이즈)이 부재한다는 것도 증명됐다 — `measureFitDimensions` 호출자 0.
 
-### iOS = 0, 그리고 이유가 유저 게이트다
+### iOS 트랙 — 2026-08-23 열림
 
-`xcode-select -p` = `/Library/Developer/CommandLineTools`, `/Applications/Xcode.app` **없음**,
-시뮬레이터 **0개**, `mobile/ios/` **없음** (2026-08-23 실측).
+**Xcode 26.6 설치 확인** (`/Applications/Xcode.app`, Build 17F113). 이 트랙을 막던 유일한 유저 게이트가 풀렸다.
 
-**Xcode 없이는 iOS가 한 발짝도 못 간다.** 빌드는 EAS 클라우드로 우회 가능하지만 **QA는 시뮬레이터나
-실기기가 필요**하고 시뮬레이터는 Xcode에 딸려온다. 에이전트가 App Store 설치를 대신할 수 없다(계정 행위).
+다만 **Xcode 설치만으로는 시뮬레이터가 생기지 않는다** — 설치 직후 `xcrun simctl list runtimes`가 비어 있고
+디바이스 타입만 42종 있다. `xcodebuild -downloadPlatform iOS`로 런타임(iOS 26.5 Simulator, **8.52 GB**)을
+따로 받아야 한다. 이걸 모르면 "Xcode 깔았는데 시뮬레이터가 0개"에서 막힌다.
 
-→ **유저 액션 1건: Xcode 설치.** 이게 목표의 1/3을 막고 있고, 나머지는 그것과 무관하게 진행 가능하다.
+진행 중: prebuild(`mobile/ios/` 생성) + 런타임 다운로드 병렬.
+
+**iOS 첫 실행 전에 알아둘 것** — Android 전례가 그대로 적용된다: `assembleDebug`가 green인데
+**Expo 모듈 등록이 실행 시점에 던졌다**(`.prd/06:165`, `Class()`에 `Constructor` 필수). 컴파일 통과를
+성공으로 읽지 마라. iOS도 같은 등급의 결함이 실행에서만 나올 수 있다.
 
 ---
 
@@ -78,7 +82,7 @@ orca의 나머지 절반(PTY 리사이즈)이 부재한다는 것도 증명됐�
 
 순서는 "막힌 것을 먼저 알리고, 안 막힌 것을 끝까지"다.
 
-1. **[유저] Xcode 설치** — iOS 트랙의 **유일한** 남은 선행. 결정 7(ssh 라이브러리 핀)은 **2026-08-23 확정됨**:
+1. ~~**[유저] Xcode 설치**~~ — ✅ 2026-08-23 완료(Xcode 26.6). 결정 7(ssh 라이브러리 핀)도 **확정됨**:
    `orlandos-nl/Citadel` `exactVersion 0.12.1` (`ae8562f8`) + `Wellz26/swift-nio-ssh` **revision** `a05e6bb`.
    `npm run typecheck:ios`가 실제로 그 조합을 컴파일한다(exit 0 실측). 설치되면 바로 `expo prebuild`로 간다.
 
