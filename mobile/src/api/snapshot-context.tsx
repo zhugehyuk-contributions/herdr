@@ -62,6 +62,17 @@ export type SnapshotState = {
    * this (a "last update failed" hint) but nothing is required to.
    */
   refreshError: string | null
+  /**
+   * Epoch ms of the last snapshot a server actually returned — initial load or background refresh,
+   * whichever was last — and `null` until the first one lands. Left untouched by a failure, because
+   * the point of it is to date the snapshot that is still on screen.
+   *
+   * Why `refreshError` is not enough on its own: it says a tick failed, not how long the screen has
+   * been lying. One failed tick on a train is routine and ten minutes of them is not, and nothing
+   * else in this state can tell the two apart (`./snapshot-staleness.ts` turns the pair into the
+   * label the list headers render).
+   */
+  updatedAt: number | null
   /** The visible reload: back to `status: 'loading'`, i.e. the user asked to see a spinner. */
   reload: () => void
   /**
@@ -77,6 +88,7 @@ const SnapshotContext = createContext<SnapshotState>({
   snapshot: EMPTY_SNAPSHOT,
   error: null,
   refreshError: null,
+  updatedAt: null,
   reload: () => {},
   refresh: () => Promise.resolve()
 })
@@ -92,7 +104,8 @@ export function HerdrSnapshotProvider({
     status: 'loading',
     snapshot: EMPTY_SNAPSHOT,
     error: null,
-    refreshError: null
+    refreshError: null,
+    updatedAt: null
   })
   const [generation, setGeneration] = useState(0)
   // Why: a load that resolves after the provider unmounts (or after a reload superseded it) must
@@ -117,17 +130,27 @@ export function HerdrSnapshotProvider({
     load()
       .then((snapshot) => {
         if (token === loadTokenRef.current && !disposedRef.current) {
-          setState({ status: 'ready', snapshot, error: null, refreshError: null })
+          setState({
+            status: 'ready',
+            snapshot,
+            error: null,
+            refreshError: null,
+            updatedAt: Date.now()
+          })
         }
       })
       .catch((error: unknown) => {
         if (token === loadTokenRef.current && !disposedRef.current) {
-          setState({
+          // Functional, and spreading, only to leave `updatedAt` alone: an initial load that failed
+          // is not evidence about *when* a server last answered, and a session that had a snapshot
+          // before the user pulled reload should not forget the date of the one it just dropped.
+          setState((current) => ({
+            ...current,
             status: 'error',
             snapshot: EMPTY_SNAPSHOT,
             error: error instanceof Error ? error.message : String(error),
             refreshError: null
-          })
+          }))
         }
       })
       .finally(() => {
@@ -151,12 +174,21 @@ export function HerdrSnapshotProvider({
     try {
       const snapshot = await load()
       if (token === loadTokenRef.current && !disposedRef.current) {
-        setState({ status: 'ready', snapshot, error: null, refreshError: null })
+        setState({
+          status: 'ready',
+          snapshot,
+          error: null,
+          refreshError: null,
+          updatedAt: Date.now()
+        })
       }
     } catch (error: unknown) {
       if (token === loadTokenRef.current && !disposedRef.current) {
         // Only this field moves: the snapshot on screen is still the last one the server confirmed,
         // and it is a better answer than a blank screen for the seconds until the next tick.
+        // `updatedAt` staying put is what makes the failure *legible* rather than merely recorded —
+        // it dates that surviving snapshot, and `./snapshot-staleness.ts` needs the pair to say how
+        // long this has been going on instead of just that a tick failed.
         setState((current) => ({
           ...current,
           refreshError: error instanceof Error ? error.message : String(error)

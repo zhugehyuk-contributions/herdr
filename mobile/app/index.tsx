@@ -22,13 +22,20 @@ import { useRouter } from 'expo-router'
 import { AgentRow } from '../src/components/AgentRow'
 import { BottomNav } from '../src/components/BottomNav'
 import { useHerdrSnapshot } from '../src/api/snapshot-context'
+import { snapshotStalenessLabel } from '../src/api/snapshot-staleness'
 import { agentPaneHandle } from '../src/agents/agent-display'
 import { buildFleetAgentRows, countByStatus, groupFleetAgentsByStatus } from '../src/agents/fleet-agents'
 import { mono } from '../src/theme/monotone'
 
 export default function AgentsHomeScreen() {
   const router = useRouter()
-  const { status, snapshot, error } = useHerdrSnapshot()
+  const { status, snapshot, error, refreshError, updatedAt } = useHerdrSnapshot()
+  // `null` unless a background refresh is failing *and* has been for long enough to mean something
+  // (`../src/api/snapshot-staleness.ts`). No timer ages it: the 4s poll re-renders this screen on
+  // every tick — success moves `updatedAt`, failure rewrites `refreshError` — so the label advances
+  // with the poll, and it is floored to 5s so it never claims to be finer than that. A screen with
+  // no poll running is backgrounded, i.e. nobody is reading the number anyway.
+  const staleness = snapshotStalenessLabel({ updatedAt, refreshError })
   const rows = buildFleetAgentRows(snapshot)
   const groups = groupFleetAgentsByStatus(rows)
   const blocked = countByStatus(rows, 'blocked')
@@ -42,6 +49,10 @@ export default function AgentsHomeScreen() {
         <View style={styles.spacer} />
         {/* Which remotes this list is the union of — the mockup's "all nodes" (mockup.html:637). */}
         <Text style={styles.meta}>{`${snapshot.perRemote.length} nodes`}</Text>
+        {/* The residual §G left: without this, a link that has been failing for ten minutes renders
+            exactly like a healthy one and the screen just quietly ages. Healthy renders *nothing*
+            here — there is no "up to date" badge to invent (`ConnectionStatusLine.tsx` property 1). */}
+        {staleness ? <Text style={styles.stale}>{staleness}</Text> : null}
       </View>
       {status === 'loading' ? <Text style={styles.meta}>Loading…</Text> : null}
       {status === 'error' ? <Text style={styles.meta}>{error ?? 'Load failed'}</Text> : null}
@@ -79,6 +90,11 @@ const styles = StyleSheet.create({
   logo: { color: mono.fg, fontSize: 20, fontWeight: '700' },
   crumb: { color: mono.dim, fontSize: 13, marginLeft: 6 },
   meta: { color: mono.dim, fontSize: 12, paddingHorizontal: 16 },
+  // One rung brighter than the `meta` beside it: brightness is the only emphasis axis this palette
+  // has (mockup.html:863, `../src/theme/monotone.ts`) and a stale fleet is the one thing in this
+  // header that is not routine. Still grayscale — the severity is in the word, never in a hue
+  // (`../src/theme/monotone-discipline.test.tsx`).
+  stale: { color: mono.fgSoft, fontSize: 12, paddingHorizontal: 16 },
   summary: { color: mono.fgSoft, fontSize: 12, paddingHorizontal: 16, paddingTop: 4 },
   sectionLabel: {
     color: mono.dim,

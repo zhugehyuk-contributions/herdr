@@ -25,6 +25,8 @@
     "src/api/live/live-snapshot-loader.test.ts",
     "src/api/herdr-data-provider.test.tsx",
     "src/api/use-foreground-refresh.test.tsx",
+    "src/api/snapshot-staleness.test.ts",
+    "src/app-shell/stale-snapshot-mount.test.tsx",
     "src/app-shell/pane-viewer-mount.test.tsx",
     "src/transport/reconnect-policy.test.ts",
     "src/transport/rpc-session-liveness-watchdog.test.ts",

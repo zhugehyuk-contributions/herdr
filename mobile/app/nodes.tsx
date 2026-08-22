@@ -16,12 +16,18 @@ import { useRouter } from 'expo-router'
 import { StatusDot } from '../src/components/StatusDot'
 import { BottomNav } from '../src/components/BottomNav'
 import { useHerdrSnapshot, remoteSubtitle } from '../src/api/snapshot-context'
+import { snapshotStalenessLabel } from '../src/api/snapshot-staleness'
 import { rollupText } from '../src/panes/pane-tree'
 import { mono } from '../src/theme/monotone'
 
 export default function NodeListScreen() {
   const router = useRouter()
-  const { status, snapshot, error } = useHerdrSnapshot()
+  const { status, snapshot, error, refreshError, updatedAt } = useHerdrSnapshot()
+  // Same hint the Agents home carries, for the same reason and off the same poll — see
+  // `./index.tsx` for why nothing here needs a timer. This list ages worse than that one, in fact:
+  // its rows are roll-ups ("4 spaces · 12 panes · 2 blocked"), and a roll-up nobody can date is
+  // indistinguishable from a fleet that simply stopped changing.
+  const staleness = snapshotStalenessLabel({ updatedAt, refreshError })
   const byRemote = new Map(snapshot.perRemote.map((entry) => [entry.remote.id, entry]))
 
   return (
@@ -29,6 +35,10 @@ export default function NodeListScreen() {
       <View style={styles.appbar}>
         <Text style={styles.logo}>herdr</Text>
         <Text style={styles.crumb}>/ nodes</Text>
+        {/* Unlike `./index.tsx` this header had no right-hand meta slot; the spacer creates one, and
+            when refreshes are healthy it stays empty — the screen is unchanged. */}
+        <View style={styles.spacer} />
+        {staleness ? <Text style={styles.stale}>{staleness}</Text> : null}
       </View>
       {status === 'loading' ? <Text style={styles.meta}>Loading…</Text> : null}
       {status === 'error' ? <Text style={styles.meta}>{error ?? 'Load failed'}</Text> : null}
@@ -76,6 +86,8 @@ const styles = StyleSheet.create({
   rowHead: { flexDirection: 'row', alignItems: 'center' },
   name: { color: mono.fg, fontSize: 15 },
   meta: { color: mono.dim, fontSize: 12 },
+  // Brighter than `meta` on purpose, and grayscale — see the same style in `./index.tsx`.
+  stale: { color: mono.fgSoft, fontSize: 12 },
   chevron: { color: mono.dim2, fontSize: 13 },
   spacer: { flex: 1 }
 })
