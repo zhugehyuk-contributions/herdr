@@ -48,6 +48,48 @@ export const HEALTH_LINK_ROWS = 24
 /** What a dial's rejection says when the channel died carrying no evidence whatsoever. */
 const DIAL_CLOSE_PREFIX = 'the stream closed before Welcome'
 
+/** What a dial's rejection says when a newer dial took its place before it ever came up. */
+const SUPERSEDED_MESSAGE = 'the dial was superseded by a newer one'
+
+/** Retirement's reason when the peer answered and the answer was refused. Never rejects a dial. */
+const HANDSHAKE_REFUSED_MESSAGE = 'the handshake was refused'
+
+/**
+ * One dial's private state. The unit of isolation this file is built around.
+ *
+ * There used to be three variables here — `channel`, `activeToken`, `dialToken` — shared by every
+ * generation the factory ever produced, and a token comparison was what kept the generations apart.
+ * That works only where the comparison was actually written: `onClose` had one and `onMessage` did
+ * not, so a `Welcome` arriving late on a channel L5 had already walked away from ran the *current*
+ * generation's `activeToken = token` line and handed the link's identity to a corpse. `probe` then
+ * answered `false` forever for the live link, which the L1 watchdog reads as silence and terminates.
+ *
+ * A record per dial makes the isolation structural rather than remembered: every callback closes
+ * over its own, and there is no shared cell left for a stale generation to write into.
+ */
+type DialRecord = {
+  /**
+   * The exec channel this dial opened, while this dial still owns it.
+   *
+   * Nulled the moment the generation is renounced, because ownership is the whole point: one exec
+   * channel is one remote `herdr` process (B8), and exactly one owner may close it.
+   */
+  channel: ServerMessageChannel | null
+  /** Finished the handshake and not yet retired — the only state `probe` may answer in. */
+  active: boolean
+  /**
+   * Retired: superseded by a newer dial, terminated by the supervisor, or dead.
+   *
+   * It is one flag rather than two because the two rights always move together. A generation that
+   * may no longer act may no longer report either: reporting a superseded generation's close books
+   * a second failure against the dial that replaced it, and the attempt counter is what L3's cap
+   * and L6's ladder both key off (`./connection-supervisor.ts`).
+   */
+  retired: boolean
+  /** Rejects this dial's `await handshake`, so retiring it settles the promise instead of parking it. */
+  fail: ((error: Error) => void) | null
+}
+
 export type ObserveStreamLinkOptions = {
   connection: HerdrRemoteConnection
   /** Read at dial time, so a rotation between generations reaches the next `Hello`. */
@@ -70,34 +112,85 @@ export type ObserveStreamLinkOptions = {
 export function createObserveStreamLink(options: ObserveStreamLinkOptions): SupervisorLinkFactory {
   const { connection } = options
   return (hooks) => {
-    let channel: ServerMessageChannel | null = null
-    /** The generation that finished the handshake — the only one `probe`/`terminate` may act on. */
-    let activeToken: object | null = null
     /**
-     * The generation currently allowed to *report*. orca's `isStaleRpcSocketEvent`
-     * (`rpc-socket-close-evidence.ts:36-48`), which used to be `activeToken`'s second job.
+     * The newest dial. Only it may report, and starting a new one retires whatever it replaces.
      *
-     * Split off because the two claims start at different moments. `activeToken` cannot be claimed
-     * before `await handshake` below — a link that has not been accepted must not answer a probe —
-     * and a close that arrives *before* `Welcome` is precisely the one carrying the startup
-     * evidence the classifier needs (`Permission denied (publickey)` on stderr). One variable meant
-     * every such close was silently dropped; see `onClose`.
+     * The pointer exists so supersession has an owner: L5 abandons a dial by *redialling*
+     * (`./connection-supervisor.ts` `notifyForeground`), and at that moment the supervisor's
+     * `this.link` is still null — a pending dial is a promise, not an object it can close
+     * (`connection-supervisor.ts:218-224`). Left alone, the abandoned generation's exec channel and
+     * its remote `herdr` are still alive with nobody holding a handle to either.
      */
-    let dialToken: object | null = null
+    let latest: DialRecord | null = null
+    /** The generation that completed the handshake — the one `replay` writes on (X1). */
+    let live: DialRecord | null = null
+
+    /** Takes a generation's rights away and hands back whatever channel it still owns. */
+    const renounce = (record: DialRecord): ServerMessageChannel | null => {
+      const channel = record.channel
+      record.retired = true
+      record.active = false
+      record.channel = null
+      if (live === record) {
+        live = null
+      }
+      return channel
+    }
+
+    /**
+     * `renounce` plus the close, for the two deaths this file owns: `terminate` and supersession.
+     *
+     * Renouncing happens *before* `channel.close()` on purpose, and the ordering is the behaviour
+     * the old single-token guard had: L2 has the supervisor synthesize a close on every forced
+     * teardown (`./connection-supervisor.ts` `closeAndSynthesize`), so forwarding the real one that
+     * this call provokes would double-book the death.
+     */
+    const retire = (record: DialRecord, reason: string): void => {
+      if (record.retired) {
+        return
+      }
+      const channel = renounce(record)
+      if (channel !== null) {
+        try {
+          channel.close()
+        } catch {
+          // Already gone is the normal case here, not an error.
+        }
+      }
+      // Settles the dial rather than leaving it pending forever. The supervisor drops a rejection
+      // whose generation has moved on (`connection-supervisor.ts:307-319`), and a promise nobody
+      // will ever settle is the one shape that cannot release this closure — or its channel.
+      record.fail?.(new Error(reason))
+    }
 
     const dial = async (signalHandshaking: () => void): Promise<SupervisedLink> => {
-      const token = {}
-      // Before the first `await`, so a close delivered on the way up already has a claimant.
-      dialToken = token
+      const record: DialRecord = { channel: null, active: false, retired: false, fail: null }
+      // Before the first `await`, so a close delivered on the way up already has a claimant, and so
+      // the generation this one replaces stops being able to speak the moment it is replaced.
+      const superseded = latest
+      latest = record
+      if (superseded !== null) {
+        retire(superseded, SUPERSEDED_MESSAGE)
+      }
       let welcomed: (() => void) | null = null
-      let failed: ((error: Error) => void) | null = null
       const handshake = new Promise<void>((resolve, reject) => {
         welcomed = resolve
-        failed = reject
+        record.fail = reject
       })
+      // A rejection can land before this function reaches `await handshake` — a channel that dies
+      // while `openTerminalStream` is still resolving, or a supersession in that same window. The
+      // no-op handler exists only so that window is not graded an unhandled rejection; `await
+      // handshake` below still sees the rejection.
+      void handshake.catch(() => {})
 
       const opened = await connection.openTerminalStream({
         onMessage: (message) => {
+          if (record.retired) {
+            // Not this generation's link any more. Counting these frames as liveness would credit
+            // the live connection for bytes a dead one produced, which is exactly the evidence L1
+            // exists to require.
+            return
+          }
           hooks.noteInbound()
           if (message.type !== 'welcome') {
             return
@@ -108,7 +201,7 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
             // rather than as a link the supervisor believes is healthy.
             assertWelcomeAccepted(message, { encoding: RenderEncoding.TerminalAnsi })
           } catch (error: unknown) {
-            failed?.(error instanceof Error ? error : new Error(String(error)))
+            record.fail?.(error instanceof Error ? error : new Error(String(error)))
             return
           }
           welcomed?.()
@@ -117,21 +210,30 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
         // codec decodes only `Welcome` and `Terminal`. A frame that reached the variant dispatcher
         // already cleared the length prefix and the frame boundary, which is exactly the evidence
         // the watchdog asks for (`./client-ping.ts`).
-        onUndecodable: () => hooks.noteInbound(),
-        onError: (error) => failed?.(error),
-        onClose: (close) => {
-          if (dialToken !== token) {
-            // A superseded generation dying late: either L5 abandoned this dial and redialled
-            // (`./connection-supervisor.ts` `notifyForeground`), or `terminate` below already
-            // handed the supervisor a synthesized close. Reporting now would book a second failure
-            // against the generation that replaced it, and the attempt counter is what L3's cap and
-            // L6's ladder both key off.
+        onUndecodable: () => {
+          if (record.retired) {
             return
           }
-          dialToken = null
-          if (activeToken === token) {
-            activeToken = null
+          hooks.noteInbound()
+        },
+        onError: (error) => {
+          if (record.retired) {
+            return
           }
+          record.fail?.(error)
+        },
+        onClose: (close) => {
+          if (record.retired) {
+            // A superseded generation dying late: either L5 abandoned this dial and redialled
+            // (`./connection-supervisor.ts` `notifyForeground`), or `terminate`/`retire` above
+            // already handed the supervisor a synthesized close. Reporting now would book a second
+            // failure against the generation that replaced it, and the attempt counter is what
+            // L3's cap and L6's ladder both key off.
+            return
+          }
+          // The peer closed it, so there is nothing left for anyone to close — renounce and drop
+          // the handle rather than routing it through `retire`.
+          renounce(record)
           // The close goes to the supervisor as the *struct*, before the dial is settled and
           // whether or not the handshake ever completed. `classifyChannelFailure`
           // (`./channel-failure.ts:142-181`) reads `stderr`/`exitCode`/`error` off a
@@ -148,10 +250,21 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
           // can only reject with an error, and the supervisor's rejection path would otherwise
           // rebuild the close from the message alone (`./connection-supervisor.ts`), where
           // `exitCode` no longer exists as a field for the `missing-binary` verdict to read.
-          failed?.(new ChannelCloseError(describeClose(DIAL_CLOSE_PREFIX, close), close))
+          record.fail?.(new ChannelCloseError(describeClose(DIAL_CLOSE_PREFIX, close), close))
         }
       })
-      channel = opened
+      if (record.retired) {
+        // Superseded while the exec channel was still opening. This is the only line that can close
+        // it: `record.channel` was still null when `retire` ran, and the caller never sees a
+        // `SupervisedLink` for a dial that does not resolve.
+        try {
+          opened.close()
+        } catch {
+          // Already gone is the normal case here, not an error.
+        }
+        throw new Error(SUPERSEDED_MESSAGE)
+      }
+      record.channel = opened
       // The exec channel is up and the herdr handshake has not answered yet: L5 treats this as
       // "still a dial", which is 05's mapping of "ssh는 붙었는데 원격 herdr이 말을 안 함".
       signalHandshaking()
@@ -168,13 +281,31 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
           launchMode: ClientLaunchMode.TerminalAttach
         })
       )
-      await handshake
-      activeToken = token
+      try {
+        await handshake
+      } catch (error: unknown) {
+        // The handshake was refused — a `Welcome` this client will not accept, or a wire-ABI
+        // verdict delivered on `onError` (`packages/herdr-client-ts/src/transport.ts`), neither of
+        // which closes the channel. No `SupervisedLink` will ever exist for this dial, so this is
+        // the last frame that can close the exec channel, and B8 makes that mandatory rather than
+        // tidy: one exec channel is one remote `herdr` process. A dial that died on its *own*
+        // close, or one already superseded, is a no-op here — `retire` returns on a retired record.
+        retire(record, HANDSHAKE_REFUSED_MESSAGE)
+        throw error
+      }
+      if (record.retired) {
+        // A supersession that raced the `Welcome`: the resolve won, so `handshake` did not reject,
+        // but this generation was retired (and its channel closed) in between. Latching it now
+        // would hand the link's identity to a channel nobody can write on.
+        throw new Error(SUPERSEDED_MESSAGE)
+      }
+      record.active = true
+      live = record
       options.onLog?.(`health link up (${cols}x${rows})`)
 
       return {
         probe: (nonce: number) => {
-          if (activeToken !== token) {
+          if (!record.active) {
             return false
           }
           // Fire-and-forget: the watchdog terminates on *silence*, not on a rejected write, and an
@@ -183,24 +314,7 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
           return true
         },
         terminate: () => {
-          if (activeToken === token) {
-            activeToken = null
-          }
-          // Renounced *before* `opened.close()`, because the close it provokes is one the supervisor
-          // already accounted for: L2 has it synthesize the close on every forced teardown
-          // (`./connection-supervisor.ts` `closeAndSynthesize`), so forwarding the real one too
-          // would double-book the death. This is the behaviour the old single-token guard had, kept.
-          if (dialToken === token) {
-            dialToken = null
-          }
-          if (channel === opened) {
-            channel = null
-          }
-          try {
-            opened.close()
-          } catch {
-            // Already gone is the normal case here, not an error.
-          }
+          retire(record, 'the link was terminated')
         }
       }
     }
@@ -212,15 +326,15 @@ export function createObserveStreamLink(options: ObserveStreamLinkOptions): Supe
       cols: number
       rows: number
     }): Promise<boolean> => {
-      const live = channel
-      if (live === null) {
+      const channel = live?.channel ?? null
+      if (channel === null) {
         return false
       }
-      await live.send(encodeObserveTerminalFrame(subscription.paneId))
+      await channel.send(encodeObserveTerminalFrame(subscription.paneId))
       // X1's herdr-specific half: a reconnected client's sink still holds the *previous* stream's
       // baseline, so a diff applied onto it renders wrong cells rather than failing.
       // `RequestFullFrame` (`src/protocol/wire.rs:462-467`, mx-only) makes the server re-baseline.
-      await live.send(encodeRequestFullFrameFrame())
+      await channel.send(encodeRequestFullFrameFrame())
       return true
     }
 

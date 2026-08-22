@@ -21,11 +21,14 @@ import {
   FakeTransport,
   type FakeChannel
 } from '../../../packages/herdr-client-ts/test/fakeTransport'
+import { frameHex, fromHex } from '../../../packages/herdr-client-ts/test/helpers'
+import { WELCOME_OK_ANSI_V21 } from '../../../packages/herdr-client-ts/test/vectors'
 import { FakeClock, flushMicrotasks } from '../../test/fake-clock'
 import { SupervisedRemote } from './supervised-remote'
 import { createObserveStreamLink } from './observe-stream-link'
-import { createTransportConnection } from './herdr-connection'
+import { createTransportConnection, type HerdrRemoteConnection } from './herdr-connection'
 import { AUTH_HINT, MISSING_BINARY_HINT, WIRE_ABI_HINT } from './channel-failure'
+import type { SupervisedLink } from './connection-supervisor'
 import type { RemoteDefinition } from '../api/herdr-api-types'
 
 const REMOTE: RemoteDefinition = { id: 'scratch', name: 'scratch', target: { type: 'local' } }
@@ -133,17 +136,22 @@ describe('a channel that dies before Welcome', () => {
     await dialUntilHandshaking(h)
 
     // L5: the phone was suspended mid-dial. `notifyForeground` abandons a dial older than
-    // `STALE_DIAL_AGE_MS` (`./rpc-stale-dial.ts`) and redials immediately. Nothing closed the first
-    // channel — that is the point of the rule, the path under it is gone — so it is still alive and
-    // can still die.
+    // `STALE_DIAL_AGE_MS` (`./rpc-stale-dial.ts`) and redials immediately. The *supervisor* closes
+    // nothing here — at that moment `this.link` is null, a pending dial being a promise
+    // (`./connection-supervisor.ts:218-224`) — so the link factory is the abandoned channel's only
+    // owner, and the close it performs when the next dial supersedes this one is itself a
+    // superseded generation's close arriving on `onClose`.
     h.clock.jump(3_000)
     h.remote.notifyForeground('app-resume')
     await flushMicrotasks()
     expect(h.streams).toHaveLength(2)
+    expect(h.streams[0]!.closed).toBe(true)
     expect(h.remote.getSnapshot().state).toBe('handshaking')
 
     // The abandoned dial's bridge now reports a *fatal* death. Booking it would latch a generation
     // it says nothing about, and would double-count the attempt L3's cap and L6's ladder key off.
+    // (Its channel is already shut, so this is a no-op — kept because a second close must not be
+    // able to resurrect a report either.)
     h.streams[0]!.die({ exitCode: 127, stderr: 'sh: 1: herdr: not found' })
     await flushMicrotasks()
 
@@ -177,6 +185,10 @@ describe('a peer whose wire ABI this client cannot decode', () => {
     expect(snapshot.state).toBe('auth-failed')
     expect(snapshot.armed).toBe(false)
     expect(h.clock.pending).toBe(0)
+    // A refused handshake never closes the channel by itself — the peer is still there, happily
+    // holding an `ssh exec` and a remote `herdr` (B8). Nothing downstream can close it either: no
+    // `SupervisedLink` is ever produced for a dial that rejects, so the factory has to.
+    expect(h.streams[0]!.closed).toBe(true)
     // A second dial would produce the identical bytes, so the loop must not arm one. Reconnecting
     // here is the `WIRE_ABI_EPOCH` bump's self-inflicted version of L3's forever-backoff.
     expect(h.streams).toHaveLength(1)
@@ -232,5 +244,117 @@ describe('the dial’s rejection', () => {
   it('keeps its bare wording when the close carries nothing', async () => {
     const { error } = await rejectionFor({})
     expect((error as Error).message).toBe('the stream closed before Welcome')
+  })
+})
+
+/**
+ * Answers one named channel's `Hello`.
+ *
+ * `./supervised-remote.test.ts`'s scripted peer answers *every* channel automatically, which is the
+ * one thing the generations below cannot use: what they set up is a dial whose `Welcome` arrives
+ * after another dial has already taken its place.
+ */
+function welcome(channel: FakeChannel): void {
+  channel.emit(fromHex(frameHex(WELCOME_OK_ANSI_V21)))
+}
+
+/** A mute peer plus a connection that counts `close()` per exec channel the factory opened. */
+function countedPeer() {
+  const peer = mutePeer()
+  const base = createTransportConnection(REMOTE, peer.transport)
+  const closes: number[] = []
+  const connection: HerdrRemoteConnection = {
+    ...base,
+    openTerminalStream: async (handlers, streamOptions) => {
+      const channel = await base.openTerminalStream(handlers, streamOptions)
+      const index = closes.push(0) - 1
+      const close = channel.close.bind(channel)
+      channel.close = () => {
+        closes[index] = (closes[index] ?? 0) + 1
+        close()
+      }
+      return channel
+    }
+  }
+  return { ...peer, connection, closes }
+}
+
+/** Drives the factory directly: generations are what is under test, not the supervisor's policy. */
+function linkUnder(connection: HerdrRemoteConnection) {
+  const reported: HerdrChannelClose[] = []
+  return {
+    reported,
+    ...createObserveStreamLink({ connection })({
+      noteInbound: () => {},
+      reportClosed: (close) => reported.push(close)
+    })
+  }
+}
+
+describe('generations of one link factory', () => {
+  it('a superseded dial cannot speak for the generation that replaced it', async () => {
+    const peer = countedPeer()
+    const link = linkUnder(peer.connection)
+
+    // Gen A dials and its bridge says nothing at all — the phone suspended mid-handshake.
+    const staleA: { link: SupervisedLink | null } = { link: null }
+    void link
+      .dial(() => {})
+      .then(
+        (resolved) => {
+          staleA.link = resolved
+        },
+        () => {
+          // A superseded dial may equally reject. What it may not do is act on behalf of B.
+        }
+      )
+    await flushMicrotasks()
+    expect(peer.streams).toHaveLength(1)
+
+    // L5 abandons it and redials (`./connection-supervisor.ts` `notifyForeground`). The supervisor
+    // cannot close the abandoned channel — `this.link` is still null at that moment
+    // (`connection-supervisor.ts:218-224`) — so this factory is the only owner it has.
+    const dialB = link.dial(() => {})
+    await flushMicrotasks()
+    expect(peer.streams).toHaveLength(2)
+    welcome(peer.streams[1]!)
+    const linkB = await dialB
+    expect(linkB.probe(1)).toBe(true)
+
+    // The abandoned bridge answers at last. Nothing about that channel is evidence about B's.
+    welcome(peer.streams[0]!)
+    await flushMicrotasks()
+    expect(linkB.probe(2)).toBe(true)
+
+    // …and the supervisor disposing of A's link (`connection-supervisor.ts:301-304` terminates a
+    // link whose generation moved on) must not take B's liveness with it. A `probe` stuck on false
+    // is read by the watchdog as silence, and it then kills a connection that is perfectly healthy.
+    staleA.link?.terminate()
+    expect(linkB.probe(3)).toBe(true)
+
+    // The superseded generation's own death stays unreported throughout — L3's attempt counter must
+    // not be charged twice for one dial (`onClose`'s guard, and the test above this one).
+    expect(link.reported).toEqual([])
+  })
+
+  it('does not accumulate exec channels when unanswered dials are superseded (B8)', async () => {
+    const peer = countedPeer()
+    const link = linkUnder(peer.connection)
+
+    // Five revivals against a bridge that neither answers nor dies. Each dial is one `ssh exec` and
+    // one remote `herdr` process (B8), and an abandoned dial's promise never settles — so nobody
+    // outside this factory ever gets a handle with which to close the channel it left behind.
+    for (let generation = 0; generation < 5; generation += 1) {
+      void link.dial(() => {}).catch(() => {})
+      await flushMicrotasks()
+    }
+
+    expect(peer.streams).toHaveLength(5)
+    // Exactly one is legitimately open: the newest dial, still handshaking.
+    expect(peer.streams.filter((stream) => !stream.closed)).toHaveLength(1)
+    expect(peer.streams[4]!.closed).toBe(false)
+    // …and each of the four it replaced was closed once, through the channel object the factory was
+    // handed. The peer is mute by construction, so a close here can only have come from this file.
+    expect(peer.closes).toEqual([1, 1, 1, 1, 0])
   })
 })
