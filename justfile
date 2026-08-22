@@ -41,6 +41,25 @@ windows-lint:
     rustup target add x86_64-pc-windows-msvc
     LIBGHOSTTY_VT_SIMD=false cargo clippy --bin herdr --locked --target x86_64-pc-windows-msvc -- -D warnings
 
+# herdr-mx: the `lint`/`ci` pair the upstream CI uses, minus `cargo fmt --check`.
+#
+# This fork does NOT keep the tree rustfmt-clean: the merge base is upstream's, upstream's own tree
+# does not satisfy this pin, and reformatting it wholesale would make every future upstream merge
+# conflict on whitespace. Measured on the pre-merge tip of this branch: `cargo fmt --check` already
+# reports 45 diffs, none of them ours. So on `mx` the enforced signal is clippy + nextest, which is
+# what herdr-mx#68 actually needed; `just lint` stays untouched for upstream parity.
+[unix]
+lint-no-fmt:
+    cargo clippy --all-targets --locked -- -D warnings
+
+# herdr-mx#68: what an `mx` push runs. Same body as `ci`, different lint dependency.
+[unix]
+ci-mx filter='all()': lint-no-fmt
+    cargo nextest run --locked -E "{{filter}}" --status-level fail --final-status-level slow --failure-output final --success-output never
+    just ui-hot-path-architecture-test
+    just integration-assets-test
+    just plugin-marketplace-test
+
 # Check formatting + run unit tests + Windows target lint + maintenance script tests
 [unix]
 check: ci windows-lint

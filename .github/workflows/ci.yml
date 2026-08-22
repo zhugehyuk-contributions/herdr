@@ -60,6 +60,9 @@ jobs:
           - os: macos-latest
             kind: unix
             nextest_filter: not binary(live_handoff)
+          # herdr-mx#63: the multi-remote client does not compile on windows, so the windows
+          # legs are skipped on `mx` pushes (see the `if:` on each windows step below and on
+          # `windows-conpty-package`). Kept in the matrix so PRs and upstream parity are unchanged.
           - os: windows-latest
             kind: windows
     runs-on: ${{ matrix.os }}
@@ -141,17 +144,25 @@ jobs:
           cache-bin: false
           key: ${{ matrix.os }}
 
+      # herdr-mx#68: `mx` runs `ci-mx` (clippy + nextest), not `ci` (which also enforces
+      # `cargo fmt --check`). This fork's tree is not rustfmt-clean by choice - see the
+      # `lint-no-fmt` comment in the justfile - so gating mx on fmt would make the check
+      # permanently red and therefore worthless as a signal, which is the opposite of #68.
       - name: Run checks
-        if: matrix.kind == 'unix'
+        if: matrix.kind == 'unix' && github.ref_name != 'mx'
         run: just ci '${{ matrix.nextest_filter }}'
 
+      - name: Run checks (mx)
+        if: matrix.kind == 'unix' && github.ref_name == 'mx'
+        run: just ci-mx '${{ matrix.nextest_filter }}'
+
       - name: Run Windows checks
-        if: matrix.kind == 'windows'
+        if: matrix.kind == 'windows' && github.ref_name != 'mx'
         shell: pwsh
         run: .\scripts\windows_check.ps1 -Mode check
 
       - name: Smoke ConPTY pane
-        if: matrix.kind == 'windows'
+        if: matrix.kind == 'windows' && github.ref_name != 'mx'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -160,6 +171,8 @@ jobs:
 
   windows-conpty-package:
     name: Windows ConPTY package
+    # herdr-mx#63: no windows build on this fork's default branch.
+    if: github.ref_name != 'mx'
     runs-on: windows-2022
     timeout-minutes: 25
     steps:
