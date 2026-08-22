@@ -3933,9 +3933,11 @@ mod tests {
         )
         .unwrap();
 
-        // herdr-mx: upstream v0.8.2's `sha256` asset-checksum map is not merged (its consumer is
-        // the rewritten `resolve_release_asset`, which this fork replaced with its own seeding
-        // path). See DIVERGENCE.md.
+        // herdr-mx: this manifest carries a `sha256` map and we ignore it. Upstream v0.8.2's
+        // consumer was the rewritten `resolve_release_asset`, which the mx seeding path replaced,
+        // so the field was never added to `RemoteUpdateManifest` and serde drops it here. That
+        // leaves remote install unverified while self-update (`src/update.rs:657`) is not — an
+        // asymmetry, not a decision. Tracked at herdr-mx#90; do not read this as settled.
         assert_eq!(
             manifest
                 .release_for_version("1.2.3")

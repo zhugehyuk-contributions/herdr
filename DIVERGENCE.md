@@ -67,10 +67,17 @@ the next sync, it names the two failure modes git will not flag for you.
   `prepare_remote_bridge_stream`. the mx bridge's whole worker chain is typed on `UnixStream` and
   it keeps `UnixListener::bind`. upstream's *ownership-checked* socket removal
   (`remove_socket_file_if_owned`) WAS adopted around it — a blind `remove_file` races a successor.
-- **managed ssh config keepalives** (#355, already deferred at v0.8.0) and the **sha256 asset
-  checksum map** in the update manifest — both live inside code paths the mx seeding/bridge
-  rewrite replaced. `RemoteSshConfigPaths` and friends are kept behind `#[allow(dead_code)]` so the
-  next merge stays quiet here.
+- **managed ssh config keepalives** (#355, already deferred at v0.8.0) — lives inside a code path
+  the mx seeding/bridge rewrite replaced. `RemoteSshConfigPaths` and friends are kept behind
+  `#[allow(dead_code)]` so the next merge stays quiet here.
+- the **sha256 asset checksum map** in the update manifest was in that bullet until 2026-08-23, and
+  should not have been. This ledger records divergences we chose and intend to keep, and its stated
+  device for them is to keep the next merge quiet — which is exactly the wrong thing to do to a
+  security control we dropped. Upstream v0.8.2 wires `verify_sha256` into the remote install path;
+  the mx seeding rewrite replaced that consumer, so `RemoteUpdateManifest` has no `sha256` field and
+  the map evaporates at deserialization, while self-update (`src/update.rs:657`, `:740`) still
+  verifies. Tracked, with an owner, at
+  [#90](https://github.com/2lab-ai/herdr-mx/issues/90) — not kept, and not quiet.
 - **`agent_panel_scope` retirement** — upstream deleted the workspace filter and left only a legacy
   deserializer. herdr-mx keeps the live knob: the multi-remote agents panel is a fleet view where
   "current workspace only" is the useful reduction.
