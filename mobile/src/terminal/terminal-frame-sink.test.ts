@@ -143,6 +143,53 @@ describe('createTerminalFrameSink', () => {
     ])
   })
 
+  it('keeps the screen across a resync and repaints it from the next full frame (§Q)', () => {
+    const { calls, target } = recordingTarget()
+    const sink = createTerminalFrameSink(target)
+    sink.accept(decodeTerminal(hex(TERMINAL_SMALL_FULL)))
+    sink.accept(decodeTerminal(hex(TERMINAL_SMALL_DIFF)))
+    // The stream died and a new one came up on the same pane. `init` would rebuild the xterm and
+    // call `resetZoom()`, i.e. delete the reader's pinch and pan for a network blip; the new
+    // stream's own full frame carries `ESC[2J` plus every cell, so a `write` repaints in place.
+    sink.resync()
+    sink.accept(decodeTerminal(hex(TERMINAL_SMALL_FULL)))
+    expect(calls).toEqual([
+      `init 100x30 ${JSON.stringify(`${ESC}[2J${ESC}[1;1H`)}`,
+      `write ${JSON.stringify(`${ESC}[1;1Hhi`)}`,
+      `write ${JSON.stringify(`${ESC}[2J${ESC}[1;1H`)}`
+    ])
+  })
+
+  it('refuses a diff after a resync — the buffer is the previous streams', () => {
+    const { calls, target } = recordingTarget()
+    const onNeedsFullFrame = vi.fn()
+    const sink = createTerminalFrameSink(target, { onNeedsFullFrame })
+    sink.accept(decodeTerminal(hex(TERMINAL_SMALL_FULL)))
+    sink.resync()
+    sink.accept(decodeTerminal(hex(TERMINAL_SMALL_DIFF)))
+    expect(onNeedsFullFrame).toHaveBeenCalledTimes(1)
+    expect(calls).toEqual([`init 100x30 ${JSON.stringify(`${ESC}[2J${ESC}[1;1H`)}`])
+    // …and it recovers on the frame that answer produces, still without an `init`.
+    sink.accept(decodeTerminal(hex(TERMINAL_SMALL_FULL)))
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toBe(`write ${JSON.stringify(`${ESC}[2J${ESC}[1;1H`)}`)
+  })
+
+  it('resizes after a resync when the stream came back at another grid', () => {
+    const { calls, target } = recordingTarget()
+    const sink = createTerminalFrameSink(target)
+    sink.accept(decodeTerminal(hex(TERMINAL_SMALL_FULL)))
+    sink.resync()
+    sink.accept({ width: 80, height: 24, full: true, bytes: new TextEncoder().encode('x') })
+    // `resize` is the one path that SHOULD reset the zoom: the desktop layout changed under the
+    // observer, so the reader's pan no longer points at anything (`./terminal-webview-html.ts`).
+    expect(calls).toEqual([
+      `init 100x30 ${JSON.stringify(`${ESC}[2J${ESC}[1;1H`)}`,
+      'resize 80x24',
+      'write "x"'
+    ])
+  })
+
   it('needs a full frame again after reset', () => {
     const { calls, target } = recordingTarget()
     const onNeedsFullFrame = vi.fn()

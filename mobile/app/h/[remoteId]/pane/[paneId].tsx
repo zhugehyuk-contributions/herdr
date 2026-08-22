@@ -155,7 +155,11 @@ export function PaneViewerScreen({
     connection,
     paneId: active?.paneId ?? null,
     viewportRows: activePane?.scroll?.viewport_rows ?? null,
-    handleRef
+    handleRef,
+    // §Q: the pane's own stream re-attaches on L3's ladder, and a transport that just handshook is
+    // the evidence that lets it skip the wait. Null when this remote is unsupervised, which is the
+    // mock build and every build before M4 — there the ladder is the only trigger.
+    connectionState: connectionStatus?.state ?? null
   })
   // Targets the *active chip's* pane, exactly like the observer above, so the screen you are
   // reading and the pane you are typing into cannot drift apart. `usePaneInput` rebuilds its sender

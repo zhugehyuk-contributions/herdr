@@ -1,8 +1,23 @@
 // Not from orca. Adds the Swift Package Manager dependencies the `herdr-ssh` local module needs to
 // the generated iOS project.
 //
-// ⚠️ UNVERIFIED: `expo prebuild` has never been run against this plugin. It has not produced a
-// project.pbxproj, and CocoaPods/Xcode have not read one it produced.
+// ## What this plugin is measured to do, and what it is NOT (first prebuild, 2026-08-23)
+//
+// Verified: `expo prebuild --platform ios` runs it, the objects below survive into
+// `ios/herdr.xcodeproj/project.pbxproj`, and **Xcode accepts them** — `kind = exactVersion` and
+// `kind = revision` both resolve, producing `ios/herdr.xcworkspace/xcshareddata/swiftpm/Package.resolved`
+// with Citadel at `ae8562f8…` (0.12.1) and swift-nio-ssh pinned to a bare revision `a05e6bb…`
+// (no `version` field — Citadel's own `0.3.4 ..< 0.4.0` range is overridden from the root).
+//
+// NOT verified, because it is false: this plugin alone does not make `import Citadel` compile. The
+// module's Swift is compiled in the **Pods** project, which never sees the app project's package
+// reference — first build failed with
+// `HerdrSshModule.swift:22:8: error: unable to resolve module dependency: 'Citadel'`. The
+// XCSwiftPackageProductDependency written below does not even survive: `pod install` re-saves the
+// app project through Xcodeproj, which drops objects no target references (measured: present after
+// `prebuild --no-install`, gone after `pod install`). The half that actually compiles is
+// `spm_dependency` in `modules/herdr-ssh/ios/HerdrSsh.podspec`; the pins are written in both files
+// and must be changed together.
 //
 // ## Why a plugin, and not a `s.dependency` in the podspec
 //
@@ -31,27 +46,24 @@
 // thing in the module: it depends on a writer's generality rather than on an API.
 const { withXcodeProject } = require('expo/config-plugins')
 
-/**
- * Pinned to a minor range, NOT to an exact version: the requirement emitted below is
- * `upToNextMinorVersion` from 0.12.1, i.e. `0.12.1 ..< 0.13.0`, so Citadel patch releases are
- * picked up without a decision here. That is deliberate — patch releases of an ssh stack are
- * usually the security fixes you want — but it is a range, and the rationale cuts both ways: a
- * floating ssh dependency in a mobile release is a crypto stack that changes without anyone
- * deciding to change it. `upToNextMinorVersion` is the widest rule that still keeps the
- * major/minor pair a human chose; if this app ever needs a reproducible crypto stack per release,
- * switch `kind` to `exactVersion` and take the update cost explicitly.
- *
- * (Corrected 2026-08-22: this comment previously opened with "Pinned exactly, not by range",
- * which contradicted the `kind` two dozen lines below. Verified live the same day: Citadel 0.12.1
- * and swift-nio-ssh 0.15.0 tags both exist; sshj 0.40.0, eddsa 0.3.0 and slf4j-nop 2.0.16 all
- * resolve on Maven Central. None of this module has been compiled — see ios/HerdrSsh.podspec.)
- */
 const PACKAGES = [
   {
     name: 'Citadel',
     url: 'https://github.com/orlandos-nl/Citadel.git',
-    minimumVersion: '0.12.1',
+    requirement: { kind: 'exactVersion', version: '0.12.1' },
     products: ['Citadel']
+  },
+  // Citadel floats this transitive hop as `0.3.4 ..< 0.4.0`; we pin it to a revision from the root.
+  // In that repository the tags lie — `0.4.0` (c997b6b, 2025-09-16) is the PARENT of `0.3.6`
+  // (a05e6bb, 2026-04-02), i.e. 0.3.6 is the newer content, re-tagged low to fit Citadel's range.
+  // A version or range constraint is therefore meaningless there; only a revision is honest.
+  // See .prd/06-open-decisions.md decision 7. `products` is empty on purpose — NIOSSH is linked by
+  // Citadel, this entry exists only to override the resolution.
+  {
+    name: 'swift-nio-ssh',
+    url: 'https://github.com/Wellz26/swift-nio-ssh.git',
+    requirement: { kind: 'revision', revision: 'a05e6bbe6b141ee68da3030e00275504c0595d4d' },
+    products: []
   }
 ]
 
@@ -84,10 +96,7 @@ module.exports = function withHerdrSshSpm(config) {
       objects['XCRemoteSwiftPackageReference'][referenceId] = {
         isa: 'XCRemoteSwiftPackageReference',
         repositoryURL: `"${pkg.url}"`,
-        requirement: {
-          kind: 'upToNextMinorVersion',
-          minimumVersion: pkg.minimumVersion
-        }
+        requirement: pkg.requirement
       }
       objects['XCRemoteSwiftPackageReference'][`${referenceId}_comment`] =
         `XCRemoteSwiftPackageReference "${pkg.name}"`

@@ -42,8 +42,26 @@ export type TerminalFrameSinkOptions = {
 
 export type TerminalFrameSink = {
   accept: (frame: TerminalFrame) => void
-  /** Forget the baseline — after a reconnect, before any frame of the new stream is applied. */
+  /** Forget the baseline **and the screen** — a retarget, where the next frame is another pane. */
   reset: () => void
+  /**
+   * Forget the baseline but **keep the screen** — a re-attach to the *same* pane after its stream
+   * died (`.prd/09-review-followups.md` §Q).
+   *
+   * The difference from {@link TerminalFrameSink.reset} is one call the user can see. `reset` makes
+   * the next frame an `init`, and `TerminalWebViewHandle.init` builds a new xterm and calls
+   * `resetZoom()` (`./terminal-webview-html.ts`) — i.e. the reader's pinch and pan, deleted by a
+   * network blip. Nothing about a dead socket says the *picture* changed, so this keeps the buffer
+   * and only demands that the next frame be a `full` one, which is what repaints it: `BlitEncoder`
+   * gives a client with no previous frame `ESC[2J` plus every cell (`src/protocol/render_ansi.rs`,
+   * `clear_before_full_redraw`). A diff arriving first is refused through the same
+   * {@link TerminalFrameSinkOptions.onNeedsFullFrame} route as a stream that opened on one.
+   *
+   * The decoder is dropped either way: a multi-byte character can straddle two `Terminal` frames,
+   * and the tail of one that died on the wire must never be spliced onto the head of the next
+   * stream.
+   */
+  resync: () => void
 }
 
 /**
@@ -122,6 +140,7 @@ export function createTerminalFrameSink(
 ): TerminalFrameSink {
   const decoder = createAnsiTextDecoder()
   let opened = false
+  let needsFullFrame = false
   let cols = 0
   let rows = 0
 
@@ -133,10 +152,21 @@ export function createTerminalFrameSink(
           return
         }
         opened = true
+        needsFullFrame = false
         cols = frame.width
         rows = frame.height
         target.init(frame.width, frame.height, decoder.push(frame.bytes))
         return
+      }
+      if (needsFullFrame) {
+        // A new stream on an old screen (`resync`). The buffer is still the last stream's, so a
+        // diff against it is a guess; the same refusal the unopened case makes, for the same
+        // reason — a wrong screen is worse than a late one.
+        if (!frame.full) {
+          options.onNeedsFullFrame?.()
+          return
+        }
+        needsFullFrame = false
       }
       // Why size first: a `full` frame that is full *because* the grid changed size
       // (`src/protocol/render_ansi.rs:88-91`) addresses cells outside the current xterm buffer, so
@@ -151,8 +181,15 @@ export function createTerminalFrameSink(
     reset() {
       decoder.reset()
       opened = false
+      needsFullFrame = false
       cols = 0
       rows = 0
+    },
+    resync() {
+      decoder.reset()
+      // `cols`/`rows` survive on purpose: they are what the *screen* currently is, so a new stream
+      // that comes back at another grid still resizes before it writes.
+      needsFullFrame = true
     }
   }
 }

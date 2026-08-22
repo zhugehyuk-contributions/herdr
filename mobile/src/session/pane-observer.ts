@@ -54,18 +54,15 @@ import {
   type ServerMessage,
   type ServerMessageChannel,
   type TerminalMessage,
+  type TransportTimer,
   type WelcomeMessage
 } from '@herdr/client-ts'
 import {
   createTerminalFrameSink,
   type TerminalFrameSinkTarget
 } from '../terminal/terminal-frame-sink'
-import {
-  paneLayoutFromResult,
-  resolveObserverGeometry,
-  type ObserverGeometry,
-  type PaneLayoutSnapshot
-} from './observer-geometry'
+import { ObserverGeometryCache, type ObserverGeometry } from './observer-geometry'
+import { PaneReattachLadder } from './pane-reattach'
 import type { HerdrRemoteConnection } from '../transport/herdr-connection'
 
 export type PaneObserverStatus = 'idle' | 'connecting' | 'observing' | 'closed' | 'failed'
@@ -96,6 +93,23 @@ export type PaneObserverOptions = {
    * black screen forever.
    */
   firstTerminalTimeoutMs?: number
+  /**
+   * L3's clock, for the re-attach ladder below. Injected for the reason
+   * `../transport/connection-supervisor.ts` injects it: the receipt drives the sequence off a fake
+   * clock, and the identical code runs against the host's in `test/live/`.
+   */
+  timer?: TransportTimer
+  /**
+   * Whether the screen this observer paints is on screen. Absent means "assume yes", which is what
+   * a headless caller (every unit fake, the Node harness) should assume.
+   *
+   * A backgrounded phone re-attaching spends an ssh exec and a remote `herdr` process (B8) on a
+   * picture nobody is looking at, and the OS's own suspend/resume schedule would deliver those
+   * wake-ups as a burst at resume anyway (`../api/use-foreground-refresh.ts` stops its poll for the
+   * same reason). So the ladder keeps ticking and the *dial* waits for
+   * {@link PaneObserver.notifyForeground}.
+   */
+  isForeground?: () => boolean
 }
 
 export const DEFAULT_FIRST_TERMINAL_TIMEOUT_MS = 20_000
@@ -110,26 +124,63 @@ export const DEFAULT_FIRST_TERMINAL_TIMEOUT_MS = 20_000
  * `Hello`/`Welcome`, and a fresh ~56 KB uncompressed ANSI baseline (B13) per tap. Measured
  * retarget-to-first-frame against a real server on a unix socket: **21 ms**
  * (`tests/observe_terminal_ansi.rs`).
+ *
+ * ## It also re-opens its own stream (`.prd/09-review-followups.md` §Q)
+ *
+ * Measured on a device: the exec channel died at 20:14:43Z, M4's supervisor redialled the *health*
+ * link at 20:15:11Z — and the pane stayed frozen until 20:17:27Z, when the user left the screen and
+ * came back. Two streams, one supervisor: the connection healed and the picture did not, because
+ * nothing re-sent `Hello`/`ObserveTerminal` on the pane's own channel.
+ *
+ * So this class owns that repair, and it owns it with borrowed parts rather than new ones:
+ *
+ *   · **when** is `../transport/reconnect-policy.ts` — the same `ReconnectScheduler`, the same
+ *     ladder, the same 90s trickle that never parks (L3). No second policy, no second constant.
+ *   · **what** is one `Hello` + one `ObserveTerminal` at the grid this observer *already*
+ *     declared. A re-attach is not a new reading: it must not re-ask `pane.layout` (B8) and must
+ *     not hand the server a geometry the pane never asked for (M2 (c), "데스크톱 레이아웃 무변화").
+ *   · **onto what** is the screen that is still there. The sink is `resync`ed, not `reset`, so the
+ *     new stream's full frame repaints the existing xterm instead of building a new one — an
+ *     `init` would call `resetZoom()` and throw away the reader's pinch and pan.
  */
 export class PaneObserver {
   private readonly options: PaneObserverOptions
   private readonly sink: ReturnType<typeof createTerminalFrameSink>
+  /** §Q's when. One per observer; the policy is `./pane-reattach.ts`, restated nowhere. */
+  private readonly ladder: PaneReattachLadder
   private channel: ServerMessageChannel | null = null
   private state: PaneObserverStatus = 'idle'
   private disposed = false
   private observing = false
   private frames = 0
+  /**
+   * Which attach the live callbacks belong to. Bumped by every attach *and* by every teardown, so a
+   * channel dying late cannot book a second failure against the generation that replaced it — the
+   * same rule `../transport/observe-stream-link.ts` states as `DialRecord.retired`.
+   */
+  private attachSeq = 0
   /** The pane currently being observed. Moves with `retarget`; `options.paneId` is only the seed. */
   private target: string
   /** The grid this connection last declared, so a retarget only resizes when it has to. */
   private geometry: ObserverGeometry | null = null
-  /** The last `pane.layout` snapshot. Covers every pane of that workspace, not just the one asked for. */
-  private layout: PaneLayoutSnapshot | null = null
+  /** Which pane {@link geometry} was resolved for. A re-attach may only reuse it for that pane. */
+  private geometryFor: string | null = null
+  /** `pane.layout`, asked once per workspace rather than once per attach (B8). */
+  private readonly grids: ObserverGeometryCache
   private retargets = 0
 
   constructor(options: PaneObserverOptions) {
     this.options = options
     this.target = options.paneId
+    this.grids = new ObserverGeometryCache(
+      (paneId) => options.connection.api.request('pane.layout', { pane_id: paneId }),
+      options.viewportRows ?? null
+    )
+    this.ladder = new PaneReattachLadder({
+      attach: () => void this.attach(),
+      ...(options.timer === undefined ? {} : { timer: options.timer }),
+      ...(options.isForeground === undefined ? {} : { isForeground: options.isForeground })
+    })
     this.sink = createTerminalFrameSink(options.target, {
       // The sink refuses a diff it has no baseline for; the cure is the server's, and this class
       // holds the write end. `ServerMessageChannel` sends the same message for *decode* losses —
@@ -158,26 +209,78 @@ export class PaneObserver {
     return this.retargets
   }
 
+  /** How many streams the ladder opened. `start()`'s first one is not one of them (§Q). */
+  get reattachCount(): number {
+    return this.ladder.attemptCount
+  }
+
   async start(): Promise<void> {
     if (this.state !== 'idle') {
       return
     }
+    await this.attach()
+  }
+
+  /**
+   * The screen came back to the foreground. Dials now instead of waiting out the armed rung — L4's
+   * nudge, applied to the pane's stream (`../transport/connection-supervisor.ts` `notifyForeground`
+   * is the connection's).
+   *
+   * The counter is reset because a resume is the one moment the *reason* for the failures may have
+   * changed under the app (a new radio, a new network), which is `redialNow(true)`'s "a genuinely
+   * fresh start" in `../transport/reconnect-policy.ts`.
+   */
+  notifyForeground(): void {
+    if (this.disposed || this.state === 'idle' || this.observing || this.state === 'connecting') {
+      return
+    }
+    this.ladder.reviveNow()
+  }
+
+  private async attach(): Promise<void> {
+    if (this.disposed || this.ladder.latched) {
+      return
+    }
+    this.attachSeq += 1
+    const generation = this.attachSeq
     this.setStatus('connecting')
     try {
-      const geometry = await this.resolveGeometry(this.target)
-      if (this.disposed) {
+      // A re-attach re-declares the grid it already had rather than re-deriving it: `pane.layout` is
+      // an exec channel and a remote `herdr` process on the ssh bridge (B8), and a *different*
+      // answer arriving mid-outage would resize the reader's screen for a pane that never moved
+      // (M2 (c)). Only a target change invalidates it — see `retarget`.
+      const geometry =
+        this.geometryFor === this.target && this.geometry !== null
+          ? this.geometry
+          : await this.grids.resolve(this.target)
+      if (this.disposed || generation !== this.attachSeq) {
         return
       }
       this.geometry = geometry
+      this.geometryFor = this.target
       this.options.events?.onGeometry?.(geometry)
       const channel = await this.options.connection.openTerminalStream(
         {
-          onMessage: (message) => this.onMessage(message),
-          onError: (error) => this.fail(error),
+          // Every callback is this generation's. A channel that dies after the ladder replaced it
+          // must not book a second failure, or the attempt counter L3's cap keys off doubles.
+          onMessage: (message) => {
+            if (generation === this.attachSeq) {
+              this.onMessage(message)
+            }
+          },
+          onError: (error) => {
+            if (generation === this.attachSeq) {
+              this.fail(error)
+            }
+          },
           onClose: (close) => {
+            if (generation !== this.attachSeq) {
+              return
+            }
             if (this.state !== 'failed') {
               this.setStatus('closed')
             }
+            this.streamDown()
             this.options.events?.onClose?.(close)
           }
         },
@@ -186,7 +289,9 @@ export class PaneObserver {
             this.options.firstTerminalTimeoutMs ?? DEFAULT_FIRST_TERMINAL_TIMEOUT_MS
         }
       )
-      if (this.disposed) {
+      if (this.disposed || generation !== this.attachSeq) {
+        // Superseded while the exec channel was opening — nobody else holds this one, and an exec
+        // channel nobody closes is a remote `herdr` process nobody closes (B8).
         channel.close()
         return
       }
@@ -236,25 +341,35 @@ export class PaneObserver {
    */
   async retarget(paneId: string): Promise<void> {
     if (this.disposed || this.channel === null || !this.observing) {
-      // Not open yet: the caller is switching panes before the first stream came up. Move the seed
-      // so `onWelcome` observes the pane the user actually wants.
-      this.target = paneId
+      // Not open yet, or down and waiting on a re-attach (§Q). Move the seed so the next
+      // `Hello`/`ObserveTerminal` names the pane the user actually wants — and drop the cached grid
+      // with it, because it belongs to the pane being left and a re-attach would otherwise declare
+      // it (B4: a pane wider than the declared rect is cropped, not reflowed). The screen goes too:
+      // the next stream paints a different pane, which is exactly what `reset` is for.
+      if (paneId !== this.target) {
+        this.target = paneId
+        this.geometry = null
+        this.geometryFor = null
+        this.sink.reset()
+      }
       return
     }
     if (paneId === this.target) {
       return
     }
     const channel = this.channel
-    const geometry = await this.resolveGeometry(paneId)
+    const geometry = await this.grids.resolve(paneId)
     if (this.disposed || this.channel !== channel) {
       return
     }
+    const regrid = geometry.cols !== this.geometry?.cols || geometry.rows !== this.geometry?.rows
     this.target = paneId
+    this.geometry = geometry
+    this.geometryFor = paneId
     this.retargets += 1
     this.sink.reset()
     try {
-      if (geometry.cols !== this.geometry?.cols || geometry.rows !== this.geometry?.rows) {
-        this.geometry = geometry
+      if (regrid) {
         this.options.events?.onGeometry?.(geometry)
         await channel.send(encodeResizeFrame({ cols: geometry.cols, rows: geometry.rows }))
       }
@@ -267,43 +382,39 @@ export class PaneObserver {
   /** Ends the stream. Idempotent; safe before `start()` has resolved. */
   close(): void {
     this.disposed = true
+    // Before the channel: an unmounted screen must not leave a rung armed, or the ladder keeps
+    // spending exec channels on a picture that has no reader (B8).
+    this.ladder.cancel()
     this.channel?.close()
     this.channel = null
   }
 
-  private async resolveGeometry(paneId: string): Promise<ObserverGeometry> {
-    // `pane.layout` answers with the whole workspace snapshot — `area` plus a `rect` for EVERY pane
-    // in it — and `resolveObserverGeometry` takes the max of `area` and the pane's own rect. So a
-    // retarget inside a snapshot we already hold needs no round trip and, in the common case,
-    // computes the identical grid. That matters more than it sounds: the JSON API answers one
-    // request per connection (`src/api/server.rs`), so on the ssh bridge each call is an exec
-    // channel and a remote `herdr` process (blocker B8), and it was the dominant term in the
-    // measured swipe latency.
-    const cached = this.layout
-    if (cached?.panes.some((pane) => pane.pane_id === paneId)) {
-      return resolveObserverGeometry({
-        paneId,
-        layout: cached,
-        viewportRows: this.options.viewportRows ?? null
-      })
+  /**
+   * This generation is over. §Q's repair, and the only place that arms the ladder.
+   *
+   * The sequence number moves first: `channel.close()` below provokes the close callback that may
+   * have brought us here, and a second pass would book a second failure against a generation that
+   * is already gone — L3's cap and the trickle both key off that counter.
+   */
+  private streamDown(): void {
+    this.attachSeq += 1
+    const channel = this.channel
+    this.channel = null
+    this.observing = false
+    if (channel !== null) {
+      try {
+        channel.close()
+      } catch {
+        // Already gone is the normal case here, not an error.
+      }
     }
-    let layout = null
-    try {
-      layout = paneLayoutFromResult(
-        await this.options.connection.api.request('pane.layout', { pane_id: paneId })
-      )
-    } catch {
-      // A box that cannot answer `pane.layout` still has a pane worth reading; the fallback is the
-      // server's own no-client size (see `./observer-geometry.ts`), which is never *narrower* than
-      // what that server renders at.
-      layout = null
+    if (this.disposed) {
+      return
     }
-    this.layout = layout
-    return resolveObserverGeometry({
-      paneId,
-      layout,
-      viewportRows: this.options.viewportRows ?? null
-    })
+    // `resync`, never `reset`: the pane did not change, so the screen the reader is zoomed into
+    // stays and the next stream's full frame repaints it in place.
+    this.sink.resync()
+    this.ladder.arm()
   }
 
   private onMessage(message: ServerMessage): void {
@@ -331,6 +442,9 @@ export class PaneObserver {
       // (02-architecture.md §2.2 — `Hello`'s field is named `requested_encoding` for this reason).
       assertWelcomeAccepted(welcome, { encoding: RenderEncoding.TerminalAnsi })
     } catch (error: unknown) {
+      // Latched, not retried: the peer will answer the next `Hello` with the same `Welcome`, so a
+      // ladder here would be an ssh exec every 90s forever against a verdict that cannot move.
+      this.ladder.latch()
       this.fail(error instanceof Error ? error : new Error(String(error)))
       return
     }
@@ -338,6 +452,9 @@ export class PaneObserver {
       return
     }
     this.observing = true
+    // The handshake landed, so the failures before it are spent — the counter returns to zero here
+    // and nowhere else (`../transport/reconnect-policy.ts`, `noteConnected`).
+    this.ladder.noteAttached()
     this.setStatus('observing')
     const written = this.channel.send(encodeObserveTerminalFrame(this.target))
     if (written !== undefined) {
@@ -365,6 +482,9 @@ export class PaneObserver {
     }
     this.setStatus('failed')
     this.options.events?.onError?.(error)
+    // A failure freezes the picture exactly as a close does, so it earns the same repair. The latch
+    // above is what keeps a refused handshake out of this.
+    this.streamDown()
   }
 
   private setStatus(status: PaneObserverStatus): void {

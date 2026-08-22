@@ -121,3 +121,49 @@ export function paneLayoutFromResult(
   }
   return candidate as PaneLayoutSnapshot
 }
+
+/** One `pane.layout` round trip, as this file needs to see it. The codec and the socket are the caller's. */
+export type PaneLayoutRequest = (
+  paneId: string
+) => Promise<{ type: string } & Record<string, unknown>>
+
+/**
+ * {@link resolveObserverGeometry} plus the one round trip it needs, and the memory that keeps it to
+ * one.
+ *
+ * A `pane.layout` answer covers the **whole workspace** — `area` plus a `rect` for every pane in it
+ * — so a second pane of the same workspace needs no second call, and neither does re-attaching to
+ * the same pane after its stream died (`.prd/09-review-followups.md` §Q). That is not a micro
+ * optimisation: the JSON API answers one request per connection (`src/api/server.rs`), so on the
+ * ssh bridge each call is an exec channel and a remote `herdr` process (blocker B8), and it was the
+ * dominant term in the measured swipe latency.
+ */
+export class ObserverGeometryCache {
+  private readonly request: PaneLayoutRequest
+  private readonly viewportRows: number | null
+  /** The last snapshot. Covers every pane of that workspace, not just the one asked for. */
+  private layout: PaneLayoutSnapshot | null = null
+
+  constructor(request: PaneLayoutRequest, viewportRows: number | null) {
+    this.request = request
+    this.viewportRows = viewportRows
+  }
+
+  async resolve(paneId: string): Promise<ObserverGeometry> {
+    const cached = this.layout
+    if (cached?.panes.some((pane) => pane.pane_id === paneId)) {
+      return resolveObserverGeometry({ paneId, layout: cached, viewportRows: this.viewportRows })
+    }
+    let layout = null
+    try {
+      layout = paneLayoutFromResult(await this.request(paneId))
+    } catch {
+      // A box that cannot answer `pane.layout` still has a pane worth reading; the fallback is the
+      // server's own no-client size (above), which is never *narrower* than what that server
+      // renders at.
+      layout = null
+    }
+    this.layout = layout
+    return resolveObserverGeometry({ paneId, layout, viewportRows: this.viewportRows })
+  }
+}

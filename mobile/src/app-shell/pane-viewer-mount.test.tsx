@@ -78,7 +78,12 @@ vi.mock('react-native', () => {
       loop: () => ({ start() {}, stop() {} }),
       timing: () => ({ start() {}, stop() {} })
     },
-    AppState: { currentState: 'active' },
+    // `usePaneObserver` subscribes for the §Q foreground nudge, so the mock owes a subscription
+    // rather than only a current value.
+    AppState: {
+      currentState: 'active',
+      addEventListener: () => ({ remove: () => {} })
+    },
     Easing: { linear: 'linear' },
     Platform: { OS: 'ios' },
     Pressable: 'Pressable',
