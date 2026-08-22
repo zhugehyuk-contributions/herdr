@@ -231,6 +231,75 @@ QA 사이에 랩이 죽어 있다(sshd·tmux 종료, `app.json` 원복). 매번 
 
 ---
 
+---
+
+## iOS 절차 — Android와 판독 방향이 **반대**다 (2026-08-23 신설)
+
+위의 §절차는 전부 Android다. iOS 첫 QA(`.prd/09` §R)는 절차 없이 즉흥으로 돌았고, 그래서 재현이 안 됐다.
+여기가 그 절차다. **Android 절차를 읽고 iOS에 옮겨 적용하지 마라 — 아래 세 지점이 정반대다.**
+
+| | Android | iOS |
+|---|---|---|
+| 화면 판독 | `uiautomator` 텍스트 노드 **0개** → 스크린샷+비전 | 접근성 트리에 텍스트가 **올라온다** → **XCUITest `debugDescription`이 정본** |
+| 랩 서버 주소 | 에뮬레이터에서 `10.0.2.2:<port>` | 시뮬레이터는 호스트 네트워크 스택을 공유 → **`127.0.0.1:<port>` 직결** (§R의 `ssh ed25519 인증 OK`가 이 경로로 성립한 실측) |
+| 키 포맷 | `loadKeys` 판별로 고전 PEM RSA까지 | **사실상 ed25519 전용** — Citadel이 `BEGIN OPENSSH PRIVATE KEY`만 받고, RSA는 파싱을 통과해도 서명에서 죽는다 |
+
+### 환경
+
+```bash
+xcrun simctl list runtimes          # iOS 26.5 (23F77) — 없으면 xcodebuild -downloadPlatform iOS (8.5GB)
+xcrun simctl list devices booted    # iPhone 17 Pro 153F2FDE-5A37-4909-811B-6AE3B2DFC739
+```
+
+`Xcode.app` 설치만으로는 런타임이 안 생긴다 — 디바이스 타입 42종만 있고 `runtimes`가 빈다.
+
+### 빌드
+
+새 QA 워크트리에는 **`mobile/ios/`도 없다** (Android의 `mobile/android/`와 같은 이유 — prebuild 산출물).
+
+```bash
+npx --yes pnpm@10 install --frozen-lockfile   # pnpm은 PATH에 없다. npx로 부른다
+npx expo prebuild --platform ios --no-install
+(cd ios && pod install)                        # HerdrSsh가 Podfile.lock에 있는지 확인 — 조용한 미링크 가드
+npx expo run:ios --device <UDID>
+```
+
+`buildReactNativeFromSource: true`라 **첫 빌드는 길다**(Pods 124개 + RN 소스). 캐시가 없으면 수십 분.
+
+> ⚠️ **Metro 포트 충돌이 격리를 조용히 무효화한다 (2026-08-23 실측).**
+> 8081이 다른 워크트리의 Metro에 잡혀 있으면 `expo run:ios`가 *"Skipping dev server"*로 넘어가고,
+> 설치된 앱은 **그 다른 트리의 JS를 로드한다.** 고정 워크트리의 의미가 통째로 사라지는데
+> 화면상 아무 차이가 없다. 빌드 전에 `lsof -nP -iTCP:8081 -sTCP:LISTEN`으로 주인을 확인하고,
+> 남의 Metro면 **QA 워크트리의 Metro로 교체**하라(포트를 나누는 쪽이면 앱이 그 포트를 알아야 한다).
+
+### 화면 읽기 — XCUITest 타깃 주입
+
+`idb`도 `cliclick`도 이 머신에 없고 `simctl openurl`은 확인창을 띄운다. 그래서 **XCUITest 타깃을 넣어**
+읽기와 탭을 둘 다 그 안에서 한다. `app.debugDescription`이 화면 전체를 텍스트로 뱉으므로
+Android처럼 스크린샷을 비전으로 읽을 필요가 없다 — **문자열 비교로 기계 판정할 수 있다.**
+
+프레임 좌표까지 나오므로 §R의 D1(버튼이 상태바 아래에 깔림)처럼 **"탭은 전달되는데 아무 일도 안 일어나는"**
+결함을 좌표 산술로 판정할 수 있다: 버튼 `y` + 높이 < top inset이면 도달 불가다.
+
+### mock/live 판별 — Android와 동일
+
+정본 판별자(`reviewing PR #91`·`writing mockup html`·호스트 4종·`extra.herdrRemotes == []`)는 플랫폼 무관이다.
+iOS는 그 문자열을 `debugDescription`에서 직접 grep할 수 있어 오히려 더 강하다.
+
+### ⛔ 선행 게이트 — 코드사이닝 아이덴티티 (M2b 한정)
+
+이 머신에 아이덴티티가 **0개**라 시뮬 앱 엔타이틀먼트가 비고, 키체인이 안 돌고, `expo-secure-store`가
+아예 실행되지 않는다 → **M2b는 판정 불가**(FAIL이 아니다). M2·M3·M4는 이 게이트와 무관하게 판정 가능하다.
+재서명 우회 2회는 컨테이너화가 깨져 실패했다(`containerization was prevented`) — 3회째 시도 금지, 유저 액션이다.
+
+### iOS 사각지대
+
+- 시뮬레이터는 기내모드·셀룰러 전환·저전력 종료를 재현하지 못한다 → **M4는 시뮬로 닫히지 않는다.**
+- `exitCode`가 iOS에서 올라오지 않는다(Citadel이 `exit-status`를 노출 안 함) → `exitCode === 127`
+  = "원격에 herdr 없음, 재시도 중단" 판정이 **iOS에서만 발동하지 않는다.** 다음 break 후보.
+- exec 요청 응답에 상한이 없다 — Android는 sshj `client.timeout` 20초로 묶이는데 iOS는 안 묶인다.
+  서버가 exec에 영영 답하지 않으면 다이얼이 매달린다.
+
 ## 체크리스트 (최소)
 
 - [ ] APK 빌드 시각이 마지막 커밋보다 최신
@@ -248,7 +317,8 @@ QA를 돌렸으면 다음을 보고에 넣는다. 하나라도 없으면 "QA 했
 2. 스크린샷과, 거기서 **읽은 내용**
 3. mock/live 판정과 그 근거(어느 문자열을 보고 판정했나)
 4. 열어본 화면 목록
-5. 못 한 것 — iOS는 Xcode 부재로 항상 여기 들어간다
+5. 못 한 것 — **"판정 불가"를 FAIL과 구분해 적는다.** 하네스가 없어 못 본 것은 판정 불가이지 FAIL이 아니고,
+   반대로 못 본 것을 PASS로 올리지도 않는다 (iOS M2b의 서명 게이트가 이 칸의 표준 사례다)
 
 ---
 
