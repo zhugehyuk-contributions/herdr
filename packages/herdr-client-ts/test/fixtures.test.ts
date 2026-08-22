@@ -30,14 +30,29 @@ import { fromHex, toHex } from "./helpers.js";
 
 /**
  * Cross-check against the conformance fixtures generated from the Rust side
- * (`docs/next/protocol/fixtures.json`, owned by another work stream). The file is optional: when
- * it is absent these checks are skipped and the rest of the suite still pins the wire format on
- * its own bincode-derived golden vectors.
+ * (`docs/next/protocol/fixtures.json`, owned by another work stream). Off CI the file is optional:
+ * when it is absent these checks are skipped and the rest of the suite still pins the wire format
+ * on its own bincode-derived golden vectors.
  */
 const FIXTURES_PATH = fileURLToPath(
   new URL("../../../docs/next/protocol/fixtures.json", import.meta.url),
 );
 const HAS_FIXTURES = existsSync(FIXTURES_PATH);
+
+/**
+ * On CI it is not optional. `describe.skipIf` is a silent pass: if the corpus is deleted, renamed,
+ * or this relative path drifts, every cross-check below evaporates and the run still reports green.
+ * That is precisely the drift this file exists to catch — the Rust side (`src/protocol/
+ * wire_fixtures.rs`) only checks its generator against the committed corpus, and nothing else
+ * checks the committed corpus against this codec.
+ *
+ * Strict by default whenever `CI` is set (GitHub Actions sets it), not only when a workflow
+ * remembers to opt in, so any future job that runs `pnpm test` here inherits the gate.
+ * `HERDR_REQUIRE_FIXTURES=1` turns it on locally; `=0` is the deliberate escape hatch.
+ */
+const REQUIRE_FIXTURES =
+  process.env.HERDR_REQUIRE_FIXTURES === "1" ||
+  (!!process.env.CI && process.env.HERDR_REQUIRE_FIXTURES !== "0");
 
 interface FixtureVector {
   name: string;
@@ -103,6 +118,15 @@ function asOrdinal(value: unknown, order: readonly string[]): number | undefined
   }
   return undefined;
 }
+
+describe("docs/next/protocol/fixtures.json availability", () => {
+  it.runIf(REQUIRE_FIXTURES)("is present, so the cross-check below cannot skip itself away", () => {
+    expect(
+      HAS_FIXTURES,
+      `${FIXTURES_PATH} is missing: a skipped cross-check is not a passing one. Regenerate the corpus from the Rust side or repair this path.`,
+    ).toBe(true);
+  });
+});
 
 describe.skipIf(!HAS_FIXTURES)("docs/next/protocol/fixtures.json cross-check", () => {
   it("agrees with our enum ordinals", () => {
