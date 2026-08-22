@@ -143,6 +143,29 @@ observe 세션 상태기계.
 폰 뷰포트 안에 보이는 것은 별개다([`03-blockers.md`](./03-blockers.md) B4). v1 기준은 **수동 이동(핀치줌·가로스크롤) 후 도달 가능**이고,
 "열자마자 보인다"를 원하면 클라이언트가 ANSI 커서 위치로 **auto-pan/follow**하는 동작이 별도로 필요하다 — 그건 v1 범위 밖.
 
+### M2b — 원격 설정 + 키 보관 (**2026-08-23 신설 — 계획 공백이었다**)
+
+앱이 어느 서버를 볼지 정하는 유일한 통로가 지금은 **`app.json`의 `expo.extra.herdrRemotes`**다
+(`modules/herdr-ssh/src/app-connections.ts:47`). 그건 두 가지 이유로 최종 답이 될 수 없다:
+
+1. **개인키가 번들에 구워진다.** `app.json`은 커밋되는 파일이고 APK에 그대로 실린다.
+   2026-08-23에 QA 랩 설정을 넣는 것만으로 워킹트리에 평문 OpenSSH 키가 올라왔고, `git add -A` 한 번이면
+   커밋될 위치에 있었다. 스로어웨이 키였지만 경로가 그렇다는 게 문제다.
+2. **유저가 앱을 쓸 수 없다.** 목표 1번("휴대폰으로 내 원격 터미널 에이전트 사용")은 유저가 자기 서버를
+   등록할 수 있어야 성립한다. 재빌드해야 원격이 바뀌는 앱은 그 목표를 만족하지 않는다.
+
+**정본은 이미 코드가 지목하고 있다** — `modules/herdr-ssh/src/remote-config.ts:12`:
+*"`expo-secure-store` (already a dependency), and `HerdrSshRemoteConfig` is shaped so that swapping …"*.
+즉 자료구조는 준비돼 있고 **보관처와 UI가 없다.**
+
+**범위**: 설정 화면(원격 추가/삭제/편집) · 키를 `expo-secure-store`에 저장(번들·로그·크래시리포트에 안 남게) ·
+`app.json` 경로는 **개발 전용으로 강등**(있으면 읽되, secure-store가 이기고, 릴리즈 빌드에서는 무시).
+**QR로 추가**는 닫힌 전제상 herdr *데스크톱 클라이언트*의 기능이고(사이드바 노드 우클릭 → show qr),
+앱 쪽은 그 QR을 읽어 원격을 등록하는 소비자다 — 신규 페어링 프로토콜 없음, 인증은 ssh 그대로.
+
+**됐다** = ① 앱에서 원격을 추가해 재빌드 없이 붙는다 ② 키가 `app.json`·번들·logcat 어디에도 안 남는다
+③ 앱 삭제 시 키가 같이 사라진다 ④ Android·iOS 각각 QA PASS(별도 에이전트).
+
 ### M3 — 입력 (와이어 쓰기 없이)
 소프트 키보드 → `pane.send_input{text}` · 액세서리 키 행(Enter/Esc/Ctrl-C/화살표/Tab) → `keys[]` ·
 퀵 커맨드(y/n/승인).
