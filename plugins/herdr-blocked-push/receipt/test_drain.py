@@ -144,7 +144,7 @@ def test_poison_record_does_not_wedge_the_queue():
 
 def test_coalesce_window_absorbs_duplicate_blocked_events():
     # herdr re-emits pane.agent_status_changed when only the presentation changed
-    # (src/app/api.rs:609-611), so one blocked episode can enqueue several records.
+    # (src/app/api.rs:645-646), so one blocked episode can enqueue several records.
     case = Case(coalesce_seconds=300)
     case.append_record(record("p1", NOW_MS, "a"))
     case.append_record(record("p1", NOW_MS + 500, "b"))

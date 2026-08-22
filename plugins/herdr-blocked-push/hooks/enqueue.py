@@ -15,8 +15,8 @@ Contract with herdr (all verified against the tree this ships in, not assumed):
   (`src/app/api/plugins/runtime.rs:34` -> `src/plugin_paths.rs:27`).
 
 Only `blocked` is enqueued. `done` is deliberately excluded: it is not a device-independent
-fact but `(AgentState::Idle, seen == false)` (`src/app/api_helpers.rs:104-105`), and the
-`seen` bit flips as soon as the desktop looks at the pane (`src/app/actions.rs:1282`), so a
+fact but `(AgentState::Idle, seen == false)` (`src/app/api_helpers.rs:101`), and the
+`seen` bit flips as soon as the desktop looks at the pane (`src/app/actions.rs:1292`), so a
 `done` push would race the desktop and fire for something the user already saw.
 
 This module imports nothing that can open a socket. `os.uname().nodename` is used instead of

@@ -7,6 +7,7 @@ test:
     just ui-hot-path-architecture-test
     just integration-assets-test
     just plugin-marketplace-test
+    just blocked-push-plugin-test
 
 # Run one nextest filter, e.g. `just test-one codex_stale_working`
 test-one filter:
@@ -34,6 +35,7 @@ ci filter='all()': lint
     just ui-hot-path-architecture-test
     just integration-assets-test
     just plugin-marketplace-test
+    just blocked-push-plugin-test
 
 # Run Windows target lint from Unix/macOS to catch cfg(windows) compile and clippy failures before CI
 [unix]
@@ -105,6 +107,10 @@ integration-assets-test:
 # Run plugin marketplace Worker tests
 plugin-marketplace-test:
     cd workers/plugin-marketplace && bun install --frozen-lockfile && bun test
+
+# Exercise the blocked-push plugin hook and its sender (plugins/herdr-blocked-push)
+blocked-push-plugin-test:
+    python3 -m unittest scripts.test_blocked_push_plugin
 
 # Build the vendored libghostty-vt source dist
 build-libghostty-vt:

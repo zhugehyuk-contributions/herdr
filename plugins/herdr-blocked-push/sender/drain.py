@@ -14,7 +14,7 @@ Delivery semantics: at-least-once at the transport, effectively-once at the adap
   * A ledger of sent record ids makes a replayed cursor harmless.
   * A per-pane coalesce window absorbs the duplicate `blocked` events herdr legitimately
     emits for one blocked episode -- `emit_pane_state_update` fires the event when the
-    *presentation* changed even if the status did not (`src/app/api.rs:609-611`).
+    *presentation* changed even if the status did not (`src/app/api.rs:645-646`).
   * An adapter failure stops the run without advancing the cursor, so the next run retries.
 """
 

@@ -13,10 +13,10 @@ Two processes, on purpose:
 ## Why only `blocked`
 
 `done` is not a device-independent fact. It is `(AgentState::Idle, seen == false)`
-(`src/app/api_helpers.rs:104-105`), and `seen` flips to true the moment the desktop's active
-tab shows that pane (`src/app/actions.rs:3082-3085`). A `done` push therefore races the
+(`src/app/api_helpers.rs:101`), and `seen` flips to true the moment the desktop's active
+tab shows that pane (`src/app/actions.rs:3113-3117`). A `done` push therefore races the
 desktop and fires for things the user already saw. `blocked` does not depend on `seen` at
-all (`api_helpers.rs:107`), so it is the only status worth pushing in v1. The stage-1 shell
+all (`api_helpers.rs:104`), so it is the only status worth pushing in v1. The stage-1 shell
 filter and the stage-2 parser both enforce that, and the receipt asserts it against a server
 that demonstrably passed through `working`, `idle` and `done`.
 
@@ -24,7 +24,7 @@ that demonstrably passed through `working`, `idle` and `done`.
 
 Event hooks run **before** the event reaches the subscription hub:
 `emit_event` calls `run_plugin_event_hooks(&event)` and only then `event_hub.push(event)`
-(`src/app/api.rs:782-784`). So the hook is upstream of the ring buffer, upstream of the
+(`src/app/api.rs:818-820`). So the hook is upstream of the ring buffer, upstream of the
 per-subscription replay, and upstream of the poll-rate cap that blocker **B9**
 (`mobile/.prd/03-blockers.md`) is about. It cannot miss an event to eviction.
 
@@ -40,14 +40,14 @@ herdr plugin list --json
 ```
 
 No server restart. `run_plugin_event_hooks` re-reads the on-disk registry on every hookable
-event (`src/app/api/plugins/runtime.rs:221` → `plugins/mod.rs:39-46`), so a link takes effect
+event (`src/app/api/plugins/runtime.rs:223` → `plugins/mod.rs:39-46`), so a link takes effect
 on the next status change.
 
 Paths herdr picks for the plugin:
 
 * queue: `$HERDR_PLUGIN_STATE_DIR/queue.ndjson`, i.e.
   `~/.local/state/herdr/plugins/herdr-mx.blocked-push/queue.ndjson`
-  (`herdr-dev` instead of `herdr` for a debug build — `src/config/io.rs:21-27`).
+  (`herdr-dev` instead of `herdr` for a debug build — `src/config/io.rs:22-28`).
 * config: `herdr plugin config-dir herdr-mx.blocked-push` → put `sender.json` there.
 
 Requirements: a POSIX `sh` and `python3` on `PATH` (stdlib only, works on 3.9+). Set
@@ -72,7 +72,7 @@ Requirements: a POSIX `sh` and `python3` on `PATH` (stdlib only, works on 3.9+).
   calls it, so the mapping is declared here. Defaults to `uname -n`.
 * `coalesce_seconds` — one notification per pane per window. This is not optional polish:
   `emit_pane_state_update` re-emits `pane.agent_status_changed` when only the *presentation*
-  changed, with the status still `blocked` (`src/app/api.rs:609-611`), so one blocked episode
+  changed, with the status still `blocked` (`src/app/api.rs:645-646`), so one blocked episode
   can enqueue several records.
 * `max_age_seconds` — records older than this are acked without notifying, so a laptop that
   was asleep for a day does not wake up and fire a hundred pushes.

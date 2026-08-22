@@ -9,11 +9,11 @@
 # and is then dropped by stage 2.
 #
 # Payload shape (verified, not assumed): herdr serializes `EventEnvelope`
-# (`src/api/schema/events.rs:364-368`) with serde `rename_all = "snake_case"`, so
+# (`src/api/schema/events.rs:365-368`) with serde `rename_all = "snake_case"`, so
 # `HERDR_PLUGIN_EVENT_JSON` is
 #   {"event":"pane_agent_status_changed","data":{"type":"pane_agent_status_changed",
 #    "pane_id":...,"workspace_id":...,"agent_status":"blocked",...}}
-# and `AgentStatus` is snake_case too (`src/api/schema/common.rs:150-157`).
+# and `AgentStatus` is snake_case too (`src/api/schema/common.rs:149-157`).
 # serde_json::to_string emits no spaces, so `"agent_status":"blocked"` is exact.
 #
 # Neither stage opens a network socket. See ../README.md#no-network for how that is proven.

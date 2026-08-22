@@ -7,7 +7,7 @@ Safety, because this machine runs the author's real herdr fleet:
   * Every herdr CLI call is made with an explicit `HERDR_SOCKET_PATH` under this run's
     temp base, plus isolated `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`XDG_RUNTIME_DIR`, and
     `HERDR_SESSION`/`HERDR_CLIENT_SOCKET_PATH`/`HERDR_ENV` removed. `plugin link` writes to
-    `config_dir()/plugins.json` (`src/persist/plugin_registry.rs:12`), so the isolated
+    `config_dir()/plugins.json` (`src/persist/plugin_registry.rs:11`), so the isolated
     `XDG_CONFIG_HOME` is what keeps it out of the user's real registry -- asserted below by
     locating the registry file inside the temp base.
   * The user's herdr pid set is sampled before and after and the delta is printed, not
@@ -78,7 +78,7 @@ class Isolated:
 
     def prepare(self):
         # A debug build namespaces its dirs as `herdr-dev`, a release build as `herdr`
-        # (`src/config/io.rs:21-27`). Seed both so this works against either binary.
+        # (`src/config/io.rs:22-28`). Seed both so this works against either binary.
         for name in ("herdr", "herdr-dev"):
             os.makedirs(os.path.join(self.config_home, name), exist_ok=True)
             with open(os.path.join(self.config_home, name, "config.toml"), "w") as handle:
@@ -238,7 +238,7 @@ def main():
                            target_ws["workspace_id"])["result"]["panes"][0]["pane_id"]
         # Focus a second workspace so the target pane is NOT in the active tab. That is what
         # lets `done` appear at all: `seen` is only left false for a completion transition
-        # outside the active tab (`src/app/actions.rs:3082-3085` + `:59-64`), and
+        # outside the active tab (`src/app/actions.rs:3113-3117` + `:59-64`), and
         # `pane_agent_status` maps (Idle, seen=false) -> Done (`src/app/api_helpers.rs:104`).
         other_ws = cli_json(iso, binary, "workspace", "create", "--cwd", base,
                             "--focus")["result"]["workspace"]
@@ -325,7 +325,7 @@ def main():
                 "adapter": {"type": "file", "path": notifications},
                 # 0 so every queued record is observable here; the production default is
                 # 300s and exists because herdr re-emits `blocked` on presentation changes
-                # (`src/app/api.rs:609-611`).
+                # (`src/app/api.rs:645-646`).
                 "coalesce_seconds": 0,
             }, handle)
 
