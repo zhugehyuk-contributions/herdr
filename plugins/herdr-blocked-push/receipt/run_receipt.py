@@ -324,8 +324,8 @@ def main():
                 "remote_id": "receipt-remote",
                 "adapter": {"type": "file", "path": notifications},
                 # 0 so every queued record is observable here; the production default is
-                # 300s and exists because herdr re-emits `blocked` on presentation changes
-                # (`src/app/api.rs:645-646`).
+                # 60s and exists because herdr re-emits `blocked` on presentation changes
+                # (`src/app/api.rs:645-646`). See `sender/drain.py` for why that number.
                 "coalesce_seconds": 0,
             }, handle)
 

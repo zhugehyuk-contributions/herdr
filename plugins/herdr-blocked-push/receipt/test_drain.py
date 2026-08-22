@@ -19,6 +19,7 @@ sys.path.insert(0, SENDER_DIR)
 
 import adapters  # noqa: E402
 import drain  # noqa: E402
+import push_tokens  # noqa: E402
 
 NOW_MS = 1_700_000_000_000
 FAILURES = []
@@ -178,6 +179,196 @@ def test_command_adapter_passes_the_payload_on_stdin():
     with open(sink_path, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
     check("command adapter: url delivered", payload["url"] == "herdr:///h/r/pane/p1", payload)
+    case.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# The push-token registry and the expo adapter (M5's delivery half).
+#
+# Nothing here opens a socket: `ExpoPushAdapter` takes its POST as a constructor argument precisely
+# so the ticket-handling policy -- which failure retries, which one deletes a device -- is testable
+# without an outbound call to Expo, and without a real device that could be woken up by one.
+# ---------------------------------------------------------------------------
+
+
+def registration(device_id="phone-abc", token=None, **overrides):
+    payload = {
+        "v": 1,
+        "type": "expo",
+        "token": token or "ExponentPushToken[{}]".format(device_id),
+        "device_id": device_id,
+        "platform": "android",
+        "ts_ms": NOW_MS,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def write_registration(directory, payload, filename=None):
+    os.makedirs(directory, exist_ok=True)
+    name = filename or "{}.json".format(payload.get("device_id"))
+    path = os.path.join(directory, name)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    return path
+
+
+class RecordingPost:
+    """Stands in for the HTTPS POST. Answers one ticket per message, in order."""
+
+    def __init__(self, tickets=None, raises=None):
+        self.tickets = tickets
+        self.raises = raises
+        self.calls = []
+
+    def __call__(self, messages):
+        self.calls.append(messages)
+        if self.raises is not None:
+            raise self.raises
+        return self.tickets or [{"status": "ok", "id": str(i)} for i in range(len(messages))]
+
+
+def test_token_registry_reads_only_well_formed_entries():
+    directory = tempfile.mkdtemp(prefix="tokens-")
+    write_registration(directory, registration("phone-good"))
+    # The phone's in-flight write. Skipped silently -- reporting it would make every concurrent
+    # registration look like a failure.
+    write_registration(directory, registration("phone-good"), filename="phone-good.json.part")
+    write_registration(directory, registration("phone-v9", v=9))
+    write_registration(directory, registration("phone-bad", token="not-a-token"))
+    # A record whose `device_id` disagrees with its filename would be duplicated rather than
+    # overwritten on the next registration, so it is refused rather than repaired.
+    write_registration(directory, registration("phone-other"), filename="phone-mismatch.json")
+
+    entries, rejections = push_tokens.load(directory)
+    check("tokens: only the valid entry loads", [e.device_id for e in entries] == ["phone-good"],
+          [e.device_id for e in entries])
+    check("tokens: every rejection is reported", len(rejections) == 3, rejections)
+    check("tokens: partial write is not a rejection",
+          not any("part" in r for r in rejections), rejections)
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_token_registry_is_absent_not_broken_before_the_phone_registers():
+    entries, rejections = push_tokens.load("/nonexistent/push-tokens.d")
+    check("tokens: absent directory is empty, not an error", entries == [] and rejections == [])
+
+
+def test_expo_adapter_sends_one_message_per_device_with_the_deep_link():
+    directory = tempfile.mkdtemp(prefix="tokens-")
+    write_registration(directory, registration("phone-a"))
+    write_registration(directory, registration("phone-b"))
+    post = RecordingPost()
+    adapter = adapters.ExpoPushAdapter({"type": "expo", "tokens_dir": directory}, post=post)
+
+    adapter.send(drain.build_payload(record("w1:p1", NOW_MS), "fable"))
+
+    sent = post.calls[0]
+    check("expo: one message per registered device", len(sent) == 2, sent)
+    check("expo: addressed to the registered tokens",
+          sorted(m["to"] for m in sent)
+          == ["ExponentPushToken[phone-a]", "ExponentPushToken[phone-b]"], sent)
+    check("expo: carries the deep link",
+          sent[0]["data"]["url"] == "herdr:///h/fable/pane/w1%3Ap1", sent[0])
+    # The app reads these first and falls back to the URL; if they disagree the tap lands elsewhere.
+    check("expo: data agrees with the link",
+          (sent[0]["data"]["remote_id"], sent[0]["data"]["pane_id"]) == ("fable", "w1:p1"), sent[0])
+    check("expo: only blocked is ever pushed", sent[0]["data"]["status"] == "blocked", sent[0])
+    # Android reads heads-up behaviour off the channel, not off `priority`; the app creates
+    # `blocked` at HIGH importance (`mobile/src/notifications/use-blocked-push.ts`).
+    check("expo: routed to the high-importance channel", sent[0]["channelId"] == "blocked", sent[0])
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_expo_adapter_raises_when_no_device_has_registered():
+    directory = tempfile.mkdtemp(prefix="tokens-")
+    adapter = adapters.ExpoPushAdapter({"type": "expo", "tokens_dir": directory},
+                                       post=RecordingPost())
+    case = Case()
+    case.append_record(record("p1", NOW_MS))
+    stats = case.drain(adapter)
+    # Not acked: a record dropped here is a notification the user never gets, and the queue is the
+    # only thing holding it.
+    check("expo: nothing delivered", stats["notified"] == 0, stats)
+    check("expo: the pass reports the failure", "error" in stats, stats)
+    check("expo: the cursor did not advance", stats["offset"] == 0, stats)
+    case.cleanup()
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_expo_adapter_forgets_a_device_the_service_says_is_gone():
+    directory = tempfile.mkdtemp(prefix="tokens-")
+    dead = write_registration(directory, registration("phone-dead"))
+    post = RecordingPost(tickets=[{
+        "status": "error",
+        "message": "\"ExponentPushToken[phone-dead]\" is not a registered push notification recipient",
+        "details": {"error": "DeviceNotRegistered"},
+    }])
+    adapter = adapters.ExpoPushAdapter({"type": "expo", "tokens_dir": directory}, post=post)
+
+    # Does not raise: retrying a revoked token is guaranteed to fail forever, so wedging the queue on
+    # it would stop every *other* notification too.
+    adapter.send(drain.build_payload(record("p1", NOW_MS), "r"))
+
+    check("expo: the dead registration is deleted", not os.path.exists(dead))
+    check("expo: registry is empty afterwards", push_tokens.load(directory)[0] == [])
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_expo_adapter_retries_a_transient_failure():
+    directory = tempfile.mkdtemp(prefix="tokens-")
+    alive = write_registration(directory, registration("phone-a"))
+    post = RecordingPost(tickets=[{
+        "status": "error",
+        "message": "Too many messages",
+        "details": {"error": "MessageRateExceeded"},
+    }])
+    adapter = adapters.ExpoPushAdapter({"type": "expo", "tokens_dir": directory}, post=post)
+
+    raised = None
+    try:
+        adapter.send(drain.build_payload(record("p1", NOW_MS), "r"))
+    except adapters.AdapterError as err:
+        raised = str(err)
+
+    check("expo: a transient ticket raises", raised is not None and "phone-a" in raised, raised)
+    check("expo: and the device is kept", os.path.exists(alive))
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_expo_adapter_is_reachable_through_the_config():
+    directory = tempfile.mkdtemp(prefix="tokens-")
+    adapter = adapters.build({"type": "expo", "tokens_dir": directory})
+    check("expo: built from a sender.json spec", adapter.kind == "expo")
+    missing = None
+    try:
+        adapters.build({"type": "expo"})
+    except adapters.AdapterError as err:
+        missing = str(err)
+    check("expo: a spec with no tokens_dir is refused",
+          missing is not None and "tokens_dir" in missing, missing)
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_default_coalesce_window_is_the_discovery_budget():
+    # Pinned rather than merely documented: the number is an argument (`sender/drain.py`), and a
+    # silent change to it silently changes how many blocked episodes the phone never hears about.
+    check("coalesce: default is 60s", drain.DEFAULT_COALESCE_SECONDS == 60,
+          drain.DEFAULT_COALESCE_SECONDS)
+
+
+def test_default_coalesce_window_still_suppresses_a_re_fire():
+    case = Case()
+    del case.config["coalesce_seconds"]  # take the default
+    case.append_record(record("p1", NOW_MS))
+    # A presentation-only re-emit, 5s later: same pane, still blocked (`src/app/api.rs:645-646`).
+    case.append_record(record("p1", NOW_MS + 5_000, record_id="host:p1:re-fire"))
+    # A genuine second block, just past the window.
+    case.append_record(record("p1", NOW_MS + 61_000, record_id="host:p1:re-block"))
+    sink = adapters.NullAdapter()
+    stats = case.drain(sink, now_ms=NOW_MS + 61_000)
+    check("coalesce default: re-fire suppressed", stats["coalesced"] == 1, stats)
+    check("coalesce default: re-block gets through", stats["notified"] == 2, stats)
     case.cleanup()
 
 

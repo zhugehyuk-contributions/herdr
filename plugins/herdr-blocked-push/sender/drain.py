@@ -31,7 +31,39 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import adapters  # noqa: E402  (path shim above is deliberate: no packaging, no deps)
 
-DEFAULT_COALESCE_SECONDS = 300
+#: One notification per pane per minute.
+#:
+#: This window exists because `emit_pane_state_update` re-fires `pane.agent_status_changed` when
+#: only the *presentation* changed and the status is still `blocked` (`src/app/api.rs:645-646`,
+#: where the condition is `previous_agent_status != agent_status || previous_presentation !=
+#: presentation`, and `EffectivePresentation` is title + display_agent + state_labels --
+#: `src/terminal/metadata.rs:40-44`). The hook cannot collapse those: it is a fresh process per
+#: event and has no memory of the previous one.
+#:
+#: 60 seconds, and the number is chosen rather than felt:
+#:
+#: * **Nobody has measured the duplicate rate**, here or anywhere in this repo. `receipt/`'s live
+#:   run drives two distinct blocked transitions and observes exactly two records, so it has never
+#:   reproduced a presentation-only re-fire at all. A window justified by a made-up rate would be a
+#:   made-up window.
+#: * What *is* known from the code is the shape: presentation changes are driven by the pane's own
+#:   output (terminal title, agent labels), and a pane that is blocked has by definition stopped
+#:   producing output. The duplicates therefore cluster around the transition instant; they are a
+#:   burst, not a stream. Any window comfortably longer than that burst absorbs the same set.
+#: * So the window should be set by its *cost*, which is over-suppression: a genuine second block
+#:   inside the window is silent. 60s is the project's own already-accepted latency budget for
+#:   noticing a blocked agent -- milestone M2 (a) is "blocked를 Agents 홈에서 60초 내 발견"
+#:   (`mobile/.prd/04-milestones.md`). Choosing anything larger would make the push path worse than
+#:   the polling path the app already ships, which is the one comparison that is not a guess.
+#: * The residual is small for a second reason: the app polls every 4 seconds while it is in the
+#:   foreground (`mobile/src/api/use-foreground-refresh.ts`, `FOREGROUND_REFRESH_MS`). The
+#:   suppressed case -- a re-block within a minute of the last one -- is overwhelmingly the case
+#:   where the user just answered from the phone and is still looking at it, which is exactly the
+#:   interval the poll covers. Push is for when they are not.
+#:
+#: It was 300. That was inherited, not derived, and 300 silences the answer-and-re-block loop that
+#: this whole milestone exists to serve.
+DEFAULT_COALESCE_SECONDS = 60
 DEFAULT_MAX_AGE_SECONDS = 3600
 DEFAULT_LEDGER_MAX = 2000
 

@@ -27,6 +27,12 @@ import type {
   HerdrTransport
 } from '@herdr/client-ts'
 import { createTransportConnection, type TransportConnectionOptions } from './herdr-connection'
+import {
+  asCommandRunner,
+  type RemoteCommandOptions,
+  type RemoteCommandResult,
+  type RemoteCommandRunner
+} from './remote-command'
 import type { HerdrRemoteConnection } from './herdr-connection'
 import type { RemoteDefinition } from '../api/herdr-api-types'
 
@@ -47,7 +53,10 @@ export const RENEW_ABANDONED_MESSAGE = 'the ssh redial was abandoned'
 /** What every method rejects with once the owner has hung up for good. */
 export const TRANSPORT_CLOSED_MESSAGE = 'the transport is closed'
 
-export class RedialableTransport implements HerdrTransport {
+/** What {@link RedialableTransport.runCommand} rejects with when the ssh stack cannot exec. */
+export const NO_COMMAND_RUNNER_MESSAGE = 'this transport cannot run remote commands'
+
+export class RedialableTransport implements HerdrTransport, RemoteCommandRunner {
   private current: HerdrTransport
   private readonly open: TransportDialer
   private renewal: Promise<void> | null = null
@@ -83,6 +92,29 @@ export class RedialableTransport implements HerdrTransport {
     // that renew installed, and a caller holding this object across the swap is the normal case
     // (`./observe-stream-link.ts` captures the connection once, for the life of the supervisor).
     return this.current.openChannel(kind, handlers)
+  }
+
+  /**
+   * Forwards a one-shot exec to whichever connection is current (`./remote-command.ts`).
+   *
+   * Read at call time for the same reason `openChannel` reads it at call time: the M5 push-token
+   * registration runs on every launch and can outlive a redial, and one that landed on the
+   * connection this object *used* to hold would be a token written over a closed channel — a phone
+   * that silently stops receiving pushes.
+   *
+   * Rejects, rather than throwing synchronously, when the transport underneath has no such
+   * capability (every unit-test fake, and the Node live harness), so the caller has one failure
+   * path instead of two.
+   */
+  runCommand(command: string, options?: RemoteCommandOptions): Promise<RemoteCommandResult> {
+    if (this.ended) {
+      return Promise.reject(new Error(TRANSPORT_CLOSED_MESSAGE))
+    }
+    const runner = asCommandRunner(this.current)
+    if (runner === null) {
+      return Promise.reject(new Error(NO_COMMAND_RUNNER_MESSAGE))
+    }
+    return runner.runCommand(command, options)
   }
 
   /**

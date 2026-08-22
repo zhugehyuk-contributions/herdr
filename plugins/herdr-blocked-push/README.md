@@ -60,12 +60,20 @@ Requirements: a POSIX `sh` and `python3` on `PATH` (stdlib only, works on 3.9+).
 ```json
 {
   "remote_id": "fable",
-  "adapter": { "type": "command", "argv": ["/usr/local/bin/my-push.sh"] },
-  "coalesce_seconds": 300,
+  "adapter": {
+    "type": "expo",
+    "tokens_dir": "~/.config/herdr/plugins/config/herdr-mx.blocked-push/push-tokens.d",
+    "access_token": "${EXPO_ACCESS_TOKEN}"
+  },
+  "coalesce_seconds": 60,
   "max_age_seconds": 3600,
   "ledger_max": 2000
 }
 ```
+
+Put this file where `herdr plugin config-dir herdr-mx.blocked-push` prints, and point the launchd
+job at it with `--config`. That directory is also where the phone registers (below), so keeping the
+two together is what stops `tokens_dir` from pointing at a directory nobody writes.
 
 * `remote_id` — the id **the phone** uses for this machine, i.e. an `extra.herdrRemotes[].id`
   in `mobile/app.json`. It is not the hostname: the desktop has no way to know what the app
@@ -73,7 +81,10 @@ Requirements: a POSIX `sh` and `python3` on `PATH` (stdlib only, works on 3.9+).
 * `coalesce_seconds` — one notification per pane per window. This is not optional polish:
   `emit_pane_state_update` re-emits `pane.agent_status_changed` when only the *presentation*
   changed, with the status still `blocked` (`src/app/api.rs:645-646`), so one blocked episode
-  can enqueue several records.
+  can enqueue several records. Default **60**; `sender/drain.py` carries the derivation, and the
+  short version is that the duplicates are a burst around the transition while the cost of the
+  window is silencing a genuine re-block, so it is pinned to the 60s discovery budget the mobile
+  milestones already accept for the same fact.
 * `max_age_seconds` — records older than this are acked without notifying, so a laptop that
   was asleep for a day does not wake up and fire a hundred pushes.
 
@@ -120,25 +131,52 @@ A `blocked-push.service` of `Type=oneshot` running the same argv, plus a
 
 | type | ships here | use |
 |---|---|---|
+| `expo` | yes | **the real one.** Sends to every device in the token registry through Expo's push service. Needs `tokens_dir`; `access_token` is strongly recommended. |
 | `file` | yes | appends the payload as NDJSON. What the receipt asserts against. |
 | `command` | yes | runs an argv with the payload on stdin and in `HERDR_PUSH_TITLE`/`_BODY`/`_URL`/`_JSON`. The escape hatch: credentials stay in *your* script, not in this repo. |
 | `null` | yes | `--dry-run`. |
 
-**What a real deployment still needs** — none of these are implemented here, because each one
-needs credentials and an outbound call:
+`expo` is the one that ships, and the choice is argued at length on the class itself
+(`sender/adapters.py`, `ExpoPushAdapter`). The short form: the sender is stdlib-only on purpose, and
+APNs (ES256 JWT) and FCM v1 (RS256 JWT) both need a signature the standard library cannot produce,
+while Expo's endpoint is one JSON POST. ntfy/Pushover need no app work but the tap then opens *their*
+app, which loses the deep link — i.e. loses half of M5's acceptance criterion.
 
-* **Expo push** (`https://exp.host/--/api/v2/push/send`) — lowest friction while the app is an
-  Expo build. Needs an `ExpoPushToken` obtained by the app and handed to this machine; no
-  Apple/Google account work. This is the one to build first.
-* **APNs directly** (`api.push.apple.com`) — needed once the app leaves Expo's push service.
-  Requires an Apple Developer team, a `.p8` auth key, key id, team id, and the
-  `dev.herdr.mobile` bundle id, plus a JWT signer (`cryptography` or a small Rust/Go helper).
-* **ntfy / Pushover / Gotify** — a self-hosted or third-party topic. No app work at all beyond
-  installing their client, but then the tap opens *their* app, so the deep link below is lost.
-  Fine as a stopgap, wrong as the destination.
+Still not implemented, and each is a `command` adapter away:
+
+* **APNs directly** (`api.push.apple.com`) — for when the app leaves Expo's push service. Apple
+  Developer team, `.p8` auth key, key id, team id, the `dev.herdr.mobile` bundle id, and a JWT
+  signer (`cryptography`, or a small Rust/Go helper invoked through `command`).
 * **FCM** — only if an Android build stops using Expo push.
 
-Until one exists, `command` covers all of them without changing this code.
+Note what `expo` does *not* remove: Expo's servers, and then Apple's or Google's, see each
+notification's title, body and `data`. On this path that is pane titles and agent names, never
+terminal contents. A deployment that cannot accept that wants a self-hosted relay behind `command`.
+
+## Push tokens
+
+The registry is a directory of one JSON file per device:
+
+```
+$(herdr plugin config-dir herdr-mx.blocked-push)/push-tokens.d/<device-id>.json
+```
+
+**Nothing on this side writes it.** The phone does, on every launch, by exec'ing a short `sh`
+command over the ssh connection it already authenticated on
+(`mobile/src/notifications/push-token-registration.ts` composes the command and argues the choice;
+`sender/push_tokens.py` parses the result). That is the answer to "how does the desktop learn the
+phone's address": it does not need a relay, a pairing code or a pasted string, because the phone
+already proves possession of an ssh key to every one of these hosts — a strictly stronger credential
+than the token being delivered.
+
+Consequences worth knowing:
+
+* Re-registration **overwrites** by device id, so a rotated Expo token (reinstall, some OS upgrades)
+  heals itself on the next launch instead of silently pushing to a dead address forever.
+* A `DeviceNotRegistered` ticket **deletes** the file. That is the only correct response — the
+  address is gone and no retry can bring it back.
+* An empty registry makes the adapter *raise*, not ack, so records wait in the queue until the phone
+  has registered. `max_age_seconds` is what retires a backlog nobody ever claimed.
 
 ## Deep link
 

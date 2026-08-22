@@ -40,6 +40,7 @@ export {
   type StoredRemoteSummary,
   type StoredRemoteSummaries
 } from './src/remote-store'
+export { createPushTokenRegistrar, type PushTokenRegistrar } from './src/push-token-registrar'
 export { readBundledRemotes } from './src/bundled-remotes'
 export {
   bundledFallbackAllowed,

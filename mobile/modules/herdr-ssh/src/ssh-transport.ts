@@ -21,6 +21,12 @@ import {
   type HerdrTransport,
   type RemoteBridgeCommandOptions
 } from '@herdr/client-ts'
+import {
+  REMOTE_COMMAND_TIMEOUT_MS,
+  type RemoteCommandOptions,
+  type RemoteCommandResult,
+  type RemoteCommandRunner
+} from '../../../src/transport/remote-command'
 import type {
   NativeChannelClose,
   NativeHerdrSsh,
@@ -172,10 +178,12 @@ export class NativeChannel implements HerdrChannel {
  * `SshHerdrTransport`'s arrangement, `connectionCount` included, so the same assertion can be made
  * on both sides of the seam instead of trusting the prose.
  */
-export class NativeSshHerdrTransport implements HerdrTransport {
+export class NativeSshHerdrTransport implements HerdrTransport, RemoteCommandRunner {
   private readonly connection: NativeSshConnection
   private readonly options: NativeSshTransportOptions
   private readonly live = new Set<NativeChannel>()
+  /** One-shot `runCommand` channels. Not bridge channels, but `close()` still owns their teardown. */
+  private readonly auxiliary = new Set<NativeSshChannel>()
   private connections = 1
   private channelsOpened = 0
   private ended = false
@@ -240,11 +248,118 @@ export class NativeSshHerdrTransport implements HerdrTransport {
     return channel
   }
 
+  /**
+   * Runs one short command on this host and waits for it to finish.
+   *
+   * **Not a bridge channel**, and that distinction is why this is a separate method rather than a
+   * parameter on `openChannel`: obligation 2 says a bridge channel runs the string
+   * `remoteBridgeCommand()` produced, verbatim, and `openChannel` above still does exactly that.
+   * This runs a command the caller composed. There is one caller —
+   * `src/notifications/push-token-registration.ts`, which hands each herdr server this phone's push
+   * token over the ssh connection it has already authenticated on.
+   *
+   * It bypasses `NativeChannel` on purpose. That class holds the framing obligations (6, 7, 9) for
+   * a channel a *codec* is reading; here nothing is framed, the output is a few bytes of
+   * diagnostics and the answer wanted is the exit status. What it keeps is the teardown: the native
+   * channel is tracked, so `close()` cannot leave it behind.
+   *
+   * The timeout is a hard local deadline, not a hint. ssh has no way to cancel a running remote
+   * command, so this closes the channel and reports; a phone that dials on every launch cannot
+   * afford to leak one channel per launch to a remote that never answers.
+   */
+  runCommand(command: string, options: RemoteCommandOptions = {}): Promise<RemoteCommandResult> {
+    if (this.ended) {
+      return Promise.reject(new Error('transport is closed'))
+    }
+    assertNoPty()
+    const timeoutMs = options.timeoutMs ?? REMOTE_COMMAND_TIMEOUT_MS
+    const decoder = new TextDecoder()
+    let stdout = ''
+    let settled = false
+    let native: NativeSshChannel | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    return new Promise<RemoteCommandResult>((resolve, reject) => {
+      const disarm = () => {
+        if (timer !== null) {
+          clearTimeout(timer)
+          timer = null
+        }
+      }
+      const finish = (close: NativeChannelClose) => {
+        if (settled) {
+          return
+        }
+        settled = true
+        disarm()
+        if (native !== null) {
+          this.auxiliary.delete(native)
+        }
+        const converted = toChannelClose(close)
+        resolve({
+          exitCode: converted.exitCode ?? null,
+          signal: converted.signal ?? null,
+          stdout,
+          // `error` is the *local* side dying rather than the remote's stderr, but it is the only
+          // explanation there is going to be, so it is not dropped on the floor.
+          stderr: converted.stderr ?? converted.error?.message ?? ''
+        })
+      }
+
+      timer = setTimeout(() => {
+        if (settled) {
+          return
+        }
+        // The verdict is recorded *before* the channel is torn down, and the order is the point:
+        // `close()` is allowed to deliver its own close synchronously, and a `finish` that ran
+        // second would be the idempotent no-op — turning a timeout into a silent `exit=null` with
+        // no explanation attached.
+        const dying = native
+        finish({ errorMessage: `command timed out after ${timeoutMs}ms` })
+        dying?.close()
+      }, timeoutMs)
+
+      this.connection
+        .openChannel(
+          command,
+          (chunk: Uint8Array) => {
+            if (!settled) {
+              stdout += decoder.decode(chunk, { stream: true })
+            }
+          },
+          finish
+        )
+        .then(
+          (opened) => {
+            if (settled) {
+              // Finished, or timed out, before the exec was acknowledged: nothing is listening.
+              opened.close()
+              return
+            }
+            native = opened
+            this.auxiliary.add(opened)
+          },
+          (error: unknown) => {
+            if (settled) {
+              return
+            }
+            settled = true
+            disarm()
+            reject(error instanceof Error ? error : new Error(String(error)))
+          }
+        )
+    })
+  }
+
   close(): void {
     if (this.ended) {
       return
     }
     this.ended = true
+    for (const auxiliary of this.auxiliary) {
+      auxiliary.close()
+    }
+    this.auxiliary.clear()
     const closing = [...this.live]
     this.live.clear()
     this.connection.disconnect()

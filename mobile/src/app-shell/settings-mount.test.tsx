@@ -264,6 +264,32 @@ describe('editing and deleting', () => {
   })
 })
 
+describe('what the screen says about push', () => {
+  it('states that only blocked is pushed, before anyone has to discover it', async () => {
+    // M5's design constraint, on the glass. `done` is `(Idle, seen == false)`
+    // (`src/app/api_helpers.rs:104-107`) and `seen` flips when the *desktop* shows the pane, so a
+    // `done` push fires for work the user already watched end. A user who is not told this
+    // concludes the feature is broken the first time an agent finishes quietly.
+    const target = await mount()
+    const strings = everyRenderedString(target).join(' ')
+    expect(strings).toContain('Only blocked is pushed')
+    expect(strings).toContain('The agents list is what tells you about everything else')
+  })
+
+  it('has a slot for the registration state, so a push that never arrives is not silent', async () => {
+    // Without a line here, "no notification arrived" and "nothing was blocked" look identical, and
+    // one of them is the normal state — which is exactly what makes the other one invisible.
+    //
+    // This mount has no `BlockedPushProvider` above it (the shell installs one, `app/_layout.tsx`),
+    // so the state read here is the context default. What the *other* states say is
+    // `src/notifications/blocked-push-summary.test.ts`; what is asserted here is that the screen
+    // renders whatever that says, under a heading the user can find.
+    const target = await mount()
+    expect(textNodes(target)).toContain('push')
+    expect(textNodes(target)).toContain('checking…')
+  })
+})
+
 describe('what the screen says about the build it is running in', () => {
   it('shows an app.json remote as a development entry it will not edit', async () => {
     environment.bundled = [

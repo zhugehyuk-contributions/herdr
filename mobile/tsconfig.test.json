@@ -50,7 +50,15 @@
     "modules/herdr-ssh/test/private-key-format.test.ts",
     "src/settings/remote-form.test.ts",
     "src/app-shell/settings-mount.test.tsx",
-    "src/app-shell/remote-precedence-mount.test.tsx"
+    "src/app-shell/remote-precedence-mount.test.tsx",
+    "src/notifications/pane-deep-link.test.ts",
+    "src/notifications/blocked-push-notification.test.ts",
+    "src/notifications/push-token-registration.test.ts",
+    "src/notifications/blocked-push-registration.test.ts",
+    "src/notifications/push-device-id.test.ts",
+    "src/notifications/blocked-push-summary.test.ts",
+    "src/app-shell/blocked-push-tap-mount.test.tsx",
+    "modules/herdr-ssh/test/push-token-registrar.test.ts"
   ],
   "exclude": []
 }

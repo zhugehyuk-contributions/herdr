@@ -17,12 +17,14 @@ import {
 import type { HerdrRemoteConnection } from '../../../src/transport/herdr-connection'
 import type { RemoteDefinition } from '../../../src/api/herdr-api-types'
 import { loadNativeHerdrSsh } from './native-module'
+import { createPushTokenRegistrar, type PushTokenRegistrar } from './push-token-registrar'
 import type { HerdrSshRemoteConfig } from './remote-config'
 import { loadRemoteInventory, type RemoteSource } from './remote-source'
 import { purgeIfFreshInstall, storedRemotesRevision, subscribeStoredRemotes } from './remote-store'
 import { NativeSshHerdrTransport } from './ssh-transport'
 
 const NO_CONNECTIONS: readonly HerdrRemoteConnection[] = Object.freeze([])
+const NO_REGISTRARS: readonly PushTokenRegistrar[] = Object.freeze([])
 
 /** What a dial attempt produced, including the parts that failed. Nothing is swallowed silently. */
 export interface DialedRemotes {
@@ -46,6 +48,17 @@ export interface DialedRemotes {
   nativeModuleMissing: boolean
   /** Which channel supplied the list (`./remote-source.ts`) — `'none'` when nothing was configured. */
   source: RemoteSource
+  /**
+   * M5. One per connected remote: the verb that hands that host this phone's push token
+   * (`./push-token-registrar.ts`).
+   *
+   * Alongside `connections` rather than folded into `HerdrRemoteConnection`, because it is not part
+   * of what a *screen* does with a remote — no screen calls it, exactly one root-level effect does
+   * — and `./herdr-connection.ts` is explicit that its two faces are the data plane and nothing
+   * else. Empty in every build with no reachable remote, which is also every build where there is
+   * nothing to tell.
+   */
+  pushTokenRegistrars: readonly PushTokenRegistrar[]
 }
 
 /**
@@ -103,7 +116,11 @@ function remoteDefinition(config: HerdrSshRemoteConfig): RemoteDefinition {
 async function dialRemote(
   native: Awaited<ReturnType<typeof loadNativeHerdrSsh>>,
   config: HerdrSshRemoteConfig
-): Promise<{ connection: HerdrRemoteConnection; transport: RedialableTransport }> {
+): Promise<{
+  connection: HerdrRemoteConnection
+  transport: RedialableTransport
+  registrar: PushTokenRegistrar
+}> {
   if (native === null) {
     throw new Error('no HerdrSsh native module in this build')
   }
@@ -129,7 +146,11 @@ async function dialRemote(
   // the seam instead — a connection that lands after the caller gave up is closed, not installed.
   const open = (): Promise<NativeSshHerdrTransport> =>
     NativeSshHerdrTransport.connect(native, options)
-  return createRedialableConnection(remoteDefinition(config), await open(), open)
+  const dialled = createRedialableConnection(remoteDefinition(config), await open(), open)
+  // The registrar is given the *redialable* transport, not the connection this dial produced, so a
+  // registration that runs after a redial goes down the connection that is current then
+  // (`src/transport/redialable-transport.ts`, `runCommand`).
+  return { ...dialled, registrar: createPushTokenRegistrar(config, dialled.transport) }
 }
 
 /**
@@ -146,24 +167,34 @@ export async function openConfiguredSshConnections(): Promise<DialedRemotes> {
       transports: [],
       failures: [],
       nativeModuleMissing: false,
-      source
+      source,
+      pushTokenRegistrars: NO_REGISTRARS
     }
   }
   const native = await loadNativeHerdrSsh()
   const settled = await Promise.allSettled(configs.map((config) => dialRemote(native, config)))
   const connections: HerdrRemoteConnection[] = []
   const transports: RedialableTransport[] = []
+  const registrars: PushTokenRegistrar[] = []
   const failures: string[] = []
   for (const [index, result] of settled.entries()) {
     if (result.status === 'fulfilled') {
       connections.push(result.value.connection)
       transports.push(result.value.transport)
+      registrars.push(result.value.registrar)
     } else {
       const id = configs[index]?.id ?? String(index)
       failures.push(`${id}: ${errorMessage(result.reason)}`)
     }
   }
-  return { connections, transports, failures, nativeModuleMissing: native === null, source }
+  return {
+    connections,
+    transports,
+    failures,
+    nativeModuleMissing: native === null,
+    source,
+    pushTokenRegistrars: registrars
+  }
 }
 
 function errorMessage(reason: unknown): string {
@@ -192,6 +223,8 @@ export interface SshDialState {
   settled: boolean
   /** Where the dialled list came from: the keystore, `app.json`, or nowhere. */
   source: RemoteSource
+  /** M5. One per connected remote; see {@link DialedRemotes.pushTokenRegistrars}. */
+  pushTokenRegistrars: readonly PushTokenRegistrar[]
 }
 
 /** The state before the first dial resolves. Frozen: it is shared by every mount. */
@@ -200,7 +233,8 @@ const DIALLING: SshDialState = Object.freeze({
   failures: Object.freeze([]) as readonly string[],
   nativeModuleMissing: false,
   settled: false,
-  source: 'none'
+  source: 'none',
+  pushTokenRegistrars: NO_REGISTRARS
 })
 
 /**
@@ -244,7 +278,8 @@ export function useHerdrSshConnections(): SshDialState {
         failures: dialed.failures,
         nativeModuleMissing: dialed.nativeModuleMissing,
         settled: true,
-        source: dialed.source
+        source: dialed.source,
+        pushTokenRegistrars: dialed.pushTokenRegistrars
       })
     })
     return () => {

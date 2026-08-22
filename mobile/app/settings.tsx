@@ -37,6 +37,8 @@ import {
   type RemoteDraftField
 } from '../src/settings/remote-form'
 import { describePrivateKey } from '../modules/herdr-ssh'
+import { useBlockedPushStatus } from '../src/notifications/blocked-push-context'
+import { BLOCKED_ONLY_NOTE, summarisePush } from '../src/notifications/blocked-push-summary'
 import { mono } from '../src/theme/monotone'
 import { spacing } from '../src/theme/mobile-theme'
 
@@ -74,6 +76,32 @@ async function readInventory(): Promise<Inventory> {
 }
 
 type Editing = { mode: 'create' | 'edit'; draft: RemoteDraft }
+
+/**
+ * M5. The only surface on which a push that never arrives is distinguishable from a fleet that was
+ * never blocked.
+ *
+ * It reads the root provider rather than registering anything itself: a second `useBlockedPush`
+ * here would mean a second permission prompt and a second ssh exec per visit.
+ */
+function NotificationsSection() {
+  const status = useBlockedPushStatus()
+  const summary = summarisePush(status)
+  return (
+    <View style={styles.row}>
+      <Text style={styles.name}>notifications</Text>
+      <Text style={styles.meta}>{summary.headline}</Text>
+      {summary.detail.map((line) => (
+        <Text key={line} style={styles.advisory}>
+          {line}
+        </Text>
+      ))}
+      {/* Always, in every state — including the working one. It is the shape of the feature, not a
+          failure message (`src/notifications/blocked-push-summary.ts`). */}
+      <Text style={styles.meta}>{BLOCKED_ONLY_NOTE}</Text>
+    </View>
+  )
+}
 
 export default function SettingsScreen() {
   const [inventory, setInventory] = useState<Inventory>(EMPTY)
@@ -166,6 +194,8 @@ export default function SettingsScreen() {
             This build has no secure storage, so a remote cannot be saved on it. Use a dev build.
           </Text>
         )}
+        <Text style={styles.sectionLabel}>push</Text>
+        <NotificationsSection />
         <Text style={styles.sectionLabel}>{`remotes · ${inventory.stored.length}`}</Text>
         {inventory.stored.length === 0 ? (
           <Text style={styles.meta}>
