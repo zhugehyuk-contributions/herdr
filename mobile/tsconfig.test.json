@@ -44,7 +44,13 @@
     "src/transport/revival-nudge.test.ts",
     "modules/herdr-ssh/test/ssh-transport.test.ts",
     "modules/herdr-ssh/test/remote-config.test.ts",
-    "modules/herdr-ssh/test/bundle-contract.test.ts"
+    "modules/herdr-ssh/test/bundle-contract.test.ts",
+    "modules/herdr-ssh/test/remote-store.test.ts",
+    "modules/herdr-ssh/test/remote-source.test.ts",
+    "modules/herdr-ssh/test/private-key-format.test.ts",
+    "src/settings/remote-form.test.ts",
+    "src/app-shell/settings-mount.test.tsx",
+    "src/app-shell/remote-precedence-mount.test.tsx"
   ],
   "exclude": []
 }

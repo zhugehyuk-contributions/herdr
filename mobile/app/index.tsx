@@ -17,11 +17,12 @@
 //      position — not by presence — in `../src/app-shell/agents-home-mount.test.tsx`.
 //   2. Every row names its remote *and* its workspace. A cross-remote list whose rows do not say
 //      where they are is not usable: you cannot go there.
-import { ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { AgentRow } from '../src/components/AgentRow'
 import { BottomNav } from '../src/components/BottomNav'
 import { useHerdrSnapshot } from '../src/api/snapshot-context'
+import { useHerdrDataSource } from '../src/api/herdr-data-provider'
 import { snapshotStalenessLabel } from '../src/api/snapshot-staleness'
 import { agentPaneHandle } from '../src/agents/agent-display'
 import {
@@ -40,6 +41,7 @@ export default function AgentsHomeScreen() {
   // with the poll, and it is floored to 5s so it never claims to be finer than that. A screen with
   // no poll running is backgrounded, i.e. nobody is reading the number anyway.
   const staleness = snapshotStalenessLabel({ updatedAt, refreshError })
+  const source = useHerdrDataSource()
   const rows = buildFleetAgentRows(snapshot)
   const groups = groupFleetAgentsByStatus(rows)
   const blocked = countByStatus(rows, 'blocked')
@@ -57,6 +59,21 @@ export default function AgentsHomeScreen() {
             exactly like a healthy one and the screen just quietly ages. Healthy renders *nothing*
             here — there is no "up to date" badge to invent (`ConnectionStatusLine.tsx` property 1). */}
         {staleness ? <Text style={styles.stale}>{staleness}</Text> : null}
+        {/* M2b: the fixture is still what an unconfigured app renders (`../src/api/herdr-data-provider.tsx`),
+            but a first-run user cannot tell 40 invented agents from a fleet. Saying so is the whole
+            fix; the settings affordance beside it is where they go next. */}
+        {source === 'demo' ? <Text style={styles.stale}>demo data</Text> : null}
+        {/* M2b's way in. A third bottom-nav tab was the alternative and the mockup fixes two
+            (mockup.html:419-422); settings is a place you go once and leave, not a peer of the two
+            views you live in. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="settings"
+          onPress={() => router.push('/settings')}
+          style={styles.settings}
+        >
+          <Text style={styles.settingsLabel}>settings</Text>
+        </Pressable>
       </View>
       {status === 'loading' ? <Text style={styles.meta}>Loading…</Text> : null}
       {/* The whole screen when a load fails — nothing else renders, since `snapshot` is empty on
@@ -110,6 +127,8 @@ const styles = StyleSheet.create({
   // (`../src/theme/monotone-discipline.test.tsx`).
   stale: { color: mono.fgSoft, fontSize: 12, paddingHorizontal: 16 },
   summary: { color: mono.fgSoft, fontSize: 12, paddingHorizontal: 16, paddingTop: 4 },
+  settings: { paddingLeft: 10, paddingRight: 16 },
+  settingsLabel: { color: mono.dim, fontSize: 12 },
   sectionLabel: {
     color: mono.dim,
     fontSize: 11,

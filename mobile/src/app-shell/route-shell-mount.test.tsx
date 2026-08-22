@@ -213,8 +213,13 @@ describe('root route shell', () => {
     routerState.screens = { nodes: createElement(NodeListScreen) }
     const target = await mountShell()
     act(() => {
-      // The node rows come before the bottom nav in tree order, so [1] is the second remote.
-      target.root.findAllByType(host('Pressable'))[1]!.props.onPress()
+      // By label, not by index: the appbar grew a settings affordance in M2b (`app/nodes.tsx`), and
+      // "the second Pressable in tree order" was only ever the second remote by accident.
+      const row = target.root.findAll((node) =>
+        String(node.props['accessibilityLabel'] ?? '').startsWith('iq-64 — ')
+      )[0]
+      expect(row, 'the iq-64 remote row was not found').toBeDefined()
+      row!.props.onPress()
     })
     expect(routerState.pushed).toEqual(['/h/remote-2'])
   })

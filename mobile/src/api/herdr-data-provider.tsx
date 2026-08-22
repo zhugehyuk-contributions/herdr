@@ -13,7 +13,7 @@
 // claude/codex/build/shell/tail, and nothing on screen saying anything had failed. On a phone whose
 // job is "is an agent blocked", plausible fake data is worse than an error (same defect class as
 // mobile/.prd/09-review-followups.md §G, one layer down). `dial` is what tells the two apart.
-import { useMemo, type ReactNode } from 'react'
+import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { HerdrSnapshotProvider, type SnapshotLoader } from './snapshot-context'
 import { createLiveSnapshotLoader } from './live/live-snapshot-loader'
 import { loadMockSnapshot } from './mock/mock-snapshot-loader'
@@ -65,35 +65,70 @@ function dialFailureMessage(dial: RemoteDialOutcome): string {
 }
 
 /**
- * Live / dialling / failed / mock, in that order of evidence.
+ * Which of the four states the app is in. The loader below is chosen from this and nothing else, so
+ * the screens' answer to "am I looking at real data" cannot drift from the data they are handed.
  *
  * Partial success stays live deliberately: one remote that answered is a real fleet view of that
  * remote, and dropping it because a second remote is down would trade a true partial answer for no
  * answer (same rule `./live/live-snapshot-loader.ts` applies inside one load).
  */
-function selectLoader(
+export type HerdrDataSource = 'live' | 'dialling' | 'failed' | 'demo'
+
+export function dataSourceOf(
   connections: readonly HerdrRemoteConnection[],
   dial: RemoteDialOutcome | undefined
-): SnapshotLoader {
+): HerdrDataSource {
   if (connections.length > 0) {
-    return createLiveSnapshotLoader(connections)
+    return 'live'
   }
   if (dial === undefined) {
     // No dialler mounted at all: the Node harness and every provider test supply connections
     // directly, and for them an empty list means what it always meant.
-    return loadMockSnapshot
+    return 'demo'
   }
   if (!dial.settled) {
-    return loadWhileDialling
+    return 'dialling'
   }
-  if (dial.failures.length > 0 || dial.nativeModuleMissing) {
-    // Reusing the provider's existing failure path (`status: 'error'` + message) rather than adding
-    // a state of its own; `createLiveSnapshotLoader([])` would raise the same status with a message
-    // that names none of the remotes that actually failed.
-    const message = dialFailureMessage(dial)
-    return () => Promise.reject(new Error(message))
+  return dial.failures.length > 0 || dial.nativeModuleMissing ? 'failed' : 'demo'
+}
+
+function selectLoader(
+  connections: readonly HerdrRemoteConnection[],
+  dial: RemoteDialOutcome | undefined
+): SnapshotLoader {
+  switch (dataSourceOf(connections, dial)) {
+    case 'live':
+      return createLiveSnapshotLoader(connections)
+    case 'dialling':
+      return loadWhileDialling
+    case 'failed':
+      // Reusing the provider's existing failure path (`status: 'error'` + message) rather than
+      // adding a state of its own; `createLiveSnapshotLoader([])` would raise the same status with
+      // a message that names none of the remotes that actually failed.
+      return () => Promise.reject(new Error(dialFailureMessage(dial as RemoteDialOutcome)))
+    case 'demo':
+      return loadMockSnapshot
   }
-  return loadMockSnapshot
+}
+
+/**
+ * ⚠️ M2b changed what `'demo'` *means* without changing when it happens.
+ *
+ * Before the settings screen existed, "no remote configured" was a statement about a developer's
+ * `app.json` and the fixture was the documented answer (port map §5: the screens are finished
+ * before a socket exists). Now it is also the state every user is in on first launch — and 4
+ * invented nodes with 40 invented agents, rendered with nothing on screen saying so, is the same
+ * defect this file's header was written about, one install earlier.
+ *
+ * The fixture stays (it is the development, demo and test path, and three suites are built on it),
+ * so the screens are told instead: `useHerdrDataSource() === 'demo'` is what `app/index.tsx` and
+ * `app/nodes.tsx` render their `demo data` marker from. A user who sees it has somewhere to go —
+ * the settings screen is one tap away in the same header.
+ */
+const DataSourceContext = createContext<HerdrDataSource>('demo')
+
+export function useHerdrDataSource(): HerdrDataSource {
+  return useContext(DataSourceContext)
 }
 
 export function HerdrDataProvider({
@@ -109,5 +144,10 @@ export function HerdrDataProvider({
   // `load` changes, so a new closure per render is an infinite reload loop. `dial` is state held by
   // `useHerdrSshConnections`, so it too changes identity only when the dial actually moved.
   const load = useMemo(() => selectLoader(connections, dial), [connections, dial])
-  return <HerdrSnapshotProvider load={load}>{children}</HerdrSnapshotProvider>
+  const source = dataSourceOf(connections, dial)
+  return (
+    <DataSourceContext.Provider value={source}>
+      <HerdrSnapshotProvider load={load}>{children}</HerdrSnapshotProvider>
+    </DataSourceContext.Provider>
+  )
 }

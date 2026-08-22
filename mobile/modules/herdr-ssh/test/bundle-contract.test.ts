@@ -154,8 +154,17 @@ describe('herdr-ssh bundle contract', () => {
     ).toEqual([])
   })
 
-  it('reaches expo-modules-core and expo-constants only through a dynamic import', () => {
-    const deferred = new Set(['expo-modules-core', 'expo-constants'])
+  it('reaches every expo/react-native package only through a dynamic import', () => {
+    // Grew with M2b: the keystore (`expo-secure-store`) and the install marker
+    // (`@react-native-async-storage/async-storage`) are two more packages that reach `react-native`,
+    // and a static import of either would take `app/_layout.tsx` out of the test environment
+    // exactly as `expo-modules-core` would.
+    const deferred = new Set([
+      'expo-modules-core',
+      'expo-constants',
+      'expo-secure-store',
+      '@react-native-async-storage/async-storage'
+    ])
     const offenders: string[] = []
     const dynamic: string[] = []
     for (const file of tsFilesUnder(MODULE_ROOT)) {
@@ -174,8 +183,10 @@ describe('herdr-ssh bundle contract', () => {
     expect(offenders).toEqual([])
     // Both are still actually used — otherwise this test would pass by the module doing nothing.
     expect(dynamic.sort()).toEqual([
-      'src/app-connections.ts -> expo-constants',
-      'src/native-module.ts -> expo-modules-core'
+      'src/bundled-remotes.ts -> expo-constants',
+      'src/native-module.ts -> expo-modules-core',
+      'src/remote-store.ts -> @react-native-async-storage/async-storage',
+      'src/remote-store.ts -> expo-secure-store'
     ])
   })
 })

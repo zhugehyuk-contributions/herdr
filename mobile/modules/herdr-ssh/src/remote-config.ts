@@ -1,16 +1,17 @@
 // Not from orca. Where the app learns which hosts exist — the injection point, and deliberately
 // only that.
 //
-// There is no settings UI in this milestone, so the source is `app.json`'s `expo.extra.herdrRemotes`
-// (read through `expo-constants` by `app-connections.ts`). That is a **build-time** channel and it
-// is the right one for exactly one reason: it is the only configuration a developer can supply
-// before the settings screen exists, and it makes "the phone shows mock data" a fact about an empty
-// array rather than about a missing feature.
+// The shape only. *Where* a remote comes from is `./remote-store.ts` (the keystore, which is where
+// a user's remotes live as of M2b), `./bundled-remotes.ts` (`app.json`'s `expo.extra.herdrRemotes`,
+// now a development-only fallback) and `./remote-source.ts`, which decides between them.
 //
-// ⚠️ `privateKey` in `app.json` means a private key in the app bundle and in git. That is fine for a
-// throwaway key against a lab host and wrong for anything else; the durable home is
-// `expo-secure-store` (already a dependency), and `HerdrSshRemoteConfig` is shaped so that swapping
-// the source changes this file and nothing above it.
+// The prediction this file's header used to carry — "the durable home is `expo-secure-store`
+// (already a dependency), and `HerdrSshRemoteConfig` is shaped so that swapping the source changes
+// this file and nothing above it" — is what M2b cashed in: the schema below is unchanged, and the
+// swap added two source modules beside it.
+//
+// ⚠️ `privateKey` in `app.json` still means a private key in the app bundle and in git. That is why
+// `./remote-source.ts` will not read that channel in a release build.
 //
 // Validation is `zod`, matching `src/api/herdr-api-types.ts`'s treatment of the wire: config that
 // arrives from outside the program is parsed, not asserted, and a bad entry is dropped by name
@@ -66,14 +67,33 @@ export function parseConfiguredRemotes(value: unknown): ParsedRemoteConfigs {
   const remotes: HerdrSshRemoteConfig[] = []
   const rejected: RejectedRemoteConfig[] = []
   for (const [index, entry] of value.entries()) {
-    const parsed = remoteSchema.safeParse(entry)
-    if (parsed.success) {
-      remotes.push(parsed.data)
+    const parsed = parseRemoteConfig(entry)
+    if (parsed.ok) {
+      remotes.push(parsed.config)
     } else {
-      rejected.push({ index, reason: parsed.error.issues.map(describeIssue).join('; ') })
+      rejected.push({ index, reason: parsed.reason })
     }
   }
   return { remotes, rejected }
+}
+
+export type RemoteConfigParse =
+  | { ok: true; config: HerdrSshRemoteConfig }
+  | { ok: false; reason: string }
+
+/**
+ * One entry, for the callers that hold one at a time: the keystore (one entry per remote) and the
+ * settings form (one draft).
+ *
+ * ⚠️ `reason` is rendered on screen and is built from zod's *paths and messages only* — never from
+ * the value. A rejection that quoted what it was given would put the private key on the glass, and
+ * from there into any screenshot of the settings screen (`./remote-store.ts` pins that).
+ */
+export function parseRemoteConfig(value: unknown): RemoteConfigParse {
+  const parsed = remoteSchema.safeParse(value)
+  return parsed.success
+    ? { ok: true, config: parsed.data }
+    : { ok: false, reason: parsed.error.issues.map(describeIssue).join('; ') }
 }
 
 function describeIssue(issue: { path: PropertyKey[]; message: string }): string {

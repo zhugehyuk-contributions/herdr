@@ -16,10 +16,45 @@ export {
 } from './src/ssh-transport'
 export {
   parseConfiguredRemotes,
+  parseRemoteConfig,
   type HerdrSshRemoteConfig,
   type ParsedRemoteConfigs,
-  type RejectedRemoteConfig
+  type RejectedRemoteConfig,
+  type RemoteConfigParse
 } from './src/remote-config'
+export {
+  clearStoredRemotes,
+  deleteStoredRemote,
+  loadStoredRemoteSummaries,
+  loadStoredRemotes,
+  purgeIfFreshInstall,
+  saveStoredRemote,
+  summariseRemote,
+  storedRemotesRevision,
+  subscribeStoredRemotes,
+  updateStoredRemote,
+  STORED_REMOTE_ID_PATTERN,
+  type FreshInstallOutcome,
+  type StoredRemoteEdit,
+  type StoredRemoteInventory,
+  type StoredRemoteSummary,
+  type StoredRemoteSummaries
+} from './src/remote-store'
+export { readBundledRemotes } from './src/bundled-remotes'
+export {
+  bundledFallbackAllowed,
+  loadRemoteInventory,
+  selectRemotes,
+  type RemoteInventory,
+  type RemoteSelection,
+  type RemoteSource
+} from './src/remote-source'
+export {
+  describePrivateKey,
+  privateKeyAdvisories,
+  type PrivateKeyContainer,
+  type PrivateKeyDescriptor
+} from './src/private-key-format'
 export type {
   NativeChannelClose,
   NativeHerdrSsh,

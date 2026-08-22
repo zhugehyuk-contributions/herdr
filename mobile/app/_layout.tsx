@@ -53,12 +53,16 @@ function ForegroundSnapshotPolling() {
 export default function RootLayout() {
   // Was `const APP_CONNECTIONS = []`, with a comment saying it was empty because React Native has no
   // ssh stack (mobile/.prd/02-architecture.md §2.4 N1). `modules/herdr-ssh` is that stack, and this
-  // hook is the whole junction: it reads `app.json`'s `expo.extra.herdrRemotes`, dials each one over
-  // the native module, and wraps the results as `HerdrRemoteConnection`s.
+  // hook is the whole junction: it reads the configured remotes, dials each one over the native
+  // module, and wraps the results as `HerdrRemoteConnection`s.
+  //
+  // As of M2b that list comes from the keystore the settings screen writes, and only falls back to
+  // `app.json`'s `expo.extra.herdrRemotes` in a development build
+  // (`modules/herdr-ssh/src/remote-source.ts`). The hook re-dials when the store changes, so adding
+  // a remote on `app/settings.tsx` takes effect without a restart.
   //
   // Still empty in every build that has no configured remote, so the fallback to the mock fixture is
-  // unchanged rather than removed. No settings UI exists yet; the list is a build-time value on
-  // purpose (see `modules/herdr-ssh/src/remote-config.ts`).
+  // unchanged rather than removed.
   //
   // The *whole* dial goes down, not just its connections: "no remote configured" and "every
   // configured remote failed" both produce an empty list, and only `dial.failures` /
@@ -106,6 +110,10 @@ export default function RootLayout() {
             <Stack.Screen name="index" options={{ headerShown: false }} />
             <Stack.Screen name="nodes" options={{ headerShown: false }} />
             <Stack.Screen name="h" options={{ headerShown: false }} />
+            {/* M2b. The one screen with a real header: it is pushed from a list screen and the
+                only way back is the header's own back button — the bottom nav has two entries and
+                they are the mockup's (`src/components/BottomNav.tsx`). */}
+            <Stack.Screen name="settings" options={{ title: 'settings' }} />
           </Stack>
         </View>
       </HerdrDataProvider>

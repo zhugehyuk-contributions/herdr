@@ -16,6 +16,7 @@ import { useRouter } from 'expo-router'
 import { StatusDot } from '../src/components/StatusDot'
 import { BottomNav } from '../src/components/BottomNav'
 import { useHerdrSnapshot, remoteSubtitle } from '../src/api/snapshot-context'
+import { useHerdrDataSource } from '../src/api/herdr-data-provider'
 import { snapshotStalenessLabel } from '../src/api/snapshot-staleness'
 import { rollupText } from '../src/panes/pane-tree'
 import { mono } from '../src/theme/monotone'
@@ -28,6 +29,7 @@ export default function NodeListScreen() {
   // its rows are roll-ups ("4 spaces · 12 panes · 2 blocked"), and a roll-up nobody can date is
   // indistinguishable from a fleet that simply stopped changing.
   const staleness = snapshotStalenessLabel({ updatedAt, refreshError })
+  const source = useHerdrDataSource()
   const byRemote = new Map(snapshot.perRemote.map((entry) => [entry.remote.id, entry]))
 
   return (
@@ -39,6 +41,20 @@ export default function NodeListScreen() {
             when refreshes are healthy it stays empty — the screen is unchanged. */}
         <View style={styles.spacer} />
         {staleness ? <Text style={styles.stale}>{staleness}</Text> : null}
+        {/* M2b: the fixture is still what an unconfigured app renders (`../src/api/herdr-data-provider.tsx`),
+            but a first-run user cannot tell 40 invented agents from a fleet. Saying so is the whole
+            fix; the settings affordance beside it is where they go next. */}
+        {source === 'demo' ? <Text style={styles.stale}>demo data</Text> : null}
+        {/* Same affordance as `./index.tsx`, for the same reason: either list can be where the user
+            is standing when they need to add or fix a remote. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="settings"
+          onPress={() => router.push('/settings')}
+          style={styles.settings}
+        >
+          <Text style={styles.settingsLabel}>settings</Text>
+        </Pressable>
       </View>
       {status === 'loading' ? <Text style={styles.meta}>Loading…</Text> : null}
       {/* The whole screen when a load fails — nothing else renders, since `snapshot` is empty on
@@ -101,5 +117,7 @@ const styles = StyleSheet.create({
   // Brighter than `meta` on purpose, and grayscale — see the same style in `./index.tsx`.
   stale: { color: mono.fgSoft, fontSize: 12 },
   chevron: { color: mono.dim2, fontSize: 13 },
+  settings: { paddingLeft: 10 },
+  settingsLabel: { color: mono.dim, fontSize: 12 },
   spacer: { flex: 1 }
 })

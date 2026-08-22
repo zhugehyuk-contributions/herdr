@@ -9,7 +9,7 @@
 // ⚠️ Both expo imports below are dynamic, for the reason `native-module.ts` explains: a static
 // import would make `app/_layout.tsx` unloadable in the test environment and break two existing
 // suites.
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import {
   createRedialableConnection,
   type RedialableTransport
@@ -17,7 +17,9 @@ import {
 import type { HerdrRemoteConnection } from '../../../src/transport/herdr-connection'
 import type { RemoteDefinition } from '../../../src/api/herdr-api-types'
 import { loadNativeHerdrSsh } from './native-module'
-import { parseConfiguredRemotes, type HerdrSshRemoteConfig } from './remote-config'
+import type { HerdrSshRemoteConfig } from './remote-config'
+import { loadRemoteInventory, type RemoteSource } from './remote-source'
+import { purgeIfFreshInstall, storedRemotesRevision, subscribeStoredRemotes } from './remote-store'
 import { NativeSshHerdrTransport } from './ssh-transport'
 
 const NO_CONNECTIONS: readonly HerdrRemoteConnection[] = Object.freeze([])
@@ -42,17 +44,35 @@ export interface DialedRemotes {
   failures: string[]
   /** True when this build has no `HerdrSsh` native module — the state before the module ships. */
   nativeModuleMissing: boolean
+  /** Which channel supplied the list (`./remote-source.ts`) — `'none'` when nothing was configured. */
+  source: RemoteSource
 }
 
-/** Reads `expo.extra.herdrRemotes`. Returns `[]` off a phone, where `expo-constants` will not load. */
-async function readConfiguredRemotes(): Promise<HerdrSshRemoteConfig[]> {
-  try {
-    const constants = await import('expo-constants')
-    const extra = constants.default.expoConfig?.extra as Record<string, unknown> | undefined
-    return parseConfiguredRemotes(extra?.['herdrRemotes']).remotes
-  } catch {
-    return []
-  }
+/**
+ * The remotes this launch will dial, and where they came from.
+ *
+ * Two channels now (`./remote-source.ts`): the keystore the settings screen writes, and — in a
+ * development build only — `app.json`. The precedence between them is that file's decision; what
+ * happens here is the one thing that must happen *before* either is read.
+ *
+ * `purgeIfFreshInstall` first: on iOS a keychain entry outlives the app that wrote it, so the very
+ * first read after a reinstall can hand back the previous install's private keys. Memoised because
+ * this function runs again on every re-dial, and the purge is a once-per-process question
+ * (`./remote-store.ts` explains the marker).
+ */
+let freshInstallCheck: Promise<unknown> | null = null
+
+async function readSelectedRemotes(): Promise<{
+  remotes: HerdrSshRemoteConfig[]
+  source: RemoteSource
+}> {
+  // Swallowed on purpose: this is a best-effort hygiene step on the launch path, and a keystore
+  // that refuses to answer must not leave the app behind a spinner forever
+  // (`src/api/herdr-data-provider.tsx`'s `loadWhileDialling` never resolves).
+  freshInstallCheck ??= purgeIfFreshInstall().catch(() => 'unavailable')
+  await freshInstallCheck
+  const inventory = await loadRemoteInventory()
+  return { remotes: inventory.remotes, source: inventory.source }
 }
 
 /** `RemoteDefinition` for a host the app dialled itself; `target` is what it dialled. */
@@ -119,9 +139,15 @@ async function dialRemote(
  * `SshHerdrTransport` instead, and a caller that wants the phone's path without a component has it.
  */
 export async function openConfiguredSshConnections(): Promise<DialedRemotes> {
-  const configs = await readConfiguredRemotes()
+  const { remotes: configs, source } = await readSelectedRemotes()
   if (configs.length === 0) {
-    return { connections: NO_CONNECTIONS, transports: [], failures: [], nativeModuleMissing: false }
+    return {
+      connections: NO_CONNECTIONS,
+      transports: [],
+      failures: [],
+      nativeModuleMissing: false,
+      source
+    }
   }
   const native = await loadNativeHerdrSsh()
   const settled = await Promise.allSettled(configs.map((config) => dialRemote(native, config)))
@@ -137,7 +163,7 @@ export async function openConfiguredSshConnections(): Promise<DialedRemotes> {
       failures.push(`${id}: ${errorMessage(result.reason)}`)
     }
   }
-  return { connections, transports, failures, nativeModuleMissing: native === null }
+  return { connections, transports, failures, nativeModuleMissing: native === null, source }
 }
 
 function errorMessage(reason: unknown): string {
@@ -164,6 +190,8 @@ export interface SshDialState {
   nativeModuleMissing: boolean
   /** False until the dial settles, because "still dialling" is not "nothing was configured". */
   settled: boolean
+  /** Where the dialled list came from: the keystore, `app.json`, or nowhere. */
+  source: RemoteSource
 }
 
 /** The state before the first dial resolves. Frozen: it is shared by every mount. */
@@ -171,7 +199,8 @@ const DIALLING: SshDialState = Object.freeze({
   connections: NO_CONNECTIONS,
   failures: Object.freeze([]) as readonly string[],
   nativeModuleMissing: false,
-  settled: false
+  settled: false,
+  source: 'none'
 })
 
 /**
@@ -181,10 +210,23 @@ const DIALLING: SshDialState = Object.freeze({
  * states the caller needs to keep apart.
  */
 export function useHerdrSshConnections(): SshDialState {
+  // M2b: a remote added or deleted on the settings screen has to take effect without a restart, and
+  // the dial below is a mount-time effect. The keystore's revision counter is the dependency that
+  // makes "the user saved a remote" a re-dial (`./remote-store.ts`); it never changes in a build
+  // where nothing writes to the store, so every existing mount path is unaffected.
+  const revision = useSyncExternalStore(
+    subscribeStoredRemotes,
+    storedRemotesRevision,
+    storedRemotesRevision
+  )
   const [dial, setDial] = useState<SshDialState>(DIALLING)
 
   useEffect(() => {
     let live = true
+    // Back to "still dialling" on a re-dial: the previous answer described a different config, and
+    // reporting it while the new one is in flight is the same lie as the fixture-during-dial one
+    // (`src/api/herdr-data-provider.tsx`). Identity-stable, so the first mount does not re-render.
+    setDial(DIALLING)
     let opened: readonly { close(): void | Promise<void> }[] = []
     void openConfiguredSshConnections().then((dialed) => {
       opened = dialed.transports
@@ -201,14 +243,15 @@ export function useHerdrSshConnections(): SshDialState {
         connections: dialed.connections,
         failures: dialed.failures,
         nativeModuleMissing: dialed.nativeModuleMissing,
-        settled: true
+        settled: true,
+        source: dialed.source
       })
     })
     return () => {
       live = false
       closeAll(opened)
     }
-  }, [])
+  }, [revision])
 
   return dial
 }
