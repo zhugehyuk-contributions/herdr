@@ -48,18 +48,50 @@ export const TERMINAL_PAINTED_CELL_JS = `
     return width > 0 ? width / PAINTED_CELL_PROBE_RUN : 0;
   }
 
+  // The renderer identity, as a fact about the live document rather than an inference from the
+  // platform: the DOM renderer owns .xterm-rows and the WebGL addon disposes it
+  // (DomRenderer.ts:119), so its presence is what decides whether the probe below can measure
+  // anything at all. Reported at first fit by commitFitScale.
+  function hasDomRows() {
+    if (!term || !term.element || !term.element.querySelector) return false;
+    return term.element.querySelector('.xterm-rows') !== null;
+  }
+
   // Cached against every input that can move the advance, all readable without a style flush:
   // a new terminal, xterm's font options, the letter-spacing correction, the metric itself.
   function getPaintedCellWidth() {
-    if (!term || !term.element || !term.element.querySelector) return 0;
+    if (!hasDomRows()) return 0;
     var rows = term.element.querySelector('.xterm-rows');
-    if (!rows) return 0;
     var options = term.options || {};
     var key = terminalGeneration + '|' + options.fontSize + '|' + options.fontFamily + '|' +
       options.fontWeight + '|' + rows.style.letterSpacing + '|' + getCellWidth();
     if (paintedCellProbe.key === key) return paintedCellProbe.value;
     paintedCellProbe = { key: key, value: measurePaintedCellWidth(rows) };
     return paintedCellProbe.value;
+  }
+
+  // Which renderer painted the first frame — the one fact this layer never reported, and the
+  // absence cost a whole QA cycle. .prd/09-review-followups.md §P hung for two rounds on
+  // document.querySelector('.xterm-rows') !== null because nobody could read it off a device, and
+  // §U then diagnosed "iOS draws nothing" from a dominant-colour scan that cannot separate a blank
+  // canvas from a grid painted at scale 0.21. Every number that decides both is below.
+  //
+  // Once per init, not per fit: a re-fit (keyboard, orientation, first data) changes the scale but
+  // never the renderer, and flog crosses the RN bridge. It lands in the RN console through
+  // terminal-webview-notification-dispatch.ts, which handles type: 'log'.
+  function reportRendererIdentity(reason, cellW, vpWidth) {
+    if (reason !== 'init-replay' || !term) return;
+    flog('renderer', {
+      renderer: webglAddon ? 'webgl' : 'dom',
+      domRows: hasDomRows(),
+      cellW: cellW,
+      paintedCellW: getPaintedCellWidth(),
+      contentW: getContentWidth(),
+      vpWidth: vpWidth,
+      scale: getTotalScale(),
+      cols: term.cols,
+      rows: term.rows
+    });
   }
 
   // Why the grid and not the DOM: cell width x cols is xterm's own layout width and stays right when

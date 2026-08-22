@@ -2,7 +2,7 @@
 // at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
 // MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { XTERM_HTML } from './terminal-webview-html'
 
 function iifeSource(): string {
@@ -141,7 +141,63 @@ describe('terminal WebView init surface replacement', () => {
     for (const { type, listener, options } of registeredWindowListeners) {
       window.removeEventListener(type, listener as EventListener, options)
     }
+    vi.unstubAllGlobals()
     vi.restoreAllMocks()
+  })
+
+  /** Drives one init all the way to `commitFitScale('init-replay')`. */
+  function settleInit(): void {
+    animationFrames.shift()?.()
+    writeCallbacks.shift()?.()
+    animationFrames.shift()?.()
+  }
+
+  function rendererLogs(): Record<string, unknown>[] {
+    const post = (window as unknown as { ReactNativeWebView: { postMessage: Mock } })
+      .ReactNativeWebView.postMessage
+    return post.mock.calls
+      .map(([data]) => JSON.parse(String(data)) as Record<string, unknown>)
+      .filter((msg) => msg.type === 'log' && msg.tag === '[fit]renderer')
+      .map((msg) => msg.payload as Record<string, unknown>)
+  }
+
+  // `.prd/09-review-followups.md` \u00a7P hung for two rounds on a single unmeasured value —
+  // `document.querySelector('.xterm-rows') !== null` — because nothing in the document ever said
+  // which renderer had painted it, and \u00a7U then diagnosed "iOS draws nothing" from a
+  // dominant-colour scan that cannot separate a blank canvas from a grid drawn at scale 0.21.
+  // These two pin the report that answers both without a device.
+  it('reports the WebGL renderer, and that it left no DOM rows to measure', () => {
+    vi.stubGlobal('WebglAddon', {
+      WebglAddon: class {
+        dispose() {}
+      }
+    })
+
+    dispatchInit(80, 'payload')
+    settleInit()
+
+    expect(rendererLogs()).toHaveLength(1)
+    expect(rendererLogs()[0]).toMatchObject({
+      renderer: 'webgl',
+      domRows: false,
+      // The painted-cell probe (`terminal-webview-painted-cell-injected.ts`) is inert on this
+      // path by construction, so the grid width is xterm's own `css.cell.width` x cols.
+      paintedCellW: 0,
+      cellW: 8,
+      contentW: 640,
+      cols: 80
+    })
+  })
+
+  it('reports the DOM renderer when no WebGL addon is present', () => {
+    dispatchInit(80, 'payload')
+    const rows = document.createElement('div')
+    rows.className = 'xterm-rows'
+    document.getElementById('terminal-surface')?.appendChild(rows)
+    settleInit()
+
+    expect(rendererLogs()).toHaveLength(1)
+    expect(rendererLogs()[0]).toMatchObject({ renderer: 'dom', domRows: true, cols: 80 })
   })
 
   it("keeps xterm's inactive cursor visible across replacement surfaces", () => {

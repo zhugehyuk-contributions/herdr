@@ -767,3 +767,89 @@ XCUITest와 `simctl io screenshot` **두 독립 경로**가 같은 결론. **And
 
 **이 가설이 맞으면 §P도 함께 답해진다** — WebGL이 살아 있으면 `.xterm-rows`가 null이고, 그러면
 `ccbaafe4`의 프로브는 설계상 무동작이며 §P의 진단이 틀렸다는 뜻이 된다.
+
+## V. §U는 재현되지 않는다 — 그리고 §P의 미지수가 닫혔다 (2026-08-23, iPhone 17 Pro 시뮬 `153F2FDE`, 코드 `25e54ae8`)
+
+### V-1. §P의 load-bearing 미지수: `.xterm-rows`는 **null**이다 — WebGL이 그린다
+
+세 경로가 같은 답을 냈다: 시뮬 Safari 하네스(`XTERM_HTML` 그대로 서빙), 앱 안의 생 `WebView`
+(`source={XTERM_WEBVIEW_SOURCE}`), 그리고 제품 컴포넌트(`TerminalPaneView`). 모두 `.xterm-rows === null`,
+`glProbe = OK WebGL 2.0`, 캔버스 2장.
+
+⇒ §P의 표에서 **아래 칸**이 성립한다. `ccbaafe4`의 도색 프로브는 **설계상 무동작**이다:
+`terminal-webview-painted-cell-injected.ts`의 `getPaintedCellWidth()`가 `.xterm-rows` 부재로 0을 반환하고
+`getContentWidth()`는 `cellW * cols`, 즉 `ccbaafe4` **이전과 완전히 같은 식**으로 돌아간다.
+따라서 §P가 고쳤다고 기록한 9열 격차는 **아직 안 고쳐졌고, 수리가 겨눈 층이 틀렸다.**
+(WebGL이 붙는 한 Android도 같다 — §P의 "Android엔 SF Mono가 없어 DOM 렌더러" 전제는 렌더러 선택이
+폰트가 아니라 WebGL 성공 여부로 갈린다는 사실을 놓쳤다.)
+
+### V-2. "한 픽셀도 안 그린다"는 재현되지 않는다
+
+같은 커밋·같은 시뮬·라이브 랩(격리 sshd 2222 + 일회용 ed25519 + 격리 XDG herdr 0.8.2, proto 21)에서
+**전부 정상 렌더**했다:
+
+| 조건 | 결과 |
+|---|---|
+| 94x39 일반 셸 pane (`SINK init len=4003`) | 렌더 |
+| alt-screen TUI pane (`ESC[?1049h`) | 렌더 |
+| **240x52 강제** (`SINK init len=12910`) — §U의 `12,834B`와 같은 급 | 렌더 (scale 0.209, 아주 작음) |
+| 백그라운드→포그라운드 왕복 | 렌더 (배경색 비율 92.96% → 92.98%, 무변화) |
+| 3-pane 워크스페이스(칩바 활성) | 렌더 |
+
+WebGL 가설도 기각이다 — "붙었는데 안 그린다"는 어느 조건에서도 관측되지 않았다.
+
+### V-3. §U의 판정 지표가 blank와 tiny를 구분하지 못한다
+
+§U는 `(0,270)-(1206,2050)`에서 `단일색 (26,27,38) 2,115,877px`을 근거로 삼았다. 그 사각형은 2,146,680px이므로
+**30,803px은 그 색이 아니었다** — "한 픽셀도" 와 모순된다. 그리고 **정상 렌더 중인** 240x52 화면을 같은
+방법으로 재면 지배색이 **95.61%** 나온다(비지배 62,266px). 즉 이 지표는 "안 그림"과 "0.21배로 그림"을
+가르지 못한다. `(26,27,38)`은 xterm 테마 배경일 뿐 아니라 `mobile-theme.ts:52`의 `terminalBg`이기도 해서
+RN 컨테이너 배경과도 구별되지 않는다. `innerStaticTexts=0` 역시 WebGL 확정 이후로는 **정상값**이다.
+
+또 §U의 좁힘 #3(`handleMessage`가 `type:'log'`를 콘솔로 안 흘린다)도 **틀렸다**:
+`terminal-webview-notification-dispatch.ts:22-26`이 `console.log(tag, payload)`를 한다. Metro에 `[fit]`이
+0건이었던 것은 눈이 없어서가 아니라 **그때 `flog`가 걸린 조건(commit-timeout/SUSPECT/measure-fail)이 전부
+발동하지 않았기 때문** — 즉 건강한 터미널의 정상 출력이다.
+
+### V-4. 그래서 고친 것 — 렌더러 정체를 매 init마다 보고한다
+
+`reportRendererIdentity()` (`terminal-webview-painted-cell-injected.ts`), `commitFitScale`의
+`reason === 'init-replay'`에서 1회. 실기기 실측:
+
+```
+[fit]renderer {"renderer":"webgl","domRows":false,"cellW":8,"paintedCellW":0,
+               "contentW":1920,"vpWidth":402,"scale":0.209375,"cols":240,"rows":52}
+```
+
+이 한 줄이 §P의 두 갈래와 §U의 blank/tiny를 **기기 없이** 가른다. 고정 = 
+`terminal-webview-init-surface.test.ts`의 webgl/dom 두 케이스(되돌리면 둘 다 RED).
+
+### V-4b. 두 플랫폼이 같은 시험을 받지 않았다 (디스패처 대조, 2026-08-23)
+
+§V가 못 본 것이 하나 더 있다. **Android (b) PASS와 iOS (b) FAIL은 다른 픽스처였다:**
+
+| | pane 폭 | 판정 |
+|---|---|---|
+| Android M2 (b) | **80컬럼** (`00-driver.md:40` "80컬럼 pane 육안 판독") | PASS |
+| iOS M2 (b) | **240컬럼** (`tmux=240x52`, 같은 QA의 (c) 샘플이 그렇게 적었다) | FAIL |
+
+폰 뷰포트 402 CSS px에 240열을 넣으면 글자당 **약 1.7 CSS px**이다. 80열이면 약 5 CSS px.
+**같은 코드가 한쪽에서 통과하고 한쪽에서 떨어진 것을 "플랫폼 갈림"으로 읽었는데, 폭이 3배 달랐다.**
+
+그러므로 iOS (b) FAIL은 **취소되지 않는다** — 240열 pane은 실제로 읽을 수 없고 (b)는 *읽기* 수용
+기준이다. 그러나 **원인이 "iOS가 안 그린다"가 아니라 "폰에서 240열은 읽을 수 없다"로 바뀐다**, 그리고
+그건 B4(폰보다 넓은 pane)의 문제이며 v1이 지정한 해법은 (e)의 핀치줌이다.
+
+→ **수리 대상이 아니라 픽스처 규율의 문제다.** `.prd/10`에 폭 고정을 넣었다: (b)는 80열, (e)는 넓은 pane.
+그래야 두 플랫폼 판정이 비교 가능해진다.
+
+### V-5. 잔여
+
+1. **§U는 닫히지 않았다 — 기각도 아니고 재현도 아니다.** 재QA는 위 `[fit]renderer` 줄과 `SINK init` 여부를
+   먼저 찍고, 픽셀 판정은 지배색 비율이 아니라 **비배경 픽셀 수**로 해라. 정상 240x52의 기준선은 약 4.4%다.
+2. **§P의 9열 격차는 미수리다.** `ccbaafe4`는 WebGL 경로에서 무동작이므로, 원인은 DOM 도색 편차가 아니라
+   다른 곳에 있다. 다음 조사는 WebGL 렌더러가 `css.cell.width`로 잡는 캔버스와 `clampPan`이 쓰는
+   `getContentWidth()`가 실제로 어긋나는지부터.
+3. **240열 pane은 폰에서 scale 0.21 = 겉보기 2.7 CSS px다.** 렌더는 되지만 읽을 수 없다. M2 (e)의 진짜
+   문제는 "안 그린다"가 아니라 이것이고, 그건 다른 수리다.
+

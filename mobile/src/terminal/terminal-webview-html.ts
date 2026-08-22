@@ -522,6 +522,7 @@ ${TERMINAL_WEBVIEW_THEME_JS}
     var sw = term.element.scrollWidth;
     var vpW = window.innerWidth;
     var expectedW = cellW * term.cols;
+    reportRendererIdentity(reason, cellW, vpW);
     var suspect =
       currentScale === 1 && term.cols > 0 && expectedW > vpW + 1; // expected wider than viewport but no zoom
     if (suspect) {
