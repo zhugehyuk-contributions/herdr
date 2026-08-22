@@ -61,8 +61,17 @@
 
 순서는 "막힌 것을 먼저 알리고, 안 막힌 것을 끝까지"다.
 
-1. **[유저] Xcode 설치** — iOS 트랙의 유일한 선행. 설치되면 `.prd/06` 결정 7(Citadel/`Wellz26` 정확 핀)을
-   그 자리에서 확정하고 iOS 트랙을 M2부터 Android와 같은 순서로 돈다.
+1. **[유저] Xcode 설치** — iOS 트랙의 **유일한** 남은 선행. 결정 7(ssh 라이브러리 핀)은 **2026-08-23 확정됨**:
+   `orlandos-nl/Citadel` `exactVersion 0.12.1` (`ae8562f8`) + `Wellz26/swift-nio-ssh` **revision** `a05e6bb`.
+   `npm run typecheck:ios`가 실제로 그 조합을 컴파일한다(exit 0 실측). 설치되면 바로 `expo prebuild`로 간다.
+
+   > **iOS는 사실상 ed25519 전용이다** — Citadel의 `OpenSSHKey.swift:307-313`이 `BEGIN OPENSSH PRIVATE KEY`
+   > 컨테이너만 받고, 파싱을 통과한 RSA도 서명에서 죽는다(`rsa-sha2`가 Citadel 0.12.1·nio-ssh 0.3.6에 **0회**,
+   > 서명 프리픽스가 `ssh-rsa` 하드코딩 — OpenSSH 8.8이 SHA-1 RSA를 껐다). Android가 `loadKeys` 포맷 판별로
+   > 고전 PEM RSA까지 받는 것과 **정확히 반대 방향의 제약**이다.
+   > **유저 키 실측(2026-08-23)**: `~/.ssh/*.pub` 8개 중 7개가 `ssh-ed25519`, 주력(`id_ed25519`,
+   > `id_ed25519-z-iq`)이 openssh-key-v1 ed25519 → **실사용에 지장 없다.** RSA 1건(`perplay-vm_key`)만
+   > iOS에서 못 쓴다. 차단 아님, 문서화 대상.
 2. **[에이전트] Android M2 수용 (b)~(e) 완주** — 코드는 이미 있다. 필요한 건 격리 스크래치 서버 + 실행.
    `.prd/10`의 절차, 판정은 별도 에이전트.
 3. ~~**M4 ssh redial**~~ — ✅ `845f0f22`. 재다이얼 판정은 ①채널 개설 거부 시 즉시 ②`Welcome` 미도달 3연속.
