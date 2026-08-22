@@ -46,6 +46,17 @@ vi.mock('expo-router', () => ({
   useRouter: () => ({ push: () => {}, back: () => {} })
 }))
 
+// The screens read the real safe-area inset since §D1. Its provider comes from the navigator on a
+// device, and the navigator is mocked away here — so is the library, which does not load under
+// this environment's transform at all. Zero insets = the geometry every assertion below was
+// written against; the last describe in this file is the one that turns them on, and
+// `./safe-area-mount.test.tsx` covers the four screens that draw their own top bar.
+const safeArea = vi.hoisted(() => ({ insets: { top: 0, bottom: 0, left: 0, right: 0 } }))
+
+vi.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => safeArea.insets
+}))
+
 vi.mock('react-native', () => ({
   Pressable: 'Pressable',
   ScrollView: 'ScrollView',
@@ -148,6 +159,7 @@ async function fillValidRemote(target: ReactTestRenderer): Promise<void> {
 }
 
 beforeEach(() => {
+  safeArea.insets = { top: 0, bottom: 0, left: 0, right: 0 }
   keychain.clear()
   environment.bundled = []
   environment.secureStore = true
@@ -341,5 +353,35 @@ describe('what the screen says about the build it is running in', () => {
     for (const color of used) {
       expect(ramp, `settings used ${color}`).toContain(color)
     }
+  })
+})
+
+// The screen §D1 does *not* touch at the top, and why that is a decision rather than an omission.
+describe('settings and the safe area', () => {
+  const IPHONE_PORTRAIT = { top: 59, bottom: 34, left: 0, right: 0 }
+
+  it('does not count the top inset a second time under its native header', async () => {
+    safeArea.insets = IPHONE_PORTRAIT
+    const target = await mount()
+
+    // `app/_layout.tsx` gives this route a real header (`options={{ title: 'settings' }}`), and a
+    // native header already sits below the inset — so the bar under it keeps the 24 it was drawn
+    // with. Taking the inset here would push the screen's own content 59pt down for nothing.
+    const logo = target.root.findAllByType(host('Text'))[0]
+    expect(logo, 'the settings appbar rendered no label').toBeDefined()
+    const bar = logo!.parent
+    expect(bar, 'the settings appbar was not found').not.toBeNull()
+    expect((bar!.props['style'] as Record<string, unknown>)['paddingTop']).toBe(24)
+  })
+
+  it('ends its scroll content above the home indicator', async () => {
+    safeArea.insets = IPHONE_PORTRAIT
+    const target = await mount()
+
+    // No bottom bar on this route: the list runs into the indicator itself.
+    const body = target.root.findByType(host('ScrollView'))
+    expect((body.props.contentContainerStyle as Record<string, unknown>)['paddingBottom']).toBe(
+      IPHONE_PORTRAIT.bottom
+    )
   })
 })

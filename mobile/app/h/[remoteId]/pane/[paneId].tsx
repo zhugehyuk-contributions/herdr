@@ -57,6 +57,7 @@
 import { useCallback, useMemo, useRef } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AgentStateDot } from '../../../../src/components/AgentStateDot'
 import { ConnectionStatusLine } from '../../../../src/components/ConnectionStatusLine'
 import { useRemote, useRemoteSnapshot } from '../../../../src/api/snapshot-context'
@@ -72,7 +73,12 @@ import { paneHref } from '../../../../src/agents/fleet-agents'
 import { usePaneObserver } from '../../../../src/session/use-pane-observer'
 import { usePaneInput } from '../../../../src/session/use-pane-input'
 import { PaneInputBar } from '../../../../src/session/PaneInputBar'
+import { safeChromePadding } from '../../../../src/layout/safe-area-chrome'
 import { mono } from '../../../../src/theme/monotone'
+
+// Same floor and the same §D1 reasoning as `../index.tsx`: this header is drawn with 16 and, until
+// the inset arrived, 16 was under the status bar on every phone this app runs on.
+const HEADER_TOP_PADDING = 16
 import type { TerminalWebViewHandle } from '../../../../src/terminal/terminal-webview-contract'
 import type { PaneInfo } from '../../../../src/api/herdr-api-types'
 
@@ -127,6 +133,7 @@ export function PaneViewerScreen({
   // Both are null in a build with no transport supervision, and the status line renders nothing.
   const supervised = useHerdrSupervisor(remoteId)
   const connectionStatus = useConnectionStatus(supervised)
+  const insets = useSafeAreaInsets()
   const handleRef = useRef<TerminalWebViewHandle | null>(null)
 
   const routed = entry?.panes.find((pane) => pane.pane_id === paneId) ?? null
@@ -181,7 +188,9 @@ export function PaneViewerScreen({
 
   return (
     <View style={styles.screen}>
-      <View style={styles.header}>
+      <View
+        style={[styles.header, { paddingTop: safeChromePadding(insets.top, HEADER_TOP_PADDING) }]}
+      >
         <Text style={styles.title}>{active ? active.handle : (paneId ?? 'Pane')}</Text>
         {activePane ? <AgentStateDot state={activePane.agent_status} /> : null}
         <Text style={styles.subtitle} numberOfLines={1}>
@@ -283,11 +292,11 @@ export default function PaneViewerRoute() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: mono.ink },
+  // No `paddingTop`: it is the inset's, above.
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingTop: 16,
     paddingBottom: 8,
     paddingHorizontal: 16
   },

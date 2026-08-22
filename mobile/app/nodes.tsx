@@ -13,16 +13,23 @@
 // and says nothing it cannot know.
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { StatusDot } from '../src/components/StatusDot'
 import { BottomNav } from '../src/components/BottomNav'
 import { useHerdrSnapshot, remoteSubtitle } from '../src/api/snapshot-context'
 import { useHerdrDataSource } from '../src/api/herdr-data-provider'
 import { snapshotStalenessLabel } from '../src/api/snapshot-staleness'
 import { rollupText } from '../src/panes/pane-tree'
+import { safeChromePadding } from '../src/layout/safe-area-chrome'
 import { mono } from '../src/theme/monotone'
+
+// Same floor as `./index.tsx`'s bar, which this one is a copy of — see it for why 24 stays.
+const APPBAR_TOP_PADDING = 24
 
 export default function NodeListScreen() {
   const router = useRouter()
+  // §D1 again: this screen carries the same appbar, and the same `settings` button in it.
+  const insets = useSafeAreaInsets()
   const { status, snapshot, error, refreshError, updatedAt } = useHerdrSnapshot()
   // Same hint the Agents home carries, for the same reason and off the same poll — see
   // `./index.tsx` for why nothing here needs a timer. This list ages worse than that one, in fact:
@@ -34,7 +41,9 @@ export default function NodeListScreen() {
 
   return (
     <View style={styles.screen}>
-      <View style={styles.appbar}>
+      <View
+        style={[styles.appbar, { paddingTop: safeChromePadding(insets.top, APPBAR_TOP_PADDING) }]}
+      >
         <Text style={styles.logo}>herdr</Text>
         <Text style={styles.crumb}>/ nodes</Text>
         {/* Unlike `./index.tsx` this header had no right-hand meta slot; the spacer creates one, and
@@ -103,7 +112,8 @@ export default function NodeListScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: mono.ink },
-  appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16, paddingTop: 24 },
+  // No `paddingTop`: it is the inset's, above.
+  appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16 },
   logo: { color: mono.fg, fontSize: 20, fontWeight: '700' },
   crumb: { color: mono.dim, fontSize: 13, marginLeft: 6 },
   body: { flex: 1, paddingHorizontal: 16 },

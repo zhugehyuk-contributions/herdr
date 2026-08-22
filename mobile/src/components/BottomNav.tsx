@@ -5,6 +5,7 @@
 // has to be reachable; a Stack alone cannot express "two peers, either can be first".
 // The two entries and their order are the mockup's (mockup.html:419-422, :651-654).
 import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { spacing } from '../theme/mobile-theme'
 import { mono } from '../theme/monotone'
 
@@ -17,8 +18,14 @@ export function BottomNav({
   active: BottomNavTab
   onSelect: (tab: BottomNavTab) => void
 }) {
+  // The bottom half of .prd/09-review-followups.md §D1's defect class. This bar is pinned to the
+  // window's bottom edge and had no bottom padding at all, so the home indicator sat on top of the
+  // two tab labels — and on Android, where the window is edge-to-edge
+  // (`android/gradle.properties:47`), so did the navigation bar. Neither was measured — §D1 is the
+  // top edge — but it is the same defect one edge over, and it is live on both platforms.
+  const insets = useSafeAreaInsets()
   return (
-    <View style={styles.bar}>
+    <View style={[styles.bar, { paddingBottom: insets.bottom }]}>
       {(['nodes', 'agents'] as const).map((tab) => (
         <Pressable
           key={tab}

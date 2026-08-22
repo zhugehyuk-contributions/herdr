@@ -16,6 +16,7 @@
 //   · dictation, the native chat overlay, paste. M3 is "폰에서 승인 눌러주기".
 import { useCallback, useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   HERDR_ACCESSORY_KEYS,
   herdrKeyForAccessoryId
@@ -28,6 +29,12 @@ import type { PaneInputView } from './use-pane-input'
 export function PaneInputBar({ input }: { input: PaneInputView }) {
   const [draft, setDraft] = useState('')
   const { send, sendKeys, enabled, state } = input
+  // .prd/09-review-followups.md §D1's bottom edge. This bar is the last thing in the viewer's
+  // column, so its `↵` sat under the home indicator (and under Android's navigation bar, the
+  // window being edge-to-edge) — the one control M3 exists for. The keyboard covers the bar
+  // whether or not this padding is here (`keyboardLift` is 0, see the route file), so it costs
+  // nothing when the field is focused.
+  const insets = useSafeAreaInsets()
 
   // Text, not keys: what the soft keyboard/IME produces is prose, and prose is exactly what
   // `encode_api_text` (`src/app/api_helpers.rs:24-33`) is for — including its bracketed-paste
@@ -51,7 +58,7 @@ export function PaneInputBar({ input }: { input: PaneInputView }) {
   const status = inputStatusLabel(state)
 
   return (
-    <View style={styles.bar}>
+    <View style={[styles.bar, { paddingBottom: insets.bottom }]}>
       <View style={styles.quickRow}>
         {PANE_QUICK_COMMANDS.map((command) => (
           <Pressable

@@ -99,6 +99,14 @@ vi.mock('expo-router', () => {
   }
 })
 
+// The screens read the real safe-area inset since §D1. Its provider comes from the navigator on a
+// device, and the navigator is mocked away here — so is the library, which does not load under
+// this environment's transform at all. Zero insets = the geometry every assertion below was
+// written against; `./safe-area-mount.test.tsx` is where a real inset is the subject.
+vi.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 })
+}))
+
 vi.mock('react-native', () => {
   class AnimatedValue {
     setValue() {}

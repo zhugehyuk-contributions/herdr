@@ -17,6 +17,7 @@
 //     a release build does not read it at all (`modules/herdr-ssh/src/remote-source.ts`).
 import { useCallback, useEffect, useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   bundledFallbackAllowed,
   deleteStoredRemote,
@@ -104,6 +105,12 @@ function NotificationsSection() {
 }
 
 export default function SettingsScreen() {
+  // Bottom only, and that asymmetry is the point. This is the one route with a real native header
+  // (`app/_layout.tsx`: `<Stack.Screen name="settings" options={{ title: 'settings' }} />`), and a
+  // native header is already laid out *below* the top inset — adding `insets.top` to the bar under
+  // it would count the status bar a second time and push the screen 59pt down its own content.
+  // The bottom edge has no such owner: the scroll view runs into the home indicator.
+  const insets = useSafeAreaInsets()
   const [inventory, setInventory] = useState<Inventory>(EMPTY)
   const [editing, setEditing] = useState<Editing | null>(null)
   const [errors, setErrors] = useState<Partial<Record<RemoteDraftField, string>>>({})
@@ -185,7 +192,7 @@ export default function SettingsScreen() {
         <Text style={styles.logo}>herdr</Text>
         <Text style={styles.crumb}>/ settings</Text>
       </View>
-      <ScrollView style={styles.body}>
+      <ScrollView style={styles.body} contentContainerStyle={{ paddingBottom: insets.bottom }}>
         {/* Said up front, because every action below it will fail otherwise — and failing at the
             save button would read as "this remote is wrong" rather than "this build cannot store
             one" (`modules/herdr-ssh/src/remote-store.ts` returns `available: false` for it). */}
@@ -329,6 +336,8 @@ function errorMessage(error: unknown): string {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: mono.ink },
+  // Keeps its literal 24 — see the note in the component: below a native header this is plain
+  // spacing, not a status-bar stand-in, so `safeChromePadding` has nothing to say about it.
   appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16, paddingTop: 24 },
   logo: { color: mono.fg, fontSize: 20, fontWeight: '700' },
   crumb: { color: mono.dim, fontSize: 13, marginLeft: 6 },

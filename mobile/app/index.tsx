@@ -19,6 +19,7 @@
 //      where they are is not usable: you cannot go there.
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AgentRow } from '../src/components/AgentRow'
 import { BottomNav } from '../src/components/BottomNav'
 import { useHerdrSnapshot } from '../src/api/snapshot-context'
@@ -30,10 +31,20 @@ import {
   countByStatus,
   groupFleetAgentsByStatus
 } from '../src/agents/fleet-agents'
+import { safeChromePadding } from '../src/layout/safe-area-chrome'
 import { mono } from '../src/theme/monotone'
+
+// The gap this bar was drawn with before there was an inset in the picture, kept as its floor.
+// It is 24 because that is the Android status bar; `safeChromePadding` explains why it survives as
+// a minimum rather than as the answer.
+const APPBAR_TOP_PADDING = 24
 
 export default function AgentsHomeScreen() {
   const router = useRouter()
+  // .prd/09-review-followups.md §D1: this screen's `settings` button was rendering *under* the
+  // Dynamic Island, which is not a style detail — the button was unreachable, so the whole M2b
+  // remote-configuration flow was unreachable with it.
+  const insets = useSafeAreaInsets()
   const { status, snapshot, error, refreshError, updatedAt } = useHerdrSnapshot()
   // `null` unless a background refresh is failing *and* has been for long enough to mean something
   // (`../src/api/snapshot-staleness.ts`). No timer ages it: the 4s poll re-renders this screen on
@@ -49,7 +60,9 @@ export default function AgentsHomeScreen() {
 
   return (
     <View style={styles.screen}>
-      <View style={styles.appbar}>
+      <View
+        style={[styles.appbar, { paddingTop: safeChromePadding(insets.top, APPBAR_TOP_PADDING) }]}
+      >
         <Text style={styles.logo}>herdr</Text>
         <Text style={styles.crumb}>/ agents</Text>
         <View style={styles.spacer} />
@@ -116,7 +129,8 @@ export default function AgentsHomeScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: mono.ink },
-  appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16, paddingTop: 24 },
+  // No `paddingTop`: it is the inset's, above.
+  appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16 },
   logo: { color: mono.fg, fontSize: 20, fontWeight: '700' },
   crumb: { color: mono.dim, fontSize: 13, marginLeft: 6 },
   meta: { color: mono.dim, fontSize: 12, paddingHorizontal: 16 },

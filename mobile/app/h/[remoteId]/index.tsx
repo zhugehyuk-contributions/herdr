@@ -21,6 +21,7 @@
 import { useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AgentStateDot } from '../../../src/components/AgentStateDot'
 import { WorkspaceListRow } from '../../../src/components/WorkspaceListRow'
 import { useRemote, useRemoteSnapshot, remoteSubtitle } from '../../../src/api/snapshot-context'
@@ -31,7 +32,13 @@ import {
 } from '../../../src/agents/agent-display'
 import { paneHref } from '../../../src/agents/fleet-agents'
 import { groupPanesByTab, rollupText, tabLabelsFrom } from '../../../src/panes/pane-tree'
+import { safeChromePadding } from '../../../src/layout/safe-area-chrome'
 import { mono } from '../../../src/theme/monotone'
+
+// This screen has no appbar — its header is the remote's name — so its floor is the 16 it was
+// drawn with, not the list screens' 24. Under §D1 that 16 was *less* than the Android status bar
+// too: this title has been clipped on both platforms, not only on iOS.
+const HEADER_TOP_PADDING = 16
 import type { PaneInfo } from '../../../src/api/herdr-api-types'
 
 /** The short pane handle herdr shows in its own UI (`1-2`), or the id when never renamed. */
@@ -67,9 +74,12 @@ export function RemoteScreen({
   // within this remote — this screen never spans remotes, unlike the Agents home.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const tabLabels = tabLabelsFrom(entry?.agents ?? [])
+  const insets = useSafeAreaInsets()
 
   return (
-    <View style={styles.screen}>
+    <View
+      style={[styles.screen, { paddingTop: safeChromePadding(insets.top, HEADER_TOP_PADDING) }]}
+    >
       <View style={styles.header}>
         <Text style={styles.title}>{remote ? remote.name : (remoteId ?? 'Remote')}</Text>
         <View style={styles.spacer} />
@@ -80,7 +90,9 @@ export function RemoteScreen({
           </Pressable>
         ) : null}
       </View>
-      <ScrollView>
+      {/* The only screen whose scroll content reaches the window's bottom edge — there is no bar
+          below it to take the inset, so the list itself has to end above the home indicator. */}
+      <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom }}>
         {(entry?.workspaces ?? []).map((workspace) => {
           const panes = (entry?.panes ?? []).filter(
             (pane) => pane.workspace_id === workspace.workspace_id
@@ -151,7 +163,8 @@ export default function RemoteRoute() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: mono.ink, paddingTop: 16 },
+  // No `paddingTop`: it is the inset's, above.
+  screen: { flex: 1, backgroundColor: mono.ink },
   header: { flexDirection: 'row', alignItems: 'center', paddingBottom: 8, paddingHorizontal: 16 },
   title: { color: mono.fg, fontSize: 18, fontWeight: '700' },
   meta: { color: mono.dim, fontSize: 12, marginLeft: 8 },
