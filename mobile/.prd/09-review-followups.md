@@ -710,3 +710,60 @@ Android exec이 이미 정확히 그 값 아래 도는 것이 그 선택의 근�
 3. **`ssh-transport.ts`가 oxlint `max-lines` 상한(300)에 정확히 붙어 있다.** 다음 사람이 여기 3줄을
    더하면 lint가 터진다. `.oxlintrc.json` override로 넘기지 말고 분할을 고려하라 —
    이 파일은 이미 transport·채널·명령 실행 세 가지를 들고 있다.
+
+## T. iOS 재QA — D1·D2 둘 다 PASS, 그리고 그 뒤에 있던 결함이 드러났다 (2026-08-23, 별도 에이전트, 고정 워크트리 `qa-ios-m2` @ `25e54ae8`)
+
+| M2 | 첫 QA (`5b4f33ad`) | 재QA (`25e54ae8`) |
+|---|---|---|
+| (a) blocked 60초 내 발견 | FAIL | **PASS** — 25~30초, 10/10 기동 재현 |
+| (b) pane 읽기 | FAIL ((a)에 막힘) | **FAIL — 새 결함** ↓ |
+| (c) 30분 무변화 | 판정 불가 | 판정 불가 — (b)가 전제를 무너뜨림 (7.5분 4샘플은 `tmux=240x52` 불변) |
+| (d) 백그라운드 10왕복 | PASS | **PASS** |
+| (e) 넓은 pane 도달 | 판정 불가 | **FAIL** — (b)의 하류 |
+
+**D2 PASS** — 강제종료 후 재기동 **10회 전부** 라이브. `the ssh channel is no longer open`이 로그·화면
+**0건**. 바이너리 안에 그 문자열이 **여전히 존재**함을 `nm`으로 확인했으므로 "문자열이 사라져서 안 뜬 것"은
+배제됐다. 수리 심볼(`signalReady`/`awaitReady`) 16개 실측.
+
+**D1 PASS** — 세로에서 `settings` 탭이 실제 전이(`/ settings` + `BackButton` 출현). 버튼 y = **69.67**
+(수리 전 31.7) ≥ 상태바 실측 54 / inset ≈59. 그리고 **이 수리가 처음 load-bearing하게 만드는
+`useSafeAreaInsets()` 경로가 throw하지 않음이 첫 프레임 렌더로 확증**됐다 — 5개 화면 전부 appbar y=62.
+
+**mock/live = LIVE, 위조 불가**: 화면에 `ZQ8M2-BLOCKED-AGENT`·`ZQ8M2-LAB-REMOTE`·`ZQ8M2-LAB-BRAVO`,
+정본 목업 판별자(`reviewing PR #91` 등)는 0건, `1 nodes` / `1 blocked · 0 working`(픽스처는 4 / 8·16).
+
+### U. 새 결함 — 프레임은 도착하고 터미널은 한 픽셀도 안 그린다 (iOS 한정, 미수리)
+
+```
+헤더        observing / Connected                     ← RN 쪽은 건강
+WebView     frame={{0,88},{402,624}} exists=true      ← 정상 마운트
+            innerStaticTexts=0
+표면        (0,270)-(1206,2050) 단일색 (26,27,38) 2,115,877px
+            핀치·스와이프 전후 프레임 바이트 동일
+와이어      in 48B 구독(w2:p1) → out 12,834B → 150,633B
+            strings: ZQ8M2-BRAVO-PANE-PROOF-7731, ZQ8M2-LIVE-TICK-1..10
+```
+
+XCUITest와 `simctl io screenshot` **두 독립 경로**가 같은 결론. **Android는 같은 코드로 정상 렌더한다** —
+플랫폼 갈림이다. 첫 QA는 D2에 막혀 여기까지 도달한 적이 **없다** — 즉 이건 회귀가 아니라 *이제야 보이는* 결함이다.
+
+#### 디스패처가 좁힌 것 (기기 없이, 2026-08-23)
+
+1. **메시지 리스너 가설 기각.** react-native-webview가 iOS는 `window`·Android는 `document`로 배달하는 것은
+   맞지만 `terminal-webview-html.ts:1875,1877`이 **둘 다 등록**한다.
+2. **WebView JS는 실행됐다.** `armWebReadyWatchdog` 만료 → `reportEngineError` → `TerminalWebViewEngineErrorOverlay`
+   (`TerminalWebView.tsx:394-396`)인데 **QA 화면에 오버레이가 없었다** → `web-ready` 핸드셰이크 성립.
+3. **`flog`가 Metro에 안 뜬다** — `window.ReactNativeWebView.postMessage`로 RN에 가지만(`:336-344`)
+   `handleMessage`가 `type:'log'`를 콘솔로 흘리지 않는다. Metro 로그 실검색 결과 터미널 진단 **0건**.
+   **눈이 없다는 것 자체가 이 결함이 오래 숨을 수 있었던 이유다.**
+4. 소스는 `{ html: XTERM_HTML }` 인라인, baseUrl 없음. 엔진 624,787B + HTML 72,539B ≈ 700KB.
+
+#### 1순위 가설 [가설] — WebGL이 "붙었는데 안 그린다"
+
+`terminal-webview-html.ts:777`이 `attachWebglAddon(true)`를 무조건 부르고,
+`terminal-webview-webgl-recovery-injected.ts:18-56`은 **throw**와 **context loss**만 처리한다 —
+**"붙었는데 빈 화면"에 대한 폴백이 없다.** 단일색 (26,27,38)은 테마 배경이므로 캔버스가 clear는 됐는데
+글리프가 안 그려진 모양과 일치한다.
+
+**이 가설이 맞으면 §P도 함께 답해진다** — WebGL이 살아 있으면 `.xterm-rows`가 null이고, 그러면
+`ccbaafe4`의 프로브는 설계상 무동작이며 §P의 진단이 틀렸다는 뜻이 된다.
