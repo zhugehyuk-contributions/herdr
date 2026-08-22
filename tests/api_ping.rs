@@ -504,7 +504,7 @@ fn workspace_list_and_create_round_trip() {
     let recent = send_request(
         &socket_path,
         &format!(
-            r#"{{"id":"req_11","method":"pane.read","params":{{"pane_id":"{}","source":"recent","lines":20}}}}"#,
+            r#"{{"id":"req_11","method":"pane.read","params":{{"pane_id":"{}","source":"recent","lines":50}}}}"#,
             pane_id
         ),
     );

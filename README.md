@@ -23,7 +23,7 @@ everything herdr-mx adds is documented in [DIVERGENCE.md](DIVERGENCE.md). report
 
 https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 
-**agent multiplexer that lives in your terminal.**
+**the runtime your coding agents live on.**
 
 workspaces, tabs, panes. mouse-native: click, drag, split. every agent at a glance: blocked, working, done. detach and reattach, agents keep running. no gui app, no electron, no mac-only native wrapper. you see the agent's own terminal, not someone's interpretation of it. and with mx: every remote herdr server in the same sidebar.
 

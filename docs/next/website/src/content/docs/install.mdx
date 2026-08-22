@@ -1,9 +1,9 @@
 ---
 title: Install Herdr
-description: Install, update, and verify Herdr on Linux, macOS, and Windows beta.
+description: Install, update, and verify Herdr on Linux, macOS, and Windows.
 ---
 
-Herdr ships stable binaries for Linux and macOS. Native Windows support is preview-only beta.
+Herdr publishes stable-channel binaries for Linux, macOS, and Windows. Windows is generally available, with documented platform-specific limitations and ongoing fixes.
 
 ## Install
 
@@ -13,13 +13,13 @@ On Linux or macOS, run:
 curl -fsSL https://herdr.dev/install.sh | sh
 ```
 
-On Windows preview beta, install the preview channel:
+On Windows, run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://herdr.dev/install.ps1 | iex"
 ```
 
-The installer downloads the right release binary for your platform and places it on your PATH. Herdr defaults to preview on Windows without changing your config. The installer uses versioned install folders and updates a `current` junction, so updates do not need to overwrite a running `herdr.exe`.
+The installer downloads the release binary for your platform and places it on your PATH. New direct installs use the stable update channel. Existing Windows preview installs stay on preview until you switch them with `herdr channel set stable`. The Windows installer uses versioned install folders and updates a `current` junction, so updates do not need to overwrite a running `herdr.exe`.
 
 ## Install with Homebrew
 
@@ -57,7 +57,7 @@ The flake also exposes a development shell:
 nix develop github:herdrdev/herdr
 ```
 
-Update through the same Nix workflow you used to install Herdr. For a profile install, list your profile entries and upgrade the Herdr entry:
+Use the same Nix workflow to update Herdr. For a profile install, list your profile entries and upgrade the Herdr entry:
 
 ```bash
 nix profile list
@@ -82,6 +82,7 @@ Choose the asset that matches your system:
 | Linux aarch64 | `herdr-linux-aarch64` |
 | macOS Intel | `herdr-macos-x86_64` |
 | macOS Apple silicon | `herdr-macos-aarch64` |
+| Windows x86_64 | `herdr-windows-x86_64.zip` |
 
 On Linux or macOS, make it executable and move it somewhere on your PATH.
 
@@ -90,15 +91,9 @@ chmod +x herdr-linux-x86_64
 mv herdr-linux-x86_64 ~/.local/bin/herdr
 ```
 
-### Windows beta downloads
+### Windows archive
 
-Windows binaries are published only on preview releases while native Windows support is in beta. Use the preview installer above for normal testing, or download the Windows asset from a preview GitHub prerelease:
-
-| System | Asset |
-| --- | --- |
-| Windows x86_64 beta | `herdr-windows-x86_64.zip` |
-
-The archive contains `herdr.exe` and its app-local ConPTY runtime. Keep the extracted directory together; do not copy only `herdr.exe`.
+Stable releases and preview prereleases both include `herdr-windows-x86_64.zip`. The archive contains `herdr.exe` and its app-local ConPTY runtime. Keep the extracted directory together; do not copy only `herdr.exe`.
 
 ## Verify
 
@@ -118,27 +113,27 @@ Herdr checks for new releases and notifies you in the app. You can update manual
 herdr update
 ```
 
-`herdr update` is for installs managed by Herdr's own installer. Homebrew, mise, and Nix installs are updated through those package managers instead.
+Use `herdr update` only for installs managed by Herdr's own installer. Update Homebrew, mise, and Nix installs through those package managers instead.
 
-On Linux and macOS, Herdr uses the stable update channel by default. To opt into preview builds from `master`, set the channel:
+Direct installs on Linux, macOS, and Windows use the stable update channel by default. To opt into preview builds from `master`, set the channel:
 
 ```bash
 herdr channel set preview
 ```
 
-Switch Linux and macOS direct installs back to stable the same way:
+Switch a direct install back to stable the same way:
 
 ```bash
 herdr channel set stable
 ```
 
-For direct installs, changing channels also checks that channel and installs its latest binary. If that update fails, run `herdr update` to retry from the configured channel.
+For direct installs, changing channels checks the selected channel and installs its latest binary. If that update fails, run `herdr update` to retry from the configured channel.
 
-Preview builds are manually published GitHub prereleases from the current development branch. They are useful when you want fixes before the next stable release, but they can regress. Homebrew, mise, and Nix installs do not use the preview channel.
+Preview builds are regularly published GitHub prereleases from the current development branch. They are useful when you want fixes before the next stable release, but they can regress. Homebrew, mise, and Nix installs do not use the preview channel.
 
-Windows beta builds are preview-only for now. `herdr channel set stable` is rejected on Windows until stable Windows releases are available.
+Stable is the recommended channel for normal Windows use. Preview receives fixes sooner but can regress, so opt in only when you want that tradeoff. Existing Windows preview installs remain on preview until you switch them explicitly. If an older preview build rejects `herdr channel set stable`, run `herdr update` once on preview, then retry the channel switch.
 
-By default, `herdr update` installs the new binary and leaves compatible running sessions alone. If an update changes Herdr's client/server protocol, Herdr asks whether to stop the old server after installing. Stop the old server to use the new version. Stopping exits pane processes. For the default session, run `herdr server stop`, then run `herdr` again. For a named session, run `herdr session stop <name>`, then run `herdr session attach <name>` again.
+By default, `herdr update` installs the new binary and leaves compatible running sessions alone. If an update changes Herdr's client/server protocol, Herdr asks whether to stop the old server after installing. Stop the old server to use the new version. Stopping the server exits its pane processes. For the default session, run `herdr server stop`, then run `herdr` again. For a named session, run `herdr session stop <name>`, then run `herdr session attach <name>` again.
 
 To opt into experimental live server handoff for supported running sessions, run:
 
@@ -150,4 +145,4 @@ Live handoff does not apply to Homebrew, mise, or Nix package-manager updates. F
 
 ## Requirements
 
-Stable Herdr releases support Linux and macOS. Native Windows builds are preview-only beta releases; see [Windows beta](/docs/windows-beta/) for supported workflows and known limitations.
+Stable-channel binaries are available for Linux, macOS, and Windows x86_64. See [Windows support](/docs/windows-beta/) for supported workflows and known limitations. Windows ARM64 runs the x86_64 build under Windows emulation.

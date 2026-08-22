@@ -50,6 +50,18 @@ Herdr のグローバルメニューを開いて `reload config` を選ぶこと
 
 リロードは、ペインを再起動せずにほとんどの UI 設定を適用します。起動時のみの設定には引き続き再起動が必要です。
 
+## ヘッドレスターミナルのサイズ
+
+クライアントが接続されていない場合、サーバーはレイアウトと新しく作成されるペインに 120×40 の仮想ターミナルを使います。ヘッドレスオーケストレーション用のフォールバックは次のように変更できます:
+
+```toml
+[server]
+headless_cols = 160
+headless_rows = 50
+```
+
+クライアントが接続されている間は、そのクライアントが共有ランタイムのサイズを決定します。切断後、既存のペイン PTY は最後に接続されていたときのサイズを保ち、新しいヘッドレスレイアウトには設定したフォールバックが使われます。
+
 ## ターミナルのデフォルト
 
 新しく作成される対話型ペインに Herdr が使う実行ファイルを設定します:
@@ -98,14 +110,14 @@ worktree チェックアウトの削除は明示的に行います。グルー�
 
 ## リモートアタッチ
 
-リモートアタッチは、デフォルトで一時的なキープアライブと接続再利用のフォールバックを使って SSH 接続を管理します。
+リモートアタッチは、デフォルトで一時的なキープアライブと、対応する環境では接続再利用を使って SSH 接続を管理します。
 
 ```toml
 [remote]
 manage_ssh_config = true
 ```
 
-有効な場合、`herdr --remote` は最初に `~/.ssh/config` と `/etc/ssh/ssh_config` を取り込み、その後にフォールバックの `ServerAliveInterval` と `ServerAliveCountMax` の値を加えた、プライベートな一時 SSH 設定を書き込みます。ユーザー自身のキープアライブ設定が優先されます。Herdr は、最初に認証した接続を再利用するため、アタッチごとにプライベートな OpenSSH コントロールソケットも使います。Herdr が生成した設定やコントロールソケットを使わず、通常の `ssh` でリモートアタッチを実行するには `manage_ssh_config = false` を設定してください。
+有効な場合、`herdr --remote` は最初にユーザーとシステムの SSH 設定を取り込み、その後にフォールバックの `ServerAliveInterval` と `ServerAliveCountMax` の値を加えた、プライベートな一時 SSH 設定を書き込みます。ユーザー自身のキープアライブ設定が優先されます。Linux と macOS クライアントは、最初に認証した接続を再利用するため、アタッチごとにプライベートな OpenSSH コントロールソケットも使います。Windows OpenSSH ではこの接続再利用を使いません。Herdr が生成した設定やコントロールソケットを使わず、通常の `ssh` でリモートアタッチを実行するには `manage_ssh_config = false` を設定してください。
 
 ## キーバインド
 
@@ -137,7 +149,15 @@ split_horizontal = "prefix+minus"
 next_tab = ["prefix+n", "ctrl+alt+]"]
 ```
 
-任意のアクションはデフォルトでは未設定です。プレフィックスモードの挙動には `prefix+` でバインドし、意図的に直接ショートカットにする場合は明示的な修飾キーコードを使ってください。
+任意のアクションはデフォルトでは未設定です。プレフィックスモードの挙動には `prefix+` でバインドし、意図的に直接ショートカットにする場合は明示的な修飾キーコードを使ってください。たとえば、リサイズモードに入らず tmux のように 1 回のキー操作でペインをリサイズできます:
+
+```toml
+[keys]
+resize_pane_left = "ctrl+shift+alt+left"
+resize_pane_down = "ctrl+shift+alt+down"
+resize_pane_up = "ctrl+shift+alt+up"
+resize_pane_right = "ctrl+shift+alt+right"
+```
 
 キー文字列には、通常のキー、`ctrl+a`、`shift+n`、`alt+1`、`cmd+k` のような修飾キーの組み合わせ、`enter`、`tab`、`esc`、`left`、`right`、`up`、`down` のような特殊キーが使えます。`minus`、`comma`、`ampersand`、`plus`、`backtick` のような名前付き記号も使えます。`n` のような通常の印字可能キーの直接バインドは入力を妨げるため危険です。意図的に直接バインドするのでなければ `prefix+n` を使ってください。`navigate_workspace_*` と `navigate_pane_*` のフィールドはナビゲートモード専用で、`j` や `k` のような通常のキーを使えます。これらには `prefix+`、`esc`、`enter`、`tab`、`shift+tab`、`left`、`right`、修飾なしの `1` から `9` は使えません。左右の矢印キーは、左ペインと右ペインへのナビゲーションの恒久的なエイリアスです。これらのナビゲートモードショートカットは、`focus_pane_down = "prefix+j"` のような一般アクションのバインドから独立しています。両方に同じキーが使われている場合、ナビゲートモードが開いている間はナビゲートモードのショートカットが優先されます。Alt、Cmd/Super、修飾キー付き記号は、ターミナルと tmux の設定に依存します。
 
@@ -238,6 +258,9 @@ dark_name = "catppuccin"
 
 ```toml
 [theme.custom]
+sidebar_bg = "#181825"
+active_row_bg = "#1e1e2e"
+selection_bg = "#313244"
 panel_bg = "reset"
 accent = "#a6e3a1"
 green = "#a6e3a1"
@@ -246,11 +269,59 @@ red = "#f38ba8"
 yellow = "#f9e2af"
 ```
 
+`sidebar_bg` を使うと、デスクトップのサイドバーだけに背景色を設定できます。省略した場合、サイドバーはホストターミナルの背景を使います。`active_row_bg` は、区切り線やスクロールバートラックに影響を与えず、アクティブな Space とフォーカス中の Agent 行の背景色を変更します。`selection_bg` は、サイドバーの Navigate モードのカーソル行の背景色を変更します。
+
 色の値には、hex、名前付きの色、`rgb(r,g,b)`、または `reset`、`default`、`none`、`transparent` のようなリセットエイリアスが使えます。
 
 ## UI とサイドバー
 
 サイドバーは Herdr のメインダッシュボードです。サイズ、折りたたみモード、Agent パネルの並び順、マウスの挙動、ペインの境界線、その他の表示設定については、[設定リファレンス](/docs/config-reference/)で `ui.` を検索してください。
+
+`[ui]` の `tab_bar_position = "bottom"` を設定すると、デスクトップのタブ行をターミナルペインの下に配置できます。Prefix、Navigate、Copy、Resize の各モードバーは、表示中だけ下部のタブ行を置き換えます。デフォルトは `"top"` です。
+
+タブ行の右端に、tmux のような順序付きステータス領域を設定できます:
+
+```toml
+[ui]
+tab_bar_right = [
+  { type = "zoom" },
+  { type = "hostname" },
+  { type = "datetime", format = "%H:%M" },
+  { type = "text", text = "prod" },
+  { type = "command", command = "~/.config/herdr/status.sh", interval_seconds = 5, timeout_seconds = 2 },
+]
+tab_bar_right_separator = " · "
+```
+
+ステータス領域はデフォルトでは空です。`zoom` を追加すると、アクティブなタブがズーム中のとき固定の `ZOOM` ピルが表示されます。各タブの既存の `Z` マーカーとは独立しています。`hostname`、`datetime`、`command` は Herdr サーバー上で解決されるため、`herdr --remote` ではリモートマシンの値が表示されます。日時エントリは `strftime` 形式を使います。`%z` や `%s` のように UTC オフセットまたは Unix タイムスタンプを必要とする指定子は、値がサーバーローカルの壁時計時刻であるため拒否されます。
+
+コマンドエントリはすぐに実行され、その後 `interval_seconds` ごとに更新されます。描画をブロックせず、前回の実行と重複しません。間隔は 1〜31,536,000 秒、タイムアウトは 1〜3,600 秒です。Herdr は成功した出力の最終行を使い、失敗、空の出力、`timeout_seconds` 経過後には値を消去します。カスタムコマンドキーバインドと同じアクティブなワークスペース、タブ、ペイン、ソケット、バイナリ、作業ディレクトリのコンテキストが提供されます。コマンドは Linux、macOS、Windows で利用でき、Linux と macOS では `/bin/sh -lc`、Windows では `cmd.exe /d /c` が使われます。
+
+区切り文字は、表示されているエントリの間にだけ挿入されます。直接連結するには `tab_bar_right_separator = ""` を設定します。タブ行が狭い場合、ステータス領域全体がタブとそのコントロールに場所を譲ります。
+
+### 外側のターミナルのウィンドウタイトル
+
+Herdr はペイン内のターミナルをエミュレートするため、ペイン内で書き込まれた `OSC 0`/`OSC 2` のタイトルは Herdr で止まります。Herdr は自身が動作しているターミナルに独自のタイトルを書き込み、ウィンドウマネージャーやターミナルのタブバーはこれを読み取ります:
+
+```toml
+[ui]
+window_title = "{hostname}: {workspace}"
+```
+
+トークンは `{hostname}`、`{workspace}`、`{tab}`、`{pane}`(フォーカス中のペインの手動名)、`{terminal_title}`(フォーカス中のペイン自身のターミナルタイトルからスピナーを取り除いたもの)です。波括弧そのものを書くには `{{` と `}}` を使います。値のないトークンは空になります。
+
+タイトルは Herdr サーバー上で生成されるため、`herdr --remote` で接続した場合や SSH 越しに `herdr` を実行した場合でも、`{hostname}` はペインが動作しているマシンを指します。外側のターミナルのタイトルに触れないようにするには `window_title = ""` を設定します。
+
+`client.window_title.set` は設定されたタイトルを上書きし、`client.window_title.clear` がそれを戻します。
+
+Agent の状態は、デフォルトではコンパクトな色付きドットで表示されます。blocked、working、done、idle、unknown を色だけでなく形でも区別するには、設定画面で **distinct symbols** を選ぶか、次のように設定します:
+
+```toml
+[ui]
+status_indicators = "symbols"
+```
+
+これらの記号は静的なので、このオプションでスピナーアニメーションが有効になることはありません。
 
 ### サイドバーの行レイアウト
 
@@ -366,6 +437,8 @@ position = "bottom-right"
 ```
 
 アプリ内トーストには `herdr`、SSH 越しでも使いやすい外側のターミナル通知には `terminal`、ローカル OS の通知サービスには `system`、ポップアップを無効にするには `off` を選びます。Herdr はアクティブなタブのポップアップを抑制します。位置、遅延の挙動、クリップボードのフィードバック設定については、[設定リファレンス](/docs/config-reference/)で `ui.toast` を検索してください。
+
+macOS では、`system` は最初に `terminal-notifier` を試し、利用できない場合や失敗した場合は `/usr/bin/osascript` にフォールバックします。このフォールバックは通知センターで Script Editor として表示され、ホストターミナルをアクティブにできません。`brew install terminal-notifier` で `terminal-notifier` をインストールできます。対応するターミナルを Herdr が検出できた場合、通知のクリック時にそのターミナルアプリをアクティブにできます。または、`terminal` を選んで対応する外側のターミナルに通知を送信させてください。
 
 ## サウンド
 

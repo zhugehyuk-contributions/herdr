@@ -38,7 +38,7 @@ herdr
 
 窗格屏幕历史在服务器完全重启后恢复最近的终端内容。它恢复的是 Herdr 能展示的内容,而不是原来的进程。
 
-它默认关闭,因为窗格输出可能包含密钥、令牌、提示词和命令输出。可以在 Settings > Experiments > pane screen history 中开启,或者:
+它默认关闭,因为窗格输出可能包含密钥、令牌、提示词和命令输出。可以在配置文件中开启:
 
 ```toml
 [experimental]
@@ -76,6 +76,7 @@ Herdr 只会恢复那些通过当前官方 Herdr 集成上报了原生会话引�
 | Droid | `2` | `droid --resume <id>` |
 | Kimi Code CLI | `3` | `kimi --session <id>` |
 | Qoder CLI | `2` | `qodercli --resume <id>` |
+| Qwen Code | `1` | `qwen --resume <id>` |
 | OpenCode | `5` | `opencode --session <id>` |
 | Kilo Code CLI | `1` | `kilo --session <id>` |
 | Hermes Agent | `2` | `hermes --resume <id>` |

@@ -27,6 +27,14 @@ use serde::{Deserialize, Serialize};
 /// pre-connection status check (`src/server/autodetect.rs:158`) rejects a stale in-session server
 /// with its existing "restart the session" guidance *before* a v21 client writes a prelude at a
 /// v20 server that would only read it as an oversized length prefix.
+///
+/// The upstream v0.8.2 merge does **not** move this: upstream is still 20 there, and its additions
+/// (three `ClientMessage` variants, three `ServerMessage` variants,
+/// `ClientLaunchMode::AppDirectGraphics`, `MouseCapture::sgr_pixels`) all land as tail appends or
+/// trailing fields, so the *handshake byte stream* is unchanged. What moved is the byte layout of
+/// the message set, and that axis is `abi::WIRE_ABI_EPOCH` (2 -> 3), not this integer — keeping the
+/// two axes separate is the whole point of `crate::protocol::abi`
+/// (mobile/.prd/03-blockers.md B1).
 pub const PROTOCOL_VERSION: u32 = 21;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
@@ -89,6 +97,14 @@ pub enum ClientLaunchMode {
     App,
     /// Direct terminal attach client.
     TerminalAttach,
+    /// Full app client eligible for audited local direct graphics.
+    ///
+    /// Upstream v0.8.2 declares this between `App` and `TerminalAttach`; herdr-mx appends it at the
+    /// tail so `TerminalAttach` keeps wire tag 1. This is the fork's standing merge convention
+    /// (`ClientMessage::ObserveTerminal`'s note below) and it is load-bearing here: `launch` is a
+    /// field of the very first message a client sends, so a shifted tag makes the *server* mis-parse
+    /// `Hello` (mobile/.prd/03-blockers.md B1). `wire_fixtures.rs` pins the ordinal.
+    AppDirectGraphics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -507,6 +523,29 @@ pub enum ClientMessage {
         /// The mode the connection should be in after the move.
         mode: TerminalSessionMode,
     },
+
+    /// Result of the one armed Herdr-owned direct Kitty transmission. Upstream v0.8.2 declares this
+    /// right after `ControlTerminal`; appended here so the mx tags (`ObserveTerminal` = 12,
+    /// `RetargetTerminal` = 14) stay stable across the merge.
+    GraphicsTransmissionResult {
+        transfer_id: u64,
+        image_id: u32,
+        success: bool,
+    },
+
+    /// One confirmed SGR 1016 mouse report with read-time host geometry. Appended after the mx
+    /// variants, see `GraphicsTransmissionResult`.
+    InputPixels {
+        data: Vec<u8>,
+        cols: u16,
+        rows: u16,
+        width_px: u32,
+        height_px: u32,
+    },
+
+    /// The direct command was written and flushed; terminal response timing starts now. Appended
+    /// after the mx variants, see `GraphicsTransmissionResult`.
+    GraphicsTransmissionStarted { transfer_id: u64, image_id: u32 },
 }
 
 /// What a [`ClientMessage::RetargetTerminal`] asks the connection to become.
@@ -896,6 +935,8 @@ pub enum ServerMessage {
     MouseCapture {
         /// True when Herdr mouse UI is enabled or the focused pane app requests mouse reporting.
         enabled: bool,
+        /// True only while the focused pane requests DEC SGR pixel mode 1016.
+        sgr_pixels: bool,
     },
 
     /// A delta against the client's last full frame for a semantic-frame client (issue #13). The
@@ -938,6 +979,29 @@ pub enum ServerMessage {
         /// True only while the focused pane requests `REPORT_ALL_KEYS_AS_ESCAPE_CODES`.
         enabled: bool,
     },
+
+    /// Ring the foreground client's outer terminal for pane-originated BEL characters. Upstream
+    /// v0.8.2 declares this right after `PrefixInputSource`; herdr-mx appends it at the tail so the
+    /// mx wire tags (`Compressed` = 11, `Terminal` = 13, ...) stay stable across the merge.
+    TerminalBell {
+        /// Number of BEL characters parsed from one PTY read.
+        count: u16,
+    },
+
+    /// One validated Herdr-owned Kitty regular-file RGBA transmission. Appended after the mx
+    /// variants, see `TerminalBell`.
+    GraphicsFile {
+        path: String,
+        expected_len: u64,
+        image_id: u32,
+        transfer_id: u64,
+        leading: Vec<u8>,
+        control: String,
+    },
+
+    /// Suppress a direct command that expired before terminal delivery. Appended after the mx
+    /// variants, see `TerminalBell`.
+    GraphicsTransmissionRetired { transfer_id: u64, image_id: u32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -1522,6 +1586,32 @@ mod tests {
             }),
             14
         );
+        // upstream v0.8.2's additions, appended after the mx variants (tail rule).
+        assert_eq!(
+            tag(&ClientMessage::GraphicsTransmissionResult {
+                transfer_id: 0,
+                image_id: 0,
+                success: false,
+            }),
+            15
+        );
+        assert_eq!(
+            tag(&ClientMessage::InputPixels {
+                data: Vec::new(),
+                cols: 0,
+                rows: 0,
+                width_px: 0,
+                height_px: 0,
+            }),
+            16
+        );
+        assert_eq!(
+            tag(&ClientMessage::GraphicsTransmissionStarted {
+                transfer_id: 0,
+                image_id: 0
+            }),
+            17
+        );
     }
 
     /// `TerminalSessionMode` is nested inside `RetargetTerminal`, so its ordinals are wire too and
@@ -1610,7 +1700,13 @@ mod tests {
         );
         assert_eq!(tag(&ServerMessage::WindowTitle { title: None }), 6);
         assert_eq!(tag(&ServerMessage::ReloadSoundConfig), 7);
-        assert_eq!(tag(&ServerMessage::MouseCapture { enabled: false }), 8);
+        assert_eq!(
+            tag(&ServerMessage::MouseCapture {
+                enabled: false,
+                sgr_pixels: false
+            }),
+            8
+        );
         // herdr-mx wire layout: the mx variants (FrameDelta..Compressed, tags 9-11) keep their
         // tags; upstream's later additions are appended after them.
         assert_eq!(
@@ -1642,6 +1738,26 @@ mod tests {
         assert_eq!(
             tag(&ServerMessage::KittyKeyboardReportAll { enabled: false }),
             14
+        );
+        // upstream v0.8.2's additions, appended after the mx variants (tail rule).
+        assert_eq!(tag(&ServerMessage::TerminalBell { count: 0 }), 15);
+        assert_eq!(
+            tag(&ServerMessage::GraphicsFile {
+                path: String::new(),
+                expected_len: 0,
+                image_id: 0,
+                transfer_id: 0,
+                leading: Vec::new(),
+                control: String::new(),
+            }),
+            16
+        );
+        assert_eq!(
+            tag(&ServerMessage::GraphicsTransmissionRetired {
+                transfer_id: 0,
+                image_id: 0
+            }),
+            17
         );
     }
 
@@ -1696,7 +1812,8 @@ mod tests {
         };
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         // Freeze the protocol 20 input envelope (mx): `TextCommit` rides at the enum TAIL
-        // (tag 5) so the pre-merge mx wire tags (Mouse = 1, ...) stay stable.
+        // (tag 5) so the pre-merge mx wire tags (Mouse = 1, ...) stay stable. Upstream renumbered
+        // the comment to "protocol 20" in v0.8.2; the mx ordinals below are unchanged by that.
         assert_eq!(
             encoded,
             vec![
@@ -2082,7 +2199,10 @@ mod tests {
 
     #[test]
     fn server_mouse_capture_roundtrip() {
-        let msg = ServerMessage::MouseCapture { enabled: true };
+        let msg = ServerMessage::MouseCapture {
+            enabled: true,
+            sgr_pixels: true,
+        };
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
@@ -2099,6 +2219,44 @@ mod tests {
     }
 
     #[test]
+    fn direct_graphics_messages_roundtrip() {
+        let client = ClientMessage::GraphicsTransmissionResult {
+            transfer_id: 7,
+            image_id: 42,
+            success: false,
+        };
+        let encoded = bincode::serde::encode_to_vec(&client, bincode::config::standard()).unwrap();
+        let (decoded, _): (ClientMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(client, decoded);
+
+        let server = ServerMessage::GraphicsFile {
+            path: "/run/user/1000/herdr/source/frame".into(),
+            expected_len: 4,
+            image_id: 42,
+            transfer_id: 7,
+            leading: b"\x1b[2;3H".to_vec(),
+            control: "a=T,f=32,i=42,q=0".into(),
+        };
+        let encoded = bincode::serde::encode_to_vec(&server, bincode::config::standard()).unwrap();
+        let (decoded, _): (ServerMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(server, decoded);
+
+        let pixels = ClientMessage::InputPixels {
+            data: b"\x1b[<35;321;241M".to_vec(),
+            cols: 80,
+            rows: 24,
+            width_px: 800,
+            height_px: 480,
+        };
+        let encoded = bincode::serde::encode_to_vec(&pixels, bincode::config::standard()).unwrap();
+        let (decoded, _): (ClientMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(pixels, decoded);
+    }
+
+    #[test]
     fn server_prefix_input_source_roundtrip() {
         for active in [true, false] {
             let msg = ServerMessage::PrefixInputSource { active };
@@ -2107,6 +2265,15 @@ mod tests {
                 bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
             assert_eq!(msg, decoded);
         }
+    }
+
+    #[test]
+    fn server_terminal_bell_roundtrip() {
+        let msg = ServerMessage::TerminalBell { count: 3 };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        let (decoded, _): (ServerMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(msg, decoded);
     }
 
     // ---- Framing ----

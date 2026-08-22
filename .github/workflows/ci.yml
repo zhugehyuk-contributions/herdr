@@ -4,7 +4,15 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
-    branches: [master, windows]
+    # herdr-mx#68: `mx` is this fork's default branch and upstream merges land on it as direct
+    # pushes, not PRs, so `on.pull_request` never covers them. Without `mx` here, fmt/clippy/nextest
+    # simply do not run on the branch the preview channel ships from (the v0.7.1 merge reached that
+    # channel with zero test gate). `master`/`windows` are kept so the workflow stays mergeable
+    # upstream. The `conventional-commits` job below is deliberately NOT extended to mx: an upstream
+    # merge push carries upstream's subjects plus a `Merge tag 'vX.Y.Z'` commit, which that
+    # validator rejects by construction. `nix.yml` is deliberately left alone too - it is
+    # path-filtered and PR-only, and herdr-mx ships through brew/mise, not nix.
+    branches: [master, windows, mx]
     paths-ignore:
       - "website/**"
 

@@ -548,20 +548,29 @@ fn fixture_document() -> Value {
         ],
         "nondeterminism": nondeterminism(),
         "live_cross_check": {
-            "source": "tests/observe_terminal_ansi.rs, 2 consecutive runs on macOS arm64, \
-                       2026-08-22",
+            "source": "tests/observe_terminal_ansi.rs \
+                       (observe_terminal_streams_ansi_bytes_without_resizing_pane), 2 consecutive \
+                       runs on macOS arm64, 2026-08-22, post upstream-v0.8.2 merge",
             "observed": {
                 "seq": 1,
                 "width": 100,
                 "height": 30,
                 "full": true,
-                "bytes_len": 55925
+                "bytes_len": 3276
             },
             "note": "Recorded by hand from the integration test's stdout - this block is \
                      documentation, not a generated assertion, and is the one part of this file \
                      that can go stale. It exists so a reader can see that the synthesized \
-                     terminal vector (bytes_len 55921) is the same shape and magnitude as a real \
-                     observe stream at the same geometry; the ~4-byte delta is screen content."
+                     terminal vector (bytes_len 3292) is the same shape and magnitude as a real \
+                     observe stream at the same geometry; the delta is screen content. RE-MEASURED \
+                     for the upstream v0.8.2 merge: this was 55925 against a 55921-byte vector \
+                     before it. Both numbers fell together because the fixture and the live \
+                     observe stream are the SAME encoder - render_stream.rs:101 \
+                     (PreparedRender::TerminalAnsi) calls BlitEncoder::encode, which reaches \
+                     render_ansi.rs:483 write_all_cells, the function upstream rewrote in 36074530 \
+                     (#2675) to elide redundant cursor moves and repeated SGR. Two independent \
+                     live paths agree at this geometry: this test at 3276 and the TypeScript \
+                     client's live observe / live-ssh runs at 3274."
         }
     })
 }

@@ -383,7 +383,12 @@ describe.skipIf(reason !== null)('live: sending input from the app screen to a r
 
     const before = await waitForScreen(`${PROMPT} approve?`, 60_000)
     dumpScreen('BEFORE input — the pane is sitting on the prompt', before)
-    expect(before.some((line) => line.includes(`${ANSWER}:`))).toBe(false)
+    // `${ANSWER}:y` (the printf OUTPUT), not `${ANSWER}:` — the echoed command line itself contains
+    // `${ANSWER}:%s`, and whether that substring survives the PTY's line wrap depends on the
+    // server's terminal width. Upstream v0.8.2 moved the headless default from 80x24 to 120x40
+    // (#2828), which changed the wrap column and made the looser predicate self-trip before a
+    // single key was pressed. This form mirrors the AFTER assertion below and cannot alias.
+    expect(before.some((line) => line.includes(`${ANSWER}:y`))).toBe(false)
 
     const writesBefore = bridge().writes
     const sendsBefore = screenCalls.filter((call) => call.method === 'pane.send_input').length

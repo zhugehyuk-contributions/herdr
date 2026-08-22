@@ -757,13 +757,19 @@ pub const TerminalData = enum(c_int) {
     kitty_graphics = 30,
     selection = 31,
     viewport_active = 32,
+    modify_other_keys = 33,
 
     /// Output type expected for querying the data of the given kind.
     pub fn OutType(comptime self: TerminalData) type {
         return switch (self) {
             .invalid => void,
             .cols, .rows, .cursor_x, .cursor_y => size.CellCountInt,
-            .cursor_pending_wrap, .cursor_visible, .mouse_tracking, .viewport_active => bool,
+            .cursor_pending_wrap,
+            .cursor_visible,
+            .mouse_tracking,
+            .viewport_active,
+            .modify_other_keys,
+            => bool,
             .active_screen => TerminalScreen,
             .kitty_keyboard_flags => u8,
             .scrollbar => TerminalScrollbar,
@@ -899,6 +905,7 @@ fn getTyped(
             t.screens.active.selection orelse return .no_value,
         ),
         .viewport_active => out.* = t.screens.active.pages.viewport == .active,
+        .modify_other_keys => out.* = t.flags.modify_other_keys_2,
     }
 
     return .success;
@@ -1652,6 +1659,32 @@ test "get kitty_keyboard_flags" {
 
     try testing.expectEqual(Result.success, get(t, .kitty_keyboard_flags, @ptrCast(&flags)));
     try testing.expectEqual(3, flags);
+}
+
+test "get modify_other_keys" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    var enabled: bool = undefined;
+    try testing.expectEqual(Result.success, get(t, .modify_other_keys, @ptrCast(&enabled)));
+    try testing.expect(!enabled);
+
+    vt_write(t, "\x1b[>4;2m", 7);
+    try testing.expectEqual(Result.success, get(t, .modify_other_keys, @ptrCast(&enabled)));
+    try testing.expect(enabled);
+
+    vt_write(t, "\x1b[>4;0m", 7);
+    try testing.expectEqual(Result.success, get(t, .modify_other_keys, @ptrCast(&enabled)));
+    try testing.expect(!enabled);
 }
 
 test "get mouse_tracking" {

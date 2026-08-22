@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
-use super::status::{agent_icon, state_dot, state_label, state_label_color};
+use super::status::{agent_icon, state_icon, state_label, state_label_color};
 use crate::app::state::{
     ordered_sidebar_space_items, AgentPanelScope, AgentPanelSort, Palette, SidebarAgentItem,
     SidebarLine, SidebarSpaceItem,
@@ -1521,6 +1521,14 @@ pub(crate) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<u16>, Rect
     (ws_area, Some(divider_y), detail_area)
 }
 
+fn workspace_selection_background(p: &Palette, is_active: bool) -> Color {
+    if is_active && p.selection_bg == Color::Reset {
+        p.active_row_bg
+    } else {
+        p.selection_bg
+    }
+}
+
 /// Collapsed sidebar: workspace glance on top, compact agent list below.
 // #46 (items 1 & 3): bumped to `pub(crate)` so the client compositor's `render_client_shell` can
 // gate on it (it previously always called the EXPANDED `render_sidebar`, so the collapsed client
@@ -1529,6 +1537,9 @@ pub(crate) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
     let is_navigating = matches!(app.mode, Mode::Navigate);
 
     let p = &app.palette;
+    frame
+        .buffer_mut()
+        .set_style(area, Style::default().bg(p.sidebar_bg));
     let sep_style = if is_navigating {
         Style::default().fg(p.accent)
     } else {
@@ -1553,20 +1564,21 @@ pub(crate) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
             break;
         }
         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
-        let (icon, icon_style) = state_dot(agg_state, agg_seen, p);
+        let (icon, icon_style) = state_icon(agg_state, agg_seen, app.status_indicators, p);
         let is_selected = visible_idx == app.selected && is_navigating;
         let is_active = Some(visible_idx) == app.active;
+        let selection_bg = workspace_selection_background(p, is_active);
         let row_style = if is_selected {
-            Style::default().bg(p.surface0)
+            Style::default().bg(selection_bg)
         } else if is_active {
-            Style::default().bg(p.surface_dim)
+            Style::default().bg(p.active_row_bg)
         } else {
             Style::default()
         };
         let num_style = if is_selected {
-            Style::default().fg(p.overlay1).bg(p.surface0)
+            Style::default().fg(p.overlay1).bg(selection_bg)
         } else if is_active {
-            Style::default().fg(p.text).bg(p.surface_dim)
+            Style::default().fg(p.text).bg(p.active_row_bg)
         } else {
             Style::default().fg(p.overlay0)
         };
@@ -1580,8 +1592,7 @@ pub(crate) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
 
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(format!("{}", visible_idx + 1), num_style),
-                Span::styled(" ", row_style),
+                Span::styled(format!("{:<2}", visible_idx + 1), num_style),
                 Span::styled(icon, icon_style),
             ])),
             Rect::new(ws_area.x, y, ws_area.width, 1),
@@ -1777,6 +1788,9 @@ pub(crate) fn render_sidebar(
     area: Rect,
 ) {
     let p = &app.palette;
+    frame
+        .buffer_mut()
+        .set_style(area, Style::default().bg(p.sidebar_bg));
     let is_navigating = matches!(app.mode, Mode::Navigate);
     let sep_style = if is_navigating {
         Style::default().fg(p.accent)
@@ -1867,7 +1881,7 @@ fn render_workspace_list(
 
         if highlighted {
             let bg = if selected {
-                p.surface0
+                workspace_selection_background(p, is_active)
             } else if is_dragged {
                 p.surface1
             } else if is_active {
@@ -1893,14 +1907,14 @@ fn render_workspace_list(
             Style::default().fg(p.subtext0)
         };
 
-        let (icon, icon_style) = state_dot(agg_state, agg_seen, p);
+        let (icon, icon_style) = state_icon(agg_state, agg_seen, app.status_indicators, p);
         let label = ws.display_name_from(&app.terminals, terminal_runtimes);
         let parent_group = (!card.indented)
             .then(|| workspace_parent_group_state(app, i))
             .flatten();
         let status_dot = if let Some((key, true)) = parent_group.as_ref() {
             let (state, seen) = space_aggregate_state(app, key);
-            state_dot(state, seen, p)
+            state_icon(state, seen, app.status_indicators, p)
         } else {
             (icon, icon_style)
         };
@@ -2604,7 +2618,7 @@ pub(crate) fn settings_sidebar_host_demo_line(app: &AppState) -> Line<'static> {
 
 pub(crate) fn settings_sidebar_space_demo_lines(app: &AppState) -> Vec<Line<'static>> {
     let p = &app.palette;
-    let (status, status_style) = state_dot(AgentState::Working, true, p);
+    let (status, status_style) = state_icon(AgentState::Working, true, app.status_indicators, p);
     let branch = "feature/sidebar";
     let branch_status = branch_status_parts(Some((2, 1)), p);
     let separator_style = Style::default().fg(p.overlay0);

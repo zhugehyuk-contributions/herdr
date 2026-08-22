@@ -78,7 +78,16 @@ pub const WIRE_ABI_FORK: [u8; 8] = *b"herdr-mx";
 /// layout generation moved and says so. `PROTOCOL_VERSION` deliberately did **not** move: the
 /// handshake's byte stream is identical, and mixing a layout change into the negotiation axis is
 /// the exact conflation this module exists to undo.
-pub const WIRE_ABI_EPOCH: u32 = 2;
+///
+/// Epoch 3 is the upstream v0.8.2 merge. Three `ClientMessage` variants
+/// (`GraphicsTransmissionResult`, `InputPixels`, `GraphicsTransmissionStarted`), three
+/// `ServerMessage` variants (`TerminalBell`, `GraphicsFile`, `GraphicsTransmissionRetired`) and
+/// `ClientLaunchMode::AppDirectGraphics` all landed at their enum **tails**, and `MouseCapture`
+/// gained a trailing `sgr_pixels: bool`. Nothing that existed moved — `wire_fixtures.rs`'s `enums`
+/// table is byte-identical across the merge, which is how we know this is an epoch bump and not a
+/// merge-resolution bug. `PROTOCOL_VERSION` again did not move: the handshake byte stream is
+/// unchanged and upstream itself is still 20.
+pub const WIRE_ABI_EPOCH: u32 = 3;
 
 /// `magic(4) + fork(8) + abi_epoch(4) + protocol_version(4) + schema_fingerprint(8)`.
 pub const WIRE_ABI_PRELUDE_LEN: usize = 28;
@@ -352,7 +361,7 @@ pub fn legacy_peer_rejection() -> String {
 ///      `docs/next/protocol/abi-history.json` declaring whether the outgoing ABI stays accepted.
 ///
 /// Repinning without (1) and (3) is the laundering this whole module exists to prevent.
-pub const WIRE_SCHEMA_FINGERPRINT: [u8; 8] = [0x82, 0x7e, 0xf6, 0x80, 0x0c, 0x3a, 0xf3, 0xee];
+pub const WIRE_SCHEMA_FINGERPRINT: [u8; 8] = [0x14, 0xe8, 0x47, 0xff, 0x6a, 0xe1, 0xd9, 0xf2];
 
 /// A digest over the *encoded bytes* of one exemplar of every `ClientMessage` and `ServerMessage`
 /// variant, plus a sweep of the nested enums and payload structs they reach.
@@ -588,7 +597,11 @@ fn client_message_exemplars() -> Vec<ClientMessage> {
     // witness B1 at all.
     for encoding in [RenderEncoding::SemanticFrame, RenderEncoding::TerminalAnsi] {
         for surface in [ClientSurfaceMode::FullApp, ClientSurfaceMode::EmbeddedContent] {
-            for launch in [ClientLaunchMode::App, ClientLaunchMode::TerminalAttach] {
+            for launch in [
+                ClientLaunchMode::App,
+                ClientLaunchMode::TerminalAttach,
+                ClientLaunchMode::AppDirectGraphics,
+            ] {
                 for keybindings in [
                     ClientKeybindings::Server,
                     ClientKeybindings::Local {
@@ -678,6 +691,23 @@ fn client_message_exemplars() -> Vec<ClientMessage> {
             target: EX_STR.to_owned(),
             mode: TerminalSessionMode::Control { takeover: false },
         },
+        // upstream v0.8.2, appended at the tail (tags 15..17).
+        ClientMessage::GraphicsTransmissionResult {
+            transfer_id: 0x9394_9596_9798_999a,
+            image_id: 0x9b9c_9d9e,
+            success: true,
+        },
+        ClientMessage::InputPixels {
+            data: EX_BYTES.to_vec(),
+            cols: 0x9fa0,
+            rows: 0xa1a2,
+            width_px: 0xa3a4_a5a6,
+            height_px: 0xa7a8_a9aa,
+        },
+        ClientMessage::GraphicsTransmissionStarted {
+            transfer_id: 0xabac_adae_afb0_b1b2,
+            image_id: 0xb3b4_b5b6,
+        },
     ]);
 
     exemplars
@@ -722,7 +752,14 @@ fn server_message_exemplars() -> Vec<ServerMessage> {
             title: Some(EX_STR.to_owned()),
         },
         ServerMessage::ReloadSoundConfig,
-        ServerMessage::MouseCapture { enabled: true },
+        ServerMessage::MouseCapture {
+            enabled: true,
+            sgr_pixels: false,
+        },
+        ServerMessage::MouseCapture {
+            enabled: true,
+            sgr_pixels: true,
+        },
         ServerMessage::FrameDelta(ex_frame_delta()),
         ServerMessage::Pong {
             nonce: 0x8b8c_8d8e_8f90_9192,
@@ -731,6 +768,20 @@ fn server_message_exemplars() -> Vec<ServerMessage> {
         ServerMessage::PrefixInputSource { active: true },
         ServerMessage::Terminal(ex_terminal_frame()),
         ServerMessage::KittyKeyboardReportAll { enabled: true },
+        // upstream v0.8.2, appended at the tail (tags 15..17).
+        ServerMessage::TerminalBell { count: 0xb7b8 },
+        ServerMessage::GraphicsFile {
+            path: EX_STR.to_owned(),
+            expected_len: 0xb9ba_bbbc_bdbe_bfc0,
+            image_id: 0xc1c2_c3c4,
+            transfer_id: 0xc5c6_c7c8_c9ca_cbcc,
+            leading: EX_BYTES.to_vec(),
+            control: EX_STR.to_owned(),
+        },
+        ServerMessage::GraphicsTransmissionRetired {
+            transfer_id: 0xcdce_cfd0_d1d2_d3d4,
+            image_id: 0xd5d6_d7d8,
+        },
     ]);
 
     exemplars
@@ -859,6 +910,9 @@ mod tests {
                 ClientMessage::ObserveTerminal { .. } => "ObserveTerminal",
                 ClientMessage::ControlTerminal { .. } => "ControlTerminal",
                 ClientMessage::RetargetTerminal { .. } => "RetargetTerminal",
+                ClientMessage::GraphicsTransmissionResult { .. } => "GraphicsTransmissionResult",
+                ClientMessage::InputPixels { .. } => "InputPixels",
+                ClientMessage::GraphicsTransmissionStarted { .. } => "GraphicsTransmissionStarted",
             }
         }
         fn server_name(message: &ServerMessage) -> &'static str {
@@ -878,6 +932,9 @@ mod tests {
                 ServerMessage::PrefixInputSource { .. } => "PrefixInputSource",
                 ServerMessage::Terminal(_) => "Terminal",
                 ServerMessage::KittyKeyboardReportAll { .. } => "KittyKeyboardReportAll",
+                ServerMessage::TerminalBell { .. } => "TerminalBell",
+                ServerMessage::GraphicsFile { .. } => "GraphicsFile",
+                ServerMessage::GraphicsTransmissionRetired { .. } => "GraphicsTransmissionRetired",
             }
         }
 
@@ -885,7 +942,7 @@ mod tests {
             client_message_exemplars().iter().map(client_name).collect();
         assert_eq!(
             client_covered.len(),
-            15,
+            18,
             "ClientMessage exemplars cover {client_covered:?}; every variant needs one"
         );
 
@@ -893,7 +950,7 @@ mod tests {
             server_message_exemplars().iter().map(server_name).collect();
         assert_eq!(
             server_covered.len(),
-            15,
+            18,
             "ServerMessage exemplars cover {server_covered:?}; every variant needs one"
         );
     }
@@ -927,22 +984,28 @@ mod tests {
         );
     }
 
-    /// A payload-only change (upstream's `sgr_pixels` on `MouseCapture`) moves no tag. The
-    /// fingerprint has to see it anyway, or M0-a is only a tag check wearing a hash.
+    /// A payload-only change moves no tag. The fingerprint has to see it anyway, or M0-a is only a
+    /// tag check wearing a hash.
+    ///
+    /// `sgr_pixels` on `MouseCapture` is the real instance: upstream added it in v0.8.2 with the
+    /// tag unchanged, and this fork took it in the merge. The comparison is therefore against the
+    /// **pre-merge** shape (`enabled` alone), spelled as a local type because the production one no
+    /// longer exists.
     #[test]
     fn fingerprint_changes_when_a_payload_field_is_added() {
         #[derive(serde::Serialize)]
-        enum MouseCaptureWithExtraField {
+        enum MouseCaptureWithoutExtraField {
             #[allow(dead_code)]
             Placeholder,
-            WithField {
+            WithoutField {
                 enabled: bool,
-                sgr_pixels: bool,
             },
         }
 
-        let without = encode_exemplar(&ServerMessage::MouseCapture { enabled: true });
-        let with = encode_exemplar(&MouseCaptureWithExtraField::WithField {
+        let without = encode_exemplar(&MouseCaptureWithoutExtraField::WithoutField {
+            enabled: true,
+        });
+        let with = encode_exemplar(&ServerMessage::MouseCapture {
             enabled: true,
             sgr_pixels: true,
         });

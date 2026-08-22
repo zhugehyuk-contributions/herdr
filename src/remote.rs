@@ -1,8 +1,13 @@
+// upstream v0.8.2 renamed `unix.rs` -> `attach.rs` and made the module cross-platform, splitting
+// the remote-host side into `host_unix.rs`. herdr-mx follows the rename but keeps the module
+// unix-only: this fork's bridge is the multi-remote one (per-kind sockets, worker threads, #72
+// child termination, offline seeding) and it does not compile on windows yet (herdr-mx#63), so the
+// windows shims below stay here rather than moving into `attach`.
 #[cfg(unix)]
-mod unix;
+mod attach;
 
 #[cfg(unix)]
-pub(crate) use unix::*;
+pub(crate) use attach::*;
 
 #[cfg(windows)]
 pub(crate) const REATTACH_COMMAND_ENV_VAR: &str = "HERDR_REATTACH_COMMAND";

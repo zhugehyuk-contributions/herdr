@@ -86,7 +86,6 @@ struct ClientLoopConfig {
     redraw_on_focus_gained: bool,
     kitty_graphics_enabled: bool,
     mouse_capture_active: bool,
-    #[cfg(unix)]
     remote_image_paste_key: Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
 }
 
@@ -2154,12 +2153,15 @@ fn setup_terminal_with_capabilities(
 
     Ok(TerminalGuard {
         reset_modify_other_keys: modify_other_keys_mode.is_some(),
+        restored: false,
     })
 }
 
 /// Guard that restores the terminal when dropped.
 struct TerminalGuard {
     reset_modify_other_keys: bool,
+    /// Set by [`TerminalGuard::restore`] so `Drop` does not restore a second time.
+    restored: bool,
 }
 
 fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io::Result<()> {
@@ -2195,7 +2197,13 @@ fn desired_mouse_capture(server_enabled: bool, client_compositor_enabled: bool) 
     server_enabled || client_compositor_enabled
 }
 
-fn restore_terminal_state(reset_modify_other_keys: bool) {
+/// Restores the host terminal.
+///
+/// Fallible on purpose (upstream v0.8.2): `ratatui::restore()` **panics** when the host terminal is
+/// already gone, and this runs from `TerminalGuard::drop`, so a hung-up PTY turned a clean exit
+/// into a panic-inside-drop, i.e. `SIGABRT`. `tests/client_mode.rs`'s
+/// `client_exits_cleanly_when_terminal_hangs_up` pins that. `try_restore` reports instead.
+fn restore_terminal_state(reset_modify_other_keys: bool) -> io::Result<()> {
     let _ = clear_received_kitty_graphics(&mut io::stdout());
 
     // Reset modifyOtherKeys if we enabled it.
@@ -2211,8 +2219,9 @@ fn restore_terminal_state(reset_modify_other_keys: bool) {
         DisableBracketedPaste,
         DisableMouseCapture
     );
-    ratatui::restore();
-    let _ = write_terminal_restore_postlude(&mut io::stdout());
+    let restore_result = ratatui::try_restore();
+    let postlude_result = write_terminal_restore_postlude(&mut io::stdout());
+    restore_result.and(postlude_result)
 }
 
 #[cfg(not(windows))]
@@ -2238,9 +2247,19 @@ fn pop_keyboard_enhancement_flags() -> io::Result<()> {
     Ok(())
 }
 
+impl TerminalGuard {
+    /// Restores the terminal now and reports failure, instead of swallowing it in `Drop`.
+    fn restore(mut self) -> io::Result<()> {
+        self.restored = true;
+        restore_terminal_state(self.reset_modify_other_keys)
+    }
+}
+
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        restore_terminal_state(self.reset_modify_other_keys);
+        if !self.restored {
+            let _ = restore_terminal_state(self.reset_modify_other_keys);
+        }
     }
 }
 
@@ -2295,6 +2314,7 @@ fn set_handshake_recv_timeout(
         .set_recv_timeout(timeout)
         .map_err(ClientError::ConnectionFailed)
 }
+
 
 /// Performs the client→server handshake.
 ///
@@ -2639,7 +2659,9 @@ fn run_client_with_mode(
     info!(path = %socket_path.display(), "{log_message}");
 
     // Get the terminal geometry before handshake (before raw mode).
-    let (cols, rows, cell_width_px, cell_height_px) =
+    // upstream v0.8.2 added a 5th element (`exact_cell_size`); it only feeds the direct-graphics
+    // launch mode, which this fork defers (DIVERGENCE.md).
+    let (cols, rows, cell_width_px, cell_height_px, _exact_cell_size) =
         initial_terminal_geometry(kitty_graphics_enabled);
 
     let mut supervisor_model = {
@@ -2743,7 +2765,8 @@ fn run_client_with_mode(
     let panic_resets_modify_other_keys = terminal_guard.reset_modify_other_keys;
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal_state(panic_resets_modify_other_keys);
+        // In the panic hook there is nothing to report an error to.
+        let _ = restore_terminal_state(panic_resets_modify_other_keys);
         original_hook(info);
     }));
 
@@ -2795,19 +2818,22 @@ fn run_client_with_mode(
     });
 
     // Restore the terminal before printing any final status message.
-    drop(terminal_guard);
+    let terminal_restore_failed = terminal_guard.restore().is_err();
 
     if let Err(err) = result {
-        eprintln!("herdr: {err}");
+        let _ = writeln!(io::stderr(), "herdr: {err}");
         rt.shutdown_timeout(Duration::from_millis(100));
         crate::logging::shutdown("client");
 
-        if matches!(
-            err,
+        let detached = matches!(
+            &err,
             ClientError::ServerShutdown {
                 reason: Some(reason)
             } if reason == "detached"
-        ) {
+        );
+        let connection_lost_during_terminal_hangup =
+            terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
+        if detached || connection_lost_during_terminal_hangup {
             return Ok(());
         }
 
@@ -5488,6 +5514,23 @@ async fn run_client_loop(
                 if state.attach_escape.is_some() {
                     continue;
                 }
+                if should_bridge_clipboard_image_events(
+                    &events,
+                    is_remote_client,
+                    state.remote_image_paste_key,
+                ) {
+                    if let Some(image) = crate::platform::read_clipboard_image() {
+                        write_remote_image_to_server(&mut write_stream, image, "clipboard paste")?;
+                        continue;
+                    }
+                    info!(
+                        "clipboard image paste trigger received, but local clipboard has no image"
+                    );
+                }
+                if let Some(image) = read_image_file_from_client_events(&events, is_remote_client) {
+                    write_remote_image_to_server(&mut write_stream, image, "file drop")?;
+                    continue;
+                }
                 let raw_events = events
                     .iter()
                     .map(crate::protocol::ClientInputEvent::to_raw_input_event)
@@ -5695,7 +5738,12 @@ async fn run_client_loop(
                         // for the next supervisor poll, so settings changes apply (near-)instantly.
                         spawn_main_supervisor_refresh(&mut state.pending_main_refresh, &event_tx);
                     }
-                    ServerMessage::MouseCapture { enabled } => {
+                    // `sgr_pixels` is ignored: it only matters for upstream v0.8.2's direct
+                    // pixel-mouse reports, whose client path this fork defers (DIVERGENCE.md).
+                    ServerMessage::MouseCapture {
+                        enabled,
+                        sgr_pixels: _,
+                    } => {
                         if server_id != active_server_id(&state) {
                             continue;
                         }
@@ -5704,6 +5752,18 @@ async fn run_client_loop(
                             set_mouse_capture(desired).map_err(ClientError::ConnectionFailed)?;
                             state.mouse_capture_active = desired;
                         }
+                    }
+                    ServerMessage::TerminalBell { .. } => {
+                        // upstream v0.8.2 rings the foreground client's outer terminal for
+                        // pane-originated BELs. Not ported to the multi-remote client loop yet
+                        // (deferred - see DIVERGENCE.md); accepted and ignored, which is safe
+                        // because ABI-epoch parity gates mixed-layout peers.
+                    }
+                    ServerMessage::GraphicsFile { .. }
+                    | ServerMessage::GraphicsTransmissionRetired { .. } => {
+                        // upstream v0.8.2 direct (audited local) Kitty graphics. This fork never
+                        // negotiates `ClientLaunchMode::AppDirectGraphics`, so a conforming server
+                        // never sends these; ignored rather than fatal.
                     }
                     ServerMessage::KittyKeyboardReportAll { .. } => {
                         // Upstream v0.8.0 kitty report-all keyboard routing; not yet ported to the
@@ -6881,8 +6941,10 @@ fn ioctl_cell_size() -> Option<(u32, u32)> {
 }
 
 /// Cell size used when the ioctl reports no pixels.
-fn cell_size_fallback(reported: u64) -> (u32, u32) {
-    unpack_cell_size(reported).unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
+fn cell_size_fallback(reported: u64, last: Option<(u32, u32)>) -> (u32, u32) {
+    unpack_cell_size(reported)
+        .or(last.filter(|(width, height)| *width > 0 && *height > 0))
+        .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
 }
 
 #[cfg(any(unix, test))]
@@ -6899,20 +6961,35 @@ fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
 fn current_terminal_geometry(
     kitty_graphics_enabled: bool,
     reported_cell_size: &AtomicU64,
+    last_cell_size: Option<(u32, u32)>,
 ) -> (u16, u16, u32, u32) {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     if !kitty_graphics_enabled {
         return (cols, rows, 0, 0);
     }
-    let (cell_width_px, cell_height_px) = ioctl_cell_size()
-        .unwrap_or_else(|| cell_size_fallback(reported_cell_size.load(Ordering::Acquire)));
+    let (cell_width_px, cell_height_px) = ioctl_cell_size().unwrap_or_else(|| {
+        cell_size_fallback(reported_cell_size.load(Ordering::Acquire), last_cell_size)
+    });
     (cols, rows, cell_width_px, cell_height_px)
 }
 
-/// Reads the terminal geometry before the handshake, before any host cell
-/// size report can exist.
-fn initial_terminal_geometry(kitty_graphics_enabled: bool) -> (u16, u16, u32, u32) {
-    current_terminal_geometry(kitty_graphics_enabled, &AtomicU64::new(0))
+/// Reads terminal geometry before the handshake. Direct graphics is eligible
+/// only when the host supplied exact pixel dimensions through the ioctl.
+fn initial_terminal_geometry(kitty_graphics_enabled: bool) -> (u16, u16, u32, u32, bool) {
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    if !kitty_graphics_enabled {
+        return (cols, rows, 0, 0, false);
+    }
+    match ioctl_cell_size() {
+        Some((width, height)) => (cols, rows, width, height, true),
+        None => (
+            cols,
+            rows,
+            DEFAULT_CELL_WIDTH_PX,
+            DEFAULT_CELL_HEIGHT_PX,
+            false,
+        ),
+    }
 }
 
 /// Reports polled changes and signalled resizes that return to the same size.
@@ -6949,7 +7026,11 @@ fn resize_poll_loop(
     while !should_quit.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(100));
         let signalled = crate::platform::take_terminal_resize_signal();
-        let new_size = current_terminal_geometry(kitty_graphics_enabled, reported_cell_size);
+        let new_size = current_terminal_geometry(
+            kitty_graphics_enabled,
+            reported_cell_size,
+            Some((last_size.2, last_size.3)),
+        );
         if resize_report_required(signalled, new_size, last_size) {
             last_size = new_size;
             if resize_tx
@@ -6968,6 +7049,23 @@ fn resize_poll_loop(
 // Logging
 // ---------------------------------------------------------------------------
 
+#[cfg(any(not(windows), test))]
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
+fn query_host_terminal_appearance() {
+    let _ = write_host_terminal_appearance_query(io::stdout());
+}
+
+#[cfg(any(not(windows), test))]
+// herdr-mx: upstream v0.8.2 helper whose only consumers are features this fork defers
+// (see DIVERGENCE.md). Kept so the next upstream merge stays a no-op here.
+#[allow(dead_code)]
+fn write_host_terminal_appearance_query(mut writer: impl io::Write) -> io::Result<()> {
+    writer.write_all(crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())?;
+    writer.flush()
+}
+
 /// Initialize logging for the client process.
 fn query_host_terminal_theme() {
     let _ = write_host_terminal_theme_query(io::stdout());
@@ -6978,7 +7076,9 @@ fn should_query_host_terminal_theme() -> bool {
 }
 
 fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io::Result<()> {
-    let query = crate::terminal_theme::host_terminal_theme_query_sequence();
+    let query = crate::terminal_theme::host_terminal_theme_query_sequence(
+        crate::platform::should_query_host_terminal_palette(),
+    );
     writer.write_all(query.as_bytes())?;
     writer.flush()
 }
@@ -7588,13 +7688,27 @@ mod tests {
     }
 
     #[test]
+    fn write_host_terminal_appearance_query_emits_mode_2031_query() {
+        let mut output = Vec::new();
+        write_host_terminal_appearance_query(&mut output).unwrap();
+        assert_eq!(output, b"\x1b[?996n");
+    }
+
+    #[test]
     fn write_host_terminal_theme_query_emits_osc_queries() {
         let mut output = Vec::new();
         write_host_terminal_theme_query(&mut output).unwrap();
         assert_eq!(
             output,
-            crate::terminal_theme::host_terminal_theme_query_sequence().as_bytes()
+            crate::terminal_theme::host_terminal_theme_query_sequence(
+                crate::platform::should_query_host_terminal_palette(),
+            )
+            .as_bytes()
         );
+        assert!(!output
+            .windows(crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.len())
+            .any(|window| window
+                == crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes()));
     }
 
     #[test]

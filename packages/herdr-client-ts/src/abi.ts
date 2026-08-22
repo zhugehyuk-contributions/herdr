@@ -63,8 +63,15 @@ export const WIRE_ABI_FORK = "herdr-mx";
  * messages a peer may legally send grew and the schema fingerprint moved with it. No existing tag
  * or payload changed, and `PROTOCOL_VERSION` deliberately stayed at 21 — the handshake's bytes are
  * identical. The decision and its user impact are `docs/next/protocol/abi-history.json`.
+ *
+ * Epoch 3: the upstream v0.8.2 merge. Six upstream variants landed at the two enum **tails**
+ * (`ClientMessage` 15-17, `ServerMessage` 15-17), `ClientLaunchMode::AppDirectGraphics` was moved
+ * to that enum's tail so `TerminalAttach` keeps tag 1, and `ServerMessage::MouseCapture` gained a
+ * trailing `sgr_pixels: boolean`. **Nothing this codec encodes or decodes moved** — `Hello`,
+ * `Welcome`, `Terminal` (13), `ObserveTerminal` (12) and `RetargetTerminal` (14) are byte-identical
+ * — which is why only the fingerprint below had to be re-transcribed.
  */
-export const WIRE_ABI_EPOCH = 2;
+export const WIRE_ABI_EPOCH = 3;
 
 /**
  * `src/protocol/abi.rs` `WIRE_SCHEMA_FINGERPRINT`, hex.
@@ -74,7 +81,7 @@ export const WIRE_ABI_EPOCH = 2;
  * `test/fixtures.test.ts` fails if the generated corpus disagrees. That is the same contract the
  * enum tags in `constants.ts` already live under.
  */
-export const WIRE_SCHEMA_FINGERPRINT = "827ef6800c3af3ee";
+export const WIRE_SCHEMA_FINGERPRINT = "14e847ff6ae1d9f2";
 
 /** `magic(4) + fork(8) + abi_epoch(u32LE) + protocol_version(u32LE) + schema_fingerprint(8)`. */
 export const WIRE_ABI_PRELUDE_LEN = 28;

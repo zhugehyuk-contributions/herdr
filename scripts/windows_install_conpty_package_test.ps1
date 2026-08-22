@@ -82,7 +82,7 @@ $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopba
 $listener.Start()
 $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
 $listener.Stop()
-$manifest = @{
+$previewManifest = @{
     channel = "preview"
     base_version = "0.0.0"
     build_id = "installer-test"
@@ -94,18 +94,35 @@ $manifest = @{
         }
     }
 } | ConvertTo-Json -Depth 5
-$manifestPath = Join-Path $webRoot "preview.json"
-$manifest | Out-File -LiteralPath $manifestPath -Encoding utf8
+$legacyStableManifest = @{
+    version = "0.0.0"
+    assets = @{}
+} | ConvertTo-Json -Depth 5
+$stableManifest = @{
+    version = "0.0.1"
+    assets = @{
+        "windows-x86_64" = "http://127.0.0.1:$port/herdr-windows-x86_64.zip"
+    }
+    sha256 = @{
+        "windows-x86_64" = $hash
+    }
+} | ConvertTo-Json -Depth 5
+$previewManifestPath = Join-Path $webRoot "preview.json"
+$stableManifestPath = Join-Path $webRoot "latest.json"
+$previewManifest | Out-File -LiteralPath $previewManifestPath -Encoding utf8
+$legacyStableManifest | Out-File -LiteralPath $stableManifestPath -Encoding utf8
 
 $server = $null
 $oldHerdrHome = $env:HERDR_HOME
+$oldProcessPath = $env:Path
 try {
     $server = Start-Process python -ArgumentList @("-m", "http.server", "$port", "--bind", "127.0.0.1", "--directory", $webRoot) -PassThru -WindowStyle Hidden
     $env:HERDR_HOME = Join-Path $root "unused\..\home"
-    $manifestUrl = "http://127.0.0.1:$port/preview.json"
+    $previewManifestUrl = "http://127.0.0.1:$port/preview.json"
+    $stableManifestUrl = "http://127.0.0.1:$port/latest.json"
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         try {
-            Invoke-WebRequest -Uri $manifestUrl -UseBasicParsing | Out-Null
+            Invoke-WebRequest -Uri $stableManifestUrl -UseBasicParsing | Out-Null
             break
         } catch {
             if ($attempt -eq 19) { throw }
@@ -113,10 +130,79 @@ try {
         }
     }
 
-    & "$PSScriptRoot\..\website\install.ps1" `
-        -ManifestUrl $manifestUrl `
+    $freshStableHome = Join-Path $root "fresh-stable-home"
+    $freshStableBin = Join-Path $root "fresh-stable-bin"
+    $stableManifest | Out-File -LiteralPath $stableManifestPath -Encoding utf8
+    $env:HERDR_HOME = $freshStableHome
+    $env:Path = $oldProcessPath
+    & $installerPath `
+        -ManifestUrl $stableManifestUrl `
+        -InstallDir $freshStableBin
+    $freshStableRelease = Get-ChildItem -LiteralPath (Join-Path $freshStableHome "packages\standalone\releases") -Directory |
+        Where-Object { $_.Name.StartsWith("0.0.1-") } |
+        Select-Object -First 1
+    if ($null -eq $freshStableRelease) {
+        throw "fresh installer did not default to the stable Windows package"
+    }
+
+    $legacyStableManifest | Out-File -LiteralPath $stableManifestPath -Encoding utf8
+    $env:HERDR_HOME = Join-Path $root "unused\..\home"
+    $env:Path = $oldProcessPath
+    & $installerPath `
+        -ManifestUrl $stableManifestUrl `
         -InstallDir $installDir `
         -ExpectedBuildId "installer-test"
+
+    # Keep the existing positional web-installer contract, including Retain in slot five.
+    & $installerPath "preview" $previewManifestUrl $installDir "installer-test" 3
+
+    $localInstallDir = Join-Path $root "local-bin"
+    $env:HERDR_HOME = Join-Path $root "local-home"
+    $partialLocalModeRejected = $false
+    try {
+        & $installerPath `
+            -InstallDir $localInstallDir `
+            -LocalPackagePath $archive
+    } catch {
+        if ($_.Exception.Message -notlike "Local package mode requires*") {
+            throw
+        }
+        $partialLocalModeRejected = $true
+    }
+    if (-not $partialLocalModeRejected) {
+        throw "installer accepted partial local-package inputs"
+    }
+
+    $badLocalChecksumRejected = $false
+    try {
+        & $installerPath `
+            -ManifestUrl "$previewManifestUrl/unused" `
+            -InstallDir $localInstallDir `
+            -LocalPackagePath $archive `
+            -LocalPackageFormat "zip" `
+            -LocalPackageIdentity "0.0.0-preview.local-package" `
+            -LocalPackageSha256 ("0" * 64)
+    } catch {
+        if ($_.Exception.Message -notlike "Downloaded Herdr checksum did not match.*") {
+            throw
+        }
+        $badLocalChecksumRejected = $true
+    }
+    if (-not $badLocalChecksumRejected) {
+        throw "installer accepted a local package with the wrong checksum"
+    }
+
+    & $installerPath `
+        -ManifestUrl "$previewManifestUrl/unused" `
+        -InstallDir $localInstallDir `
+        -LocalPackagePath $archive `
+        -LocalPackageFormat "zip" `
+        -LocalPackageIdentity "0.0.0-preview.local-package" `
+        -LocalPackageSha256 $hash
+    if (-not (Test-Path -LiteralPath (Join-Path $localInstallDir "herdr.exe") -PathType Leaf)) {
+        throw "installer did not activate the verified local package"
+    }
+    $env:HERDR_HOME = $herdrHome
 
     $required = @(
         "herdr.exe",
@@ -133,7 +219,8 @@ try {
         }
     }
 
-    $releaseDir = Get-ChildItem -LiteralPath (Join-Path $herdrHome "packages\standalone\releases") -Directory |
+    $releasesDir = Join-Path $herdrHome "packages\standalone\releases"
+    $releaseDir = Get-ChildItem -LiteralPath $releasesDir -Directory |
         Where-Object { -not $_.Name.StartsWith(".staging.") } |
         Select-Object -First 1
     if ($null -eq $releaseDir) {
@@ -141,13 +228,14 @@ try {
     }
     Remove-Item -LiteralPath (Join-Path $releaseDir.FullName "conpty\conpty.dll") -Force
 
-    $badManifest = $manifest | ConvertFrom-Json
+    $badManifest = $previewManifest | ConvertFrom-Json
     $badManifest.assets."windows-x86_64".url = "http://127.0.0.1:$port/missing.zip"
-    $badManifest | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $manifestPath -Encoding utf8
+    $badManifest | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $previewManifestPath -Encoding utf8
     $downloadFailed = $false
     try {
         & "$PSScriptRoot\..\website\install.ps1" `
-            -ManifestUrl $manifestUrl `
+            -Channel preview `
+            -ManifestUrl $previewManifestUrl `
             -InstallDir $installDir `
             -ExpectedBuildId "installer-test"
     } catch {
@@ -163,9 +251,117 @@ try {
         throw "failed repair removed the existing release"
     }
 
-    $manifest | Out-File -LiteralPath $manifestPath -Encoding utf8
+    $previewManifest | Out-File -LiteralPath $previewManifestPath -Encoding utf8
+    $stagedConpty = Join-Path $releasesDir ".staging.$($releaseDir.Name).$PID\conpty\conpty.dll"
+
+    $transientLockState = @{ Handle = $null; Acquired = $false; Released = $false }
+    $transientLockTimer = New-Object System.Timers.Timer
+    $transientLockTimer.Interval = 300
+    $transientLockTimer.AutoReset = $false
+    $transientLockSource = "HerdrTransientInstallerLock-$PID"
+    $transientLockRelease = Register-ObjectEvent `
+        -InputObject $transientLockTimer `
+        -EventName Elapsed `
+        -SourceIdentifier $transientLockSource `
+        -MessageData $transientLockState `
+        -Action {
+            $state = $event.MessageData
+            if ($null -ne $state.Handle) {
+                $state.Handle.Dispose()
+                $state.Handle = $null
+            }
+            $state.Released = $true
+        }
+    $lockStagedFileTransiently = {
+        if (-not $transientLockState.Acquired) {
+            $transientLockState.Handle = [System.IO.File]::Open(
+                $stagedConpty,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::Read
+            )
+            $transientLockState.Acquired = $true
+            $transientLockTimer.Start()
+        }
+    }.GetNewClosure()
+    $transientLockBreakpoint = Set-PSBreakpoint -Script $installerPath -Variable "backupDir" -Mode Write -Action $lockStagedFileTransiently
+    try {
+        & $installerPath `
+            -Channel preview `
+            -ManifestUrl $previewManifestUrl `
+            -InstallDir $installDir `
+            -ExpectedBuildId "installer-test"
+        if (-not $transientLockState.Acquired) {
+            throw "installer did not acquire the transient staged-file lock"
+        }
+        if (-not $transientLockState.Released) {
+            throw "installer activated the release before the transient lock was released"
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $releaseDir.FullName "conpty\conpty.dll") -PathType Leaf)) {
+            throw "installer did not repair the release after the transient lock cleared"
+        }
+    } finally {
+        Remove-PSBreakpoint -Breakpoint $transientLockBreakpoint
+        $transientLockTimer.Stop()
+        Unregister-Event -SourceIdentifier $transientLockSource -ErrorAction SilentlyContinue
+        Remove-Job -Id $transientLockRelease.Id -Force -ErrorAction SilentlyContinue
+        if ($null -ne $transientLockState.Handle) {
+            $transientLockState.Handle.Dispose()
+        }
+        $transientLockTimer.Dispose()
+    }
+
+    Remove-Item -LiteralPath (Join-Path $releaseDir.FullName "conpty\conpty.dll") -Force
+    $lockState = @{ Handle = $null }
+    $lockStagedFile = {
+        if ($null -eq $lockState.Handle) {
+            $lockState.Handle = [System.IO.File]::Open(
+                $stagedConpty,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::Read
+            )
+        }
+    }.GetNewClosure()
+    $swapBreakpoint = Set-PSBreakpoint -Script $installerPath -Variable "backupDir" -Mode Write -Action $lockStagedFile
+    try {
+        $swapFailed = $false
+        try {
+            & $installerPath `
+                -Channel preview `
+                -ManifestUrl $previewManifestUrl `
+                -InstallDir $installDir `
+                -ExpectedBuildId "installer-test"
+        } catch {
+            $swapFailed = $true
+        }
+        if ($null -eq $lockState.Handle) {
+            throw "installer did not acquire the staged file handle before the swap"
+        }
+        if (-not $swapFailed) {
+            throw "installer unexpectedly activated a release with a locked staged file"
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $releaseDir.FullName "herdr.exe") -PathType Leaf)) {
+            throw "failed activation did not restore the prior release"
+        }
+        if (@(Get-ChildItem -LiteralPath $releasesDir -Force -Directory -Filter ".backup.$($releaseDir.Name).*").Count -ne 0) {
+            throw "failed activation stranded a release backup"
+        }
+        foreach ($junction in @($installDir, (Join-Path $herdrHome "packages\standalone\current"))) {
+            if (-not (Test-Path -LiteralPath (Join-Path $junction "herdr.exe") -PathType Leaf)) {
+                throw "failed activation left an invalid installer junction at $junction"
+            }
+        }
+    } finally {
+        Remove-PSBreakpoint -Breakpoint $swapBreakpoint
+        if ($null -ne $lockState.Handle) {
+            $lockState.Handle.Dispose()
+        }
+    }
+
     & "$PSScriptRoot\..\website\install.ps1" `
-        -ManifestUrl $manifestUrl `
+        -Channel preview `
+        -ManifestUrl $previewManifestUrl `
         -InstallDir $installDir `
         -ExpectedBuildId "installer-test"
     if (-not (Test-Path -LiteralPath (Join-Path $installDir "conpty\conpty.dll") -PathType Leaf)) {
@@ -177,7 +373,8 @@ try {
     Move-Item -LiteralPath $x64HostDir -Destination $junctionTarget
     New-Item -ItemType Junction -Path $x64HostDir -Target $junctionTarget | Out-Null
     & "$PSScriptRoot\..\website\install.ps1" `
-        -ManifestUrl $manifestUrl `
+        -Channel preview `
+        -ManifestUrl $previewManifestUrl `
         -InstallDir $installDir `
         -ExpectedBuildId "installer-test"
     $repairedHostDir = Get-Item -LiteralPath (Join-Path $installDir "conpty\x64") -Force
@@ -188,7 +385,8 @@ try {
     $rejected = $false
     try {
         & "$PSScriptRoot\..\website\install.ps1" `
-            -ManifestUrl $manifestUrl `
+            -Channel preview `
+            -ManifestUrl $previewManifestUrl `
             -InstallDir $installDir `
             -ExpectedBuildId "different-build"
     } catch {
@@ -200,8 +398,67 @@ try {
     if (-not $rejected) {
         throw "installer accepted a manifest that did not match the updater-selected build"
     }
+
+    $stableManifest | Out-File -LiteralPath $stableManifestPath -Encoding utf8
+    & "$PSScriptRoot\..\website\install.ps1" `
+        -Channel stable `
+        -ManifestUrl $stableManifestUrl `
+        -InstallDir $installDir
+    $stableReleaseDir = Get-ChildItem -LiteralPath (Join-Path $herdrHome "packages\standalone\releases") -Directory |
+        Where-Object { $_.Name.StartsWith("0.0.1-") } |
+        Select-Object -First 1
+    if ($null -eq $stableReleaseDir) {
+        throw "installer did not install the stable Windows package"
+    }
+    foreach ($relative in $required) {
+        if (-not (Test-Path -LiteralPath (Join-Path $installDir $relative) -PathType Leaf)) {
+            throw "stable installer did not activate required file $relative"
+        }
+    }
+
+    $customPreviewManifestPath = Join-Path $webRoot "candidate.json"
+    $customPreviewManifest = $previewManifest | ConvertFrom-Json
+    $customPreviewManifest.PSObject.Properties.Remove("channel")
+    $customPreviewManifest | ConvertTo-Json -Depth 5 | Out-File -LiteralPath $customPreviewManifestPath -Encoding utf8
+    $fakeBin = Join-Path $root "fake-existing"
+    New-Item -ItemType Directory -Force -Path $fakeBin | Out-Null
+    @'
+@echo off
+if "%1"=="channel" if "%2"=="show" (
+  echo preview
+  exit /b 0
+)
+exit /b 1
+'@ | Out-File -LiteralPath (Join-Path $fakeBin "herdr.cmd") -Encoding ascii
+
+    $preserveHome = Join-Path $root "preserve-home"
+    $preserveBin = Join-Path $root "preserve-bin"
+    $env:HERDR_HOME = $preserveHome
+    $env:Path = "$fakeBin;$oldProcessPath"
+    & "$PSScriptRoot\..\website\install.ps1" `
+        -ManifestUrl "http://127.0.0.1:$port/candidate.json" `
+        -InstallDir $preserveBin `
+        -ExpectedBuildId "installer-test"
+    $preservedPreview = Get-ChildItem -LiteralPath (Join-Path $preserveHome "packages\standalone\releases") -Directory |
+        Where-Object { $_.Name.StartsWith("0.0.0-preview.installer-test-") } |
+        Select-Object -First 1
+    if ($null -eq $preservedPreview) {
+        throw "installer did not preserve the existing preview channel"
+    }
+
+    & "$PSScriptRoot\..\website\install.ps1" `
+        -Channel stable `
+        -ManifestUrl $stableManifestUrl `
+        -InstallDir $preserveBin
+    $explicitStable = Get-ChildItem -LiteralPath (Join-Path $preserveHome "packages\standalone\releases") -Directory |
+        Where-Object { $_.Name.StartsWith("0.0.1-") } |
+        Select-Object -First 1
+    if ($null -eq $explicitStable) {
+        throw "explicit stable channel did not override the existing preview channel"
+    }
 } finally {
     $env:HERDR_HOME = $oldHerdrHome
+    $env:Path = $oldProcessPath
     if ($null -ne $server -and -not $server.HasExited) {
         Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
     }

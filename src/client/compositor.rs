@@ -2294,6 +2294,10 @@ impl ClientSidebarSnapshot {
                         };
                         app.drag = Some(crate::app::state::DragState {
                             target: crate::app::state::DragTarget::WorkspaceReorder {
+                                // upstream v0.8.2 tags a drag with the input source that started
+                                // it (multi-source drags). The client compositor synthesizes this
+                                // drag locally, so it carries the local source id (0).
+                                source_id: 0,
                                 source_ws_idx,
                                 drop_target: Some(drop_target),
                             },
@@ -4721,6 +4725,7 @@ mod tests {
             Some(crate::app::state::DragTarget::WorkspaceReorder {
                 source_ws_idx,
                 drop_target,
+                ..
             }) => {
                 // ws-2 is global index 1; dropping past ws-3 (the third, single-server card) lands
                 // at global insert position 3 (after the whole block) = End of the 3-space list.
@@ -4858,6 +4863,7 @@ mod tests {
             Some(crate::app::state::DragTarget::WorkspaceReorder {
                 source_ws_idx,
                 drop_target,
+                ..
             }) => {
                 assert_eq!(*source_ws_idx, local_base);
                 // Clamped to the local block: the insert slot never points into the remote block.

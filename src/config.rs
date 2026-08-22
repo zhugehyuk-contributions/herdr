@@ -4,7 +4,9 @@ mod io;
 mod keybinds;
 pub(crate) mod model;
 mod sound;
+mod tab_bar;
 mod theme;
+mod window_title;
 
 pub use self::{
     io::{
@@ -23,20 +25,33 @@ pub use self::{
         HostBannerGradient, HostCursorModeConfig, NewTerminalCwdConfig, ShellModeConfig,
         SidebarAgentField, SidebarAgentsConfig, SidebarCollapsedModeConfig, SidebarColorPreset,
         SidebarHostConfig, SidebarItem, SidebarSpaceField, SidebarSpacesConfig,
-        TabBarPositionConfig, ToastClipboardPosition, ToastConfig, ToastDelivery,
-        ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
+        StatusIndicatorStyle, TabBarPositionConfig, ToastClipboardPosition, ToastConfig,
+        ToastDelivery, ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
     },
     sound::SoundConfig,
-    theme::{parse_color, CustomThemeColors, ThemeConfig},
+    tab_bar::TabBarRightEntryConfig,
+    theme::{parse_color, CustomThemeColors, ThemeConfig, THEME_NAMES},
+    window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 
-pub(crate) use self::io::upsert_top_level_bool;
 pub(crate) use self::keybinds::parse_key_combo;
+pub(crate) use self::{
+    io::upsert_top_level_bool,
+    tab_bar::{
+        parse_tab_bar_datetime_format, tab_bar_right_diagnostics,
+        MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS, MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS,
+        MAX_TAB_BAR_RIGHT_ENTRIES,
+    },
+    theme::canonical_theme_name,
+    window_title::{sanitize_window_title_text, window_title_diagnostics},
+};
 
 pub const CONFIG_PATH_ENV_VAR: &str = "HERDR_CONFIG_PATH";
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
 pub const DEFAULT_MOBILE_WIDTH_THRESHOLD: u16 = 64;
+pub const DEFAULT_HEADLESS_COLS: u16 = 120;
+pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
 #[cfg(test)]
 pub(crate) fn app_dir_name() -> &'static str {
@@ -69,9 +84,30 @@ impl Config {
             .into_iter()
             .chain(keybind_diags)
             .chain(self.remote_image_paste_key().err())
+            .chain(self.theme.diagnostics())
             .chain(self.ui.sound.diagnostics())
+            .chain(tab_bar_right_diagnostics(&self.ui.tab_bar_right))
+            .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())
+            .chain(self.invalid_headless_size_diagnostic())
             .collect()
+    }
+
+    pub(crate) fn headless_size(&self) -> (u16, u16) {
+        if self.invalid_headless_size_diagnostic().is_some() {
+            (DEFAULT_HEADLESS_COLS, DEFAULT_HEADLESS_ROWS)
+        } else {
+            (self.server.headless_cols, self.server.headless_rows)
+        }
+    }
+
+    pub(crate) fn invalid_headless_size_diagnostic(&self) -> Option<String> {
+        (self.server.headless_cols == 0 || self.server.headless_rows == 0).then(|| {
+            format!(
+                "server.headless_cols and server.headless_rows must be greater than zero (got {}x{})",
+                self.server.headless_cols, self.server.headless_rows
+            )
+        })
     }
 
     pub(crate) fn invalid_sidebar_bounds_diagnostic(&self) -> Option<String> {
