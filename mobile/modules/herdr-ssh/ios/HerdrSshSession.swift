@@ -167,10 +167,21 @@ public final class HerdrSshChannel: SharedObject {
   private var stderr = Data()
   private var finished = false
   private let lock = NSLock()
+  /// The context used to hop onto the JS thread.
+  ///
+  /// NOT `SharedObject.appContext`: that property is `public internal(set)`
+  /// (expo-modules-core/ios/Core/SharedObjects/SharedObject.swift:23) and is set by the registry
+  /// only once the object is converted into a JS value, i.e. *after* `openChannel` returns. This
+  /// channel starts delivering inside `attach`, before that, so it is handed the module's context
+  /// at construction. Measured 2026-08-23: assigning `appContext` from outside is
+  /// `error: cannot assign to property: 'appContext' setter is inaccessible`. Weak for the same
+  /// reason the base class is weak — the context owns the registry that owns this object.
+  private weak var jsContext: AppContext?
 
-  init(onData: JavaScriptFunction<Void>, onClose: JavaScriptFunction<Void>) {
+  init(onData: JavaScriptFunction<Void>, onClose: JavaScriptFunction<Void>, jsContext: AppContext?) {
     self.onData = onData
     self.onClose = onClose
+    self.jsContext = jsContext
     super.init()
   }
 
@@ -226,7 +237,7 @@ public final class HerdrSshChannel: SharedObject {
   /// on the path, which is the point of using `Data` rather than base64.
   private func deliver(_ buffer: ByteBuffer) {
     let bytes = Data(buffer.readableBytesView)
-    appContext?.executeOnJavaScriptThread { [weak self] in
+    jsContext?.executeOnJavaScriptThread { [weak self] in
       try? self?.onData.call(bytes)
     }
   }
@@ -245,7 +256,7 @@ public final class HerdrSshChannel: SharedObject {
     if let exitCode { payload["exitCode"] = exitCode }
     if !transcript.isEmpty { payload["stderr"] = transcript }
     if let error { payload["errorMessage"] = error.localizedDescription }
-    appContext?.executeOnJavaScriptThread { [weak self] in
+    jsContext?.executeOnJavaScriptThread { [weak self] in
       try? self?.onClose.call(payload)
     }
   }

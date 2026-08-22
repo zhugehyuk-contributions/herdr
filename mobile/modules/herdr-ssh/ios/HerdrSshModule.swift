@@ -59,8 +59,7 @@ public final class HerdrSshModule: Module {
         onData: JavaScriptFunction<Void>,
         onClose: JavaScriptFunction<Void>
       ) -> HerdrSshChannel in
-        let channel = HerdrSshChannel(onData: onData, onClose: onClose)
-        channel.appContext = self.appContext
+        let channel = HerdrSshChannel(onData: onData, onClose: onClose, jsContext: self.appContext)
         try await connection.start(channel: channel, command: command)
         return channel
       }

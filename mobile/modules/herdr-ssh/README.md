@@ -52,12 +52,26 @@ README:34). Citadel supplies both, plus `SSHHostKeyValidator` as a first-class p
 swift-nio-ssh directly would mean hand-writing an `openssh-key-v1` container parser and a bcrypt KDF
 in an app nobody can build yet.
 
-**Distribution is the sharp edge.** Both are SPM-only, a CocoaPods podspec cannot declare an SPM
-dependency, and `expo-modules-autolinking`'s Apple config accepts only `podspecPath`
-(`build/types.d.ts:136-171`). `mobile/plugins/with-herdr-ssh-spm.js` therefore writes the
-`XCRemoteSwiftPackageReference` objects into the generated `project.pbxproj` directly — legal only
-because `xcode@3.0.1`'s writer serializes sections it has no model for
-(`xcode/lib/pbxWriter.js:180-196`). That plugin is the most fragile file in this module.
+**Distribution is the sharp edge.** Both are SPM-only and a CocoaPods `dependency` cannot name an
+SPM package, so the wiring is in two places, and the first `pod install` ever run (2026-08-23)
+showed why both are needed:
+
+- `ios/HerdrSsh.podspec` calls React Native 0.83's `spm_dependency`
+  (`react-native/scripts/react_native_pods.rb:325` → `scripts/cocoapods/spm.rb:19-41`), which puts
+  the package in the **Pods** project, attaches the product to *this pod's target* and widens that
+  target's `SWIFT_INCLUDE_PATHS`. **This is the half that makes `import Citadel` compile**, because
+  the module's Swift is compiled in the Pods project. Without it the build dies at
+  `HerdrSshModule.swift:22:8: error: unable to resolve module dependency: 'Citadel'`.
+- `mobile/plugins/with-herdr-ssh-spm.js` writes `XCRemoteSwiftPackageReference` objects into the
+  **app** `project.pbxproj` — legal only because `xcode@3.0.1`'s writer serializes sections it has
+  no model for (`xcode/lib/pbxWriter.js:180-196`), which is why it is the most fragile file in this
+  module. Measured limit: the `XCSwiftPackageProductDependency` it also writes does **not** survive
+  `pod install` — CocoaPods re-saves the app project through Xcodeproj, which drops objects no
+  target references. What survives is the package reference itself, and that is what makes Xcode
+  resolve the graph and write `ios/herdr.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
+
+The pins (`.prd/06-open-decisions.md` decision 7) are therefore written twice and must be changed
+together.
 
 **Known limitation:** passphrase-protected private keys are refused with a named error rather than
 attempted (`ios/HerdrSshSession.swift`), because a wrong decryption reads as an auth failure and

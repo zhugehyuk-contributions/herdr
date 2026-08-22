@@ -1,13 +1,27 @@
 # Not from orca. Podspec for the local Expo module `herdr-ssh`.
 #
-# ⚠️ UNVERIFIED: no `expo prebuild` and no `pod install` has been run against this file. It has never
-# been parsed by CocoaPods.
+# Verified 2026-08-23: `expo prebuild --platform ios` + `pod install` parse this file and install
+# the pod (`Installing HerdrSsh (0.0.0)`). It is skipped silently unless the app's iOS deployment
+# target is >= the floor below — see `s.platforms`.
 #
-# What is NOT here, and why: the ssh library itself. Citadel and apple/swift-nio-ssh are distributed
-# through Swift Package Manager only, and a CocoaPods podspec cannot declare an SPM dependency.
-# `expo-modules-autolinking`'s Apple config accepts `podspecPath` and nothing else
-# (node_modules/expo-modules-autolinking/build/types.d.ts:136-171), so the SPM half is wired into the
-# generated Xcode project by `mobile/plugins/with-herdr-ssh-spm.js` instead. See README.md §iOS.
+# Where the ssh library comes from: Swift Package Manager, declared below with `spm_dependency`.
+# Citadel is SPM-only, and a CocoaPods *dependency* cannot name an SPM package — but React Native
+# 0.83 ships a bridge for exactly this case: `spm_dependency(spec, url:, requirement:, products:)`
+# (react-native/scripts/react_native_pods.rb:325) records the package, and `react_native_post_install`
+# (:540) hands it to `SPMManager#apply_on_post_install` (react-native/scripts/cocoapods/spm.rb:19-41),
+# which adds an XCRemoteSwiftPackageReference to the **Pods** project, attaches an
+# XCSwiftPackageProductDependency to *this pod's target*, and appends the build dir to that target's
+# SWIFT_INCLUDE_PATHS. That last part is why the declaration has to live here: `import Citadel` is
+# compiled in the Pods project, and the app-project package reference written by
+# `mobile/plugins/with-herdr-ssh-spm.js` is not visible from it.
+#
+# Measured 2026-08-23, first `pod install` ever run against this file: with only the config plugin,
+# `ios/Pods/Pods.xcodeproj` contained zero Citadel references and this target's
+# `SWIFT_INCLUDE_PATHS` was `ExpoModulesCore` + `RCTSwiftUI` only. The plugin's app-project half is
+# still useful — it is what makes Xcode resolve and write
+# `ios/herdr.xcworkspace/xcshareddata/swiftpm/Package.resolved` — but on its own it cannot compile
+# this file. The pins below are the same ones, from .prd/06-open-decisions.md decision 7; they are
+# duplicated in the plugin and the two must be changed together.
 #
 # The CocoaPods alternative was measured, not assumed: the only ssh clients on CocoaPods trunk are
 # NMSSH (last release 2.3.1, 2018-07-29) and a third-party `libssh2` pod (1.4.3, 2014-05-19). Both
@@ -35,6 +49,22 @@ Pod::Spec.new do |s|
   s.license        = { :type => 'Apache-2.0' }
 
   s.dependency 'ExpoModulesCore'
+
+  # ssh stack, pinned per .prd/06-open-decisions.md decision 7. Citadel is pinned to an exact
+  # version; its transitive `Wellz26/swift-nio-ssh` hop is pinned to a *revision* because that
+  # repository's tags lie — `0.4.0` (c997b6b, 2025-09-16) is the parent commit of `0.3.6`
+  # (a05e6bb, 2026-04-02), so no version range there means what it says. Citadel floats that hop as
+  # `0.3.4 ..< 0.4.0`; declaring it here overrides the resolution from the root.
+  spm_dependency(s,
+    url: 'https://github.com/orlandos-nl/Citadel.git',
+    requirement: { kind: 'exactVersion', version: '0.12.1' },
+    products: ['Citadel']
+  )
+  spm_dependency(s,
+    url: 'https://github.com/Wellz26/swift-nio-ssh.git',
+    requirement: { kind: 'revision', revision: 'a05e6bbe6b141ee68da3030e00275504c0595d4d' },
+    products: ['NIOSSH']
+  )
 
   # Swift 6 concurrency checking off for now: Citadel's async surface is not fully Sendable-audited
   # at 0.12.1 and this module has never been compiled, so a strict-concurrency failure here would be
