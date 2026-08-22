@@ -299,6 +299,82 @@ assertion that is false on Linux`로, 이 영역엔 Linux 특이 파손 전력�
 
 ---
 
+## L. 동료 세션 제보 — 독립 리뷰 7건, 전부 dispatcher가 file:line 재검증 (2026-08-22, 고정 커밋 54308ff)
+
+같은 커밋에 대한 외부 세션들의 CONFIRMED 투표. **inputs not oracles** 원칙대로 전부 직접 열어 확인했고,
+아래는 내 검증 결과다(peer 주장 그대로가 아니다).
+
+### L0 — 인증 증거 유실은 1건이 아니라 **5층 사슬**이다 `[v]`
+
+`.prd/09` §K가 이 중 2층만 봤다. 전체는 이렇다. 각 층이 독립적으로 증거를 지운다:
+
+| 층 | 위치 | 무엇이 사라지나 |
+|---|---|---|
+| 1 | `modules/herdr-ssh/android/.../HerdrSshSession.kt:253-257` | `pumpStdout`이 EOF에서 `finish()`를 부르고, `finish()`가 `pumps.shutdownNow()`로 **동시 실행 중인 stderr 펌프를 중단**시킨 뒤 스냅샷 → stderr **절단**. 그리고 `exitStatus`/`exitSignal`은 별도 채널 요청이라 close 대기 없이 읽으면 **null**일 수 있다 |
+| 2 | `src/transport/observe-stream-link.ts:190-192` | `if (close.error) return close.error.message` 조기 반환이 exit/signal/stderr 폐기 |
+| 3 | 같은 파일 `:108-111` | `activeToken`(`:70` null, `:132` 할당) 때문에 **pre-Welcome close는 원본이 전달되지 않음** |
+| 4 | `src/transport/connection-supervisor.ts:303-312` | dial rejection이 **`{ error }` 단일 필드**로 close를 합성 |
+| 5 | `src/transport/channel-failure.ts:104,110` | `auth`(fatal, `permission denied`/`publickey`)와 `missing-binary`(**`close.exitCode === 127` 필드 참조**)가 볼 것이 없어 `{kind:'transport', fatal:false}`로 낙하 → **영원히 재시도** |
+
+거부된 키를 다시 들이미는 것은 아무것도 바꾸지 않으므로 latch가 정답인데, 5층 중 어디 하나만 고쳐도
+나머지가 여전히 지운다. **1층을 안 고치면 위층 보존은 보존할 것이 없다.**
+
+### L1 — ssh 재다이얼 경로가 앱 수명 내내 없다 `[v]` (§I의 목업 폴백은 **증상**이었다)
+
+`useHerdrSshConnections`는 `useEffect(…, [])`에서 **한 번만** 다이얼한다(`app-connections.ts:135-154`).
+실패한 원격은 `connections`에 들어가지 않고(`:105-118`), `useSupervisedRemotes`는 **성공한 배열로만**
+supervisor를 만든다(`:45-63`) → 실패한 원격에는 타이머도, `forceReconnect` 대상도, foreground nudge
+대상도 없다. 그리고 supervisor의 재시도는 **이미 맺힌 ssh 위에 새 exec 채널을 여는 것뿐**이다 —
+`observe-stream-link.ts:53-63`의 주석이 스스로 그렇게 못박고 있다: *"it cannot recover a dead ssh
+connection, which needs a dialer one level down"*.
+**결론: 시작 시 실패했거나 도중에 죽은 ssh는 앱을 재시작해야만 살아난다.** 내가 §I에서 고치라고
+디스패치한 "목업 대신 에러"는 옳지만 증상 처치이고, 원인은 이쪽이다. 별도 단위로 남긴다.
+
+### L2 — pane 스트림 사망에 복구가 없고, 화면은 "Connected"라고 말한다 `[v]`
+
+`PaneObserver`의 채널 close는 로컬 status만 closed로 바꾸고(`src/session/pane-observer.ts:177-182`),
+`usePaneObserver`는 `[connection, handleRef, hasPane]` 변화에만 재생성하며 close/retry 경로가 없다
+(`use-pane-observer.ts:73-122`). 프로덕션 supervisor는 **별개의 health 스트림**을 감시하므로
+(`use-supervised-remotes.ts:51-61`), pane exec 채널만 죽으면 health 링크는 멀쩡하다 →
+**마지막 프레임을 든 채 "stream ended" + "Connected"가 동시에 표시**되고 리마운트 전까지 복구 없음.
+`SupervisedRemote.observe`는 레지스트리/replay API가 있는데도 테스트에서만 쓰인다.
+
+### L3 — `retarget` 경쟁으로 스트림과 입력이 서로 다른 pane을 가리킬 수 있다 `[v]`
+
+`usePaneObserver:69`가 `void observer.retarget(paneId)`를 직렬화 없이 쏜다. B·C 두 호출이 target=A인
+채로 통과한 뒤 각자 `pane.layout`을 await하고, `pane-observer.ts:249`의 사후 가드는 disposed/채널
+동일성만 본다 → C가 먼저 끝나고 **늦은 B가 마지막에 `target=B`(:252) + `RetargetTerminal(B)`**를 보낼
+수 있다. `PaneViewerScreen`은 입력을 라우트에서 따로 유도하므로(`pane/[paneId].tsx:154-163`)
+**입력은 C, 화면은 B**가 된다. 기존 테스트는 retarget을 직렬 await하거나 라우트를 한 번만 바꾼다.
+
+### L4 — WebView reload 후 터미널이 영구 백지 `[v]`
+
+`TerminalWebView.tsx:214-224`가 pending/coalesced를 비우고 reload하는데, web-ready 경로는
+`onWebReady`/theme/flush만 부르고(`:105-117`) 유일한 부모 콜백은 **NOOP**이다
+(`app/h/[remoteId]/pane/[paneId].tsx:241`). 그 사이 `PaneObserver`는 살아서 프레임을 계속 받고
+sink는 opened로 남아(`:317-320`, reset은 retarget 때만 `:254`) **`RequestFullFrame`이 나가지 않는다**
+(`terminal-frame-sink.ts:129-138`은 reset/unopened sink가 diff를 볼 때만 발화).
+결과: 새 document에 init/term이 없고 이후 diff는 큐잉됐다 flush되지만
+`terminal-webview-html.ts:657-660`이 ready+term 없이는 펌프를 거부한다.
+
+### L5 — 원격 바이너리 설치에 **체크섬 검증이 없다** `[v]` (herdr 코어, 보안)
+
+`src/remote/attach.rs`가 자산 URL만 역직렬화하고(`:704-718`) 받은 바이트를 **검증 없이**
+(`:2012-2031`) ssh로 스트리밍해 원자적으로 설치한다(`:2096-2149`). 설치 후 검사(`:880-887`,
+`:1010-1086`)는 설치된 바이너리를 실행해 **자기 보고** 버전/프로토콜을 묻는 것이라 무결성 검증이 아니다.
+대조: `src/update.rs`는 매니페스트 체크섬을 **요구**하고(`:407-429`) `verify_sha256`으로 검증한다
+(`:623-664`). `sha256` 문자열 출현 수 = update.rs **36** vs attach.rs **2**.
+그리고 이 포크는 upstream v0.8.2의 sha256 자산 맵을 **의도적으로 머지하지 않았다** —
+`attach.rs:3936-3938` 주석이 그렇게 적고 있다(소비자인 `resolve_release_asset`을 포크가 자체 시딩
+경로로 대체했기 때문). TLS는 전송/매니페스트 호스트만 지키므로, **신뢰된 매니페스트를 받은 뒤 자산
+스토어가 교체되는 시나리오**를 막지 못한다.
+**이건 모바일이 아니라 herdr 코어이고, 이 머지가 `attach.rs`를 +4484줄 들여온다.** 머지 차단 사유로
+올릴지는 유저 판단이지만, 원격에 바이너리를 심는 경로라 등급이 높다.
+
+**처리 상태**: L0의 1층·2~4층은 각각 별도 단위로 수정 위임됨. L1·L2·L3·L4·L5는 **미착수 큐**.
+
+---
+
 ---
 
 **규율**: 이 목록은 *n번째 문서화*가 아니라 **추적 큐**다. 항목을 닫을 때는 여기서 지우고 커밋 메시지에 근거를 남긴다.
