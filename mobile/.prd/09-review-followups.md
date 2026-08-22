@@ -571,3 +571,70 @@ M3 QA 중 별도 에이전트가 라이브로 관측. **M3 판정에는 영향 �
 
 **우선순위**: 이게 M4의 "됐다"(기내모드 ×10 / Wi-Fi↔셀룰러 ×10 자동 복구)를 직접 위협한다.
 M4 실기기 검증 **전에** 고쳐야 그 검증이 의미를 갖는다.
+
+
+## R. iOS 첫 QA — M2 FAIL, M2b 판정 불가 (2026-08-23, 별도 에이전트, 커밋 `5b4f33ad`)
+
+iOS가 처음 QA받았고 **Android엔 없던 결함 2건**이 나왔다. 그게 이 QA의 값어치다.
+
+| M2 | 판정 |
+|---|---|
+| (a) blocked 60초 내 발견 | **FAIL** — 화면 `0 nodes` + `the ssh channel is no longer open` |
+| (b) pane 읽기 | **FAIL** — (a)에 막힘 |
+| (c) 30분 무변화 | 판정 불가 — 볼 라이브 pane이 없었다 (실관측 0분) |
+| (d) 백그라운드 10왕복 | **PASS** — `app.state`가 한 번도 notRunning 아님 |
+| (e) 넓은 pane 도달 | 판정 불가 |
+
+M2b ①②③ **전부 판정 불가** — 아래 서명 게이트.
+
+### D2 — ssh 채널 write 레이스 (M2 FAIL의 단일 원인)
+
+**연결은 성립했고 UI 렌더가 실패했다.** 와이어 실측:
+```
+ssh ed25519 인증 OK
+← {"method":"remote.list"}     (49B) → 59B
+← {"method":"workspace.list"}  (52B) → 312B 라이브
+  ("label":"qa-ios-lab","agent_status":"blocked","pane_count":3)
+그 다음 채널 ← stdin 0바이트로 열렸다 닫힘
+```
+근인(코드 레벨): `HerdrSshSession.swift`의 `attach()`가 `Task { client.withExec { … self.writer = outbound … } }`를
+띄우고 **즉시 `return true`**. `write()`는 `guard let outbound else { throw .channelGone }`.
+**attach가 true를 준 뒤 클로저가 `writer`를 대입하기 전 창**에 write가 들어오면 무조건 실패한다.
+
+**Android가 안 그런 이유가 계약의 갈림점이다** — `session.exec(command)`가 **동기로** 채널을 만들고
+그 다음에야 반환한다. Citadel의 `withExec`는 클로저 기반이라 그 순서가 보장되지 않는다.
+
+화면 문구 `the ssh channel is no longer open`은 레포 전체에서 **이 iOS 파일에만** 있어서 경로를 특정한다.
+§Q(observe 재부착)와 **다른 지점**이다 — 이건 다이얼 시점의 요청/응답 API 채널이다.
+
+### D1 — 상단바가 top safe-area inset을 무시 (세로에서 `settings` 도달 불가)
+
+`settings` 버튼 프레임 `{{314.3, 31.7},{71.7, 14.3}}`, iPhone 17 Pro 상단 inset ≈ **59pt**
+→ 버튼 전체가 상태바/Dynamic Island 아래. 탭은 전달되나 내비게이션 0.
+**가로로 돌리면(상태바 숨김) 같은 탭이 성공** — 격리 확인.
+
+근인: `app/index.tsx:119` `appbar: { … paddingTop: 24 }` 하드코딩. **24는 Android 상태바 높이**라
+Android에서 우연히 맞아 이 클래스가 안 잡혔다. 상단바 어디에도 `useSafeAreaInsets()`가 없다
+(인셋 사용처는 `RightDrawer.tsx:94`, `mounted-bottom-drawer.tsx:80` 둘뿐).
+
+### D3 — 내 브리프가 틀렸다
+
+expo-notifications 에러의 원인은 `aps-environment` 미설정이 **아니라** 같은 키체인 엔타이틀먼트 부재다.
+제품 결함 아님.
+
+### ⛔ M2b iOS QA의 선행 게이트 — 코드사이닝 아이덴티티
+
+이 머신에 **코드사이닝 아이덴티티가 0개**다 → 시뮬레이터 앱 엔타이틀먼트가 비어 있음 → 키체인 사용 불가
+→ `expo-secure-store`가 아예 안 돈다 → 키를 한 번도 저장 못 함 → **`purgeIfFreshInstall()`이 지울 대상이
+없어 purge 경로 미검증.**
+
+**iOS는 그 코드가 실제로 필요한 유일한 플랫폼**인데(Android는 앱 삭제 시 secure-store가 원래 사라진다)
+그 시험을 못 했다. 수동 재서명 2회 시도는 컨테이너화가 깨져 앱이 안 떴다(`containerization was prevented`).
+
+→ **유저 액션: 서명 아이덴티티 확보.** 이게 M2b iOS QA의 선행이다.
+
+### ✅ 긍정적 발견 — iOS는 화면이 텍스트로 읽힌다
+
+**RN Fabric이 iOS에선 접근성 트리에 텍스트를 올린다.** XCUITest `debugDescription`으로 화면 전체를
+텍스트로 읽었다. Android `uiautomator`가 텍스트 노드 0개인 것과 **정반대**다.
+→ iOS QA는 비전이 아니라 **텍스트 판독이 정본**이 될 수 있다.
