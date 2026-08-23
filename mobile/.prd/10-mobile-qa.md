@@ -362,6 +362,13 @@ npx expo run:ios --device <UDID>
 > 화면상 아무 차이가 없다. 빌드 전에 `lsof -nP -iTCP:8081 -sTCP:LISTEN`으로 주인을 확인하고,
 > 남의 Metro면 **QA 워크트리의 Metro로 교체**하라(포트를 나누는 쪽이면 앱이 그 포트를 알아야 한다).
 
+> ⚠️ **셋업 스크립트가 자기 실패를 초록으로 보고한다 (2026-08-24 실측).**
+> `xcrun simctl install`이 시뮬레이터가 Shutdown이면 `Unable to lookup in current state: Shutdown`으로
+> **실패하는데, 스크립트는 마지막 `echo …_SETUP_OK`를 그대로 찍었다.** `set -euo pipefail`이 있어도
+> 마지막 명령이 파이프 안이거나 종료코드를 삼키면 앞선 실패가 안 잡힌다. 규칙:
+> ①install 전에 **부팅을 보장**(`simctl boot` 후 `(Booted)` 폴링) ②install **성공을 확인한 뒤에만**
+> 마커를 찍어라(`&&` 체인). 9차는 부팅 후 재설치본이 우연히 올라와 있어 사고가 안 났을 뿐이다.
+
 ### 화면 읽기 — XCUITest 타깃 주입
 
 `idb`도 `cliclick`도 이 머신에 없고 `simctl openurl`은 확인창을 띄운다. 그래서 **XCUITest 타깃을 넣어**
