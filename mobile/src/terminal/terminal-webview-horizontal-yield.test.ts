@@ -40,7 +40,7 @@ describe('the terminal document yields the gesture the recognizer wants', () => 
     expect(XTERM_HTML).not.toMatch(/YIELD_(OFFSET_X|AXIS_RATIO) = \$\{/)
   })
 
-  it('checks the latch before the overflow test, so a curving drag is not re-claimed', () => {
+  it('checks the latch before the zoom test, so a curving drag is not re-claimed', () => {
     // Order is behaviour here: `ts.yieldedH` has to short-circuit, or a gesture that started
     // horizontal and curves back under the ratio would be taken back mid-flight and the page would
     // start scrolling under a finger the recognizer already owns.
@@ -49,18 +49,24 @@ describe('the terminal document yields the gesture the recognizer wants', () => 
       XTERM_HTML.indexOf("targetSurface.addEventListener('touchmove'")
     )
     expect(fn).toContain('if (ts.yieldedH) return true;')
-    expect(fn.indexOf('ts.yieldedH')).toBeLessThan(fn.indexOf('getContentWidth()'))
+    expect(fn.indexOf('ts.yieldedH')).toBeLessThan(fn.indexOf('userScale > 1'))
   })
 
-  it('still lets the page keep horizontal when the grid overflows', () => {
+  it('keeps horizontal for the reader who zoomed, and tests that by zoom', () => {
     // The one occupant of the horizontal axis that is real (`src/session/pane-swipe.ts` header):
     // a zoomed-in pane pans. Yielding there would take panning away from the user entirely.
+    //
+    // The assertion is on the *predicate*, because §KK is the story of the wrong one: "is the grid
+    // wider than the viewport" reads like the pan branch's own guard but is true at rest, since
+    // `commitFitScale` snaps a 0.95..1 fit up to exactly 1 — the file's `suspect` check names that
+    // state. That made the yield dead code on every ordinary pane and shipped the repair inert.
+    // Reverting to the arithmetic form would silently delete the fix again.
     const fn = XTERM_HTML.slice(
       XTERM_HTML.indexOf('function shouldYieldHorizontal'),
       XTERM_HTML.indexOf("targetSurface.addEventListener('touchmove'")
     )
-    expect(fn).toContain('getContentWidth() * getTotalScale() > window.innerWidth + 1')
-    expect(fn).toContain('return false;')
+    expect(fn).toContain('if (userScale > 1) return false;')
+    expect(fn).not.toContain('window.innerWidth')
   })
 
   it('only yields single-finger gestures, never a pinch', () => {

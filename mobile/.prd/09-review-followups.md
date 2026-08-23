@@ -1723,3 +1723,79 @@ Android는 이 질문을 CDP로 답했다(§DD의 touchstart/touchmove/touchend 
 상태에서 "수평 되고 수직 안 됨"을 볼 수 없다(수직도 `dx=0 dy=0`이고 스크롤백도 안 움직였으나
 공허한 통과로 쓰지 않았다). **오버플로 팬 회귀도 판정 불가** — 핀치가 WKWebView를 네이티브
 텍스트선택 모드로 넣어 "그리드 > 뷰포트" 상태를 깨끗이 만들지 못했다. 양보 과잉 여부 미확인.
+
+---
+
+## KK. 판별 완료 — **제품 결함**이다. 그리고 내 수리는 발동조차 안 하고 있었다 (2026-08-23, 별도 에이전트, `qa-ios-m6a3` @ `a10475ea`)
+
+### 판별자가 요구한 것보다 강한 대조군이 잡혔다
+
+**같은 XCUITest 드래그 · 같은 화면 · 같은 WKWebView 프레임**인데 페이지의 청취 여부만 다르다:
+
+| 상태 | `[touchProbe]` | `[paneSwipe]` | pane 전환 |
+|---|---|---|---|
+| mock / `no transport` — 페이지가 **안 듣는** WKWebView | start 0 / move 0 | begin 3 / start 2 / **dx=−229 success=true** | **됐다** |
+| live / `Connected` — 페이지가 **듣는** WKWebView | start 3 / first-move 3 / end 3 (moves **53·98·27**) | begin 3 / start **0** / **dx=0 dy=0** | 안 됐다 |
+
+**"하네스 한계" 가설은 죽었다.** XCUITest는 이 표면 위에서 move를 만든다 — 페이지가 안 잡을 때는
+조상 recognizer가 dx=−229를 받고 전환까지 커밋했다. 2차 판정자가 남긴 잔여("대조군이 WKWebView 뒤가
+아닌 RN ScrollView였다")도 함께 닫혔다. **이번 대조군은 같은 WKWebView다.**
+
+**판정: 제품 결함.** 페이지는 제스처당 53·98·27개의 touchmove를 실제로 셌는데 조상 pan recognizer는
+그중 **단 한 개도** 못 받았다. 터치는 WebView에 도달하지만 UIKit 제스처 사슬로 올라가지 않는다.
+부수 확증: `touchend`가 3/3 발화 — §DD의 Android 실측("활성화된 recognizer는 전달을 멈춰 touchend 0")과
+**반대**이므로, recognizer가 제스처를 가져간 적이 없다는 독립 증거다.
+
+**한 줄 요약: M6a는 "터미널이 살아 있을 때만" 죽는다.**
+
+### 그리고 판정자가 내 수리의 결함을 짚어줬다 — 그게 이 항목의 본론이다
+
+`f7547261`의 양보 규칙은 이 픽스처에서 **한 번도 발동하지 않았다**. 가드가
+
+```js
+if (getContentWidth() * getTotalScale() > window.innerWidth + 1) return false;
+```
+
+인데 **80컬럼 pane이 402pt 뷰포트에서 이미 이 조건을 만족**한다. 판정자는 여기까지 짚었고,
+근인은 코드에 있다 — `commitFitScale`:
+
+```js
+var preSnapScale = computeFitScale();   // min(1, vpWidth / termWidth)
+currentScale = preSnapScale;
+if (currentScale >= 0.95) currentScale = 1;   // ← 스냅
+```
+
+**0.95~1의 fit을 정확히 1로 스냅한다.** 그래서 *반올림 후에는* 맞는 pane이 "내용이 뷰포트보다 넓음"을
+보고하는데 **독자는 아무것도 확대하지 않았다.** 이 상태는 이미 이 파일이 이름 붙여놨다 —
+바로 아래 `suspect` 체크가 `currentScale === 1 && expectedW > vpW + 1`이다.
+
+즉 **내 가드는 "페이지가 팬을 한다"의 대용물로 넓이 산술을 썼고, 스냅이 그 대용물을 상시 참으로
+만들었다.** 평범한 pane 전부에서 양보는 죽은 코드였다.
+
+### 수리
+
+가드를 **`userScale > 1`** 로 바꿨다 — "독자가 실제로 확대했는가". 포기하는 것: 스냅된 pane이 쉬는
+상태에서 반올림이 남긴 몇 픽셀의 팬. 그 여유는 pane 전환보다 값이 낮고, 설계가 이미 그렇게 말했다
+(`pane-swipe.ts`: *"At fit width — every unzoomed pane — a horizontal drag does nothing today"*).
+
+테스트도 **술어 자체**를 고정하도록 바꿨다. §KK의 교훈이 "산술 형태로 되돌아가면 수리가 조용히
+사라진다"이기 때문이다 — 기기 테스트가 못 잡은 것이 정확히 그거였다.
+
+### ⚠️ 아직 열려 있는 것 — 다음 라운드의 질문
+
+**양보가 실제로 발동했을 때 recognizer가 move를 받는가.** 두 갈래가 남아 있다:
+
+| 관측 | 결론 |
+|---|---|
+| `dx`가 0이 아니게 됨 | `preventDefault` 호출이 전파를 막던 것 → **수리 완료** |
+| 여전히 `dx=0` | **비수동 리스너의 존재 자체**가 막는 것(`touchmove`는 `{capture:true, passive:false}`) → JS로는 못 고치고 네이티브 수리가 필요 |
+
+두 번째면 수리 지점은 RNGH의 iOS `simultaneousWithExternalGesture` 계열이거나 WKWebView recognizer
+쪽이고, 그건 이 문서가 아니라 네이티브 층 작업이다.
+
+### 부수 — 판정자 자진 신고 (내가 검증했다)
+
+정리 중 `herdr server stop`이 격리 XDG가 아니라 **유저 소켓 경로**로 해석됐다. 멈추지는 못했고
+(15초 타임아웃), 판정자가 유저 데몬 생존을 사후 확인했다. **내가 재확인**: pid 8329 생존(경과 1일 7시간),
+`~/.config/herdr/herdr.sock` 정상, `herdr server` 프로세스 18개. `pkill -f herdr`는 쓰이지 않았다.
+자진 신고가 정확했다. **랩 정리는 PID 지정으로만** — `.prd/10`에 이미 있는 규칙이 한 번 더 확인됐다.

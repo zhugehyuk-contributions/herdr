@@ -2,7 +2,7 @@
 // (`mobile/src/terminal/terminal-gesture-input.ts`, a file herdr did not port). Extracted from
 // terminal-webview-html.ts to keep that file within its max-lines budget, following the same
 // convention as its sibling `*-injected.ts` modules. Closes over host-IIFE state and functions:
-// ts, getContentWidth, getTotalScale.
+// ts and userScale.
 //
 // What it decides: whether this document should let a horizontal drag through to the native
 // recognizer above the WebView instead of declaring it consumed.
@@ -31,9 +31,24 @@ export const TERMINAL_HORIZONTAL_YIELD_JS = `
       // Without this a drag that curves back under the ratio would be re-claimed mid-flight and
       // the page would start scrolling under a finger that is switching panes.
       if (ts.yieldedH) return true;
-      // The page *does* own horizontal when the grid overflows — the same test the pan branch
-      // uses. Yielding there would take panning away from a zoomed-in pane entirely.
-      if (getContentWidth() * getTotalScale() > window.innerWidth + 1) return false;
+      // The page *does* own horizontal once the reader has zoomed in — yielding there would take
+      // panning away from a magnified pane entirely.
+      //
+      // The test is \`userScale\`, not "is the grid wider than the viewport", and that correction is
+      // .prd/09 §KK. The arithmetic version looked like the pan branch's own guard and was wrong
+      // here for one reason: \`commitFitScale\` snaps a fit scale of 0.95..1 up to exactly 1
+      // (terminal-webview-html.ts, "snap to 1 to avoid imperceptible shrinkage"). A pane that fits
+      // *after* rounding therefore reports content wider than the viewport while the reader has
+      // zoomed nothing — the file's own \`suspect\` check names that state, \`currentScale === 1 &&
+      // expectedW > vpW + 1\`. On an 80-column pane in a 402pt viewport that is the resting state,
+      // so the yield never fired and the repair shipped inert (measured: 3 gestures, page counted
+      // 53/98/27 touchmoves, recognizer got dx=0).
+      //
+      // What is given up by testing \`userScale\` instead: at rest a snapped-to-1 pane can pan by
+      // the few pixels the rounding left. That slack is worth less than pane switching, and the
+      // design already said so — src/session/pane-swipe.ts: "At fit width — every unzoomed pane —
+      // a horizontal drag does nothing today."
+      if (userScale > 1) return false;
       var dx = touch.clientX - ts.startX;
       var dy = touch.clientY - ts.startY;
       return Math.abs(dx) >= YIELD_OFFSET_X && Math.abs(dx) >= YIELD_AXIS_RATIO * Math.abs(dy);
