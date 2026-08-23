@@ -31,7 +31,7 @@
 | M1 `herdr-client-ts` | ✅ 15파일/173테스트 | — | — |
 | M2 읽기 전용 앱 | ✅ + init 전달 수리 (`7c58c49d`) | **✅ 5/5** | **✅ 5/5** (§AA) — b·e·c 재판정 PASS |
 | **M2b 원격 설정 + 키 보관** | ✅ | **✅ 3/3** | 판정 불가 — **서명 게이트** |
-| M3 입력 | ✅ | **✅ PASS 4/4** | **QA 가능해짐** — M2 (b)가 닫혔다 |
+| M3 입력 | ✅ | **✅ PASS 4/4** | **✅ PASS** (§BB) — 바이트 11/11 Android와 동일 |
 | M4 transport 생존성 | ✅ + 재다이얼·배너·세대가드 | **✅ PASS** (§Z) — 강제종료 0건. ×10·30분은 이전 빌드 교차 | ❌ (시뮬로 안 닫힘) |
 | M5 푸시 | 서버 ✅ · 앱 ✅ (`158e36f3` 매니페스트 배선까지) · 센더 ❌ | ❌ | ❌ |
 | M6 제어·스크롤·리타겟 | ❌ | ❌ | ❌ |
@@ -99,7 +99,7 @@ orca의 나머지 절반(PTY 리사이즈)이 부재한다는 것도 증명됐�
 
 | 게이트 | 무엇이 막히나 | 실측 근거 |
 |---|---|---|
-| **코드사이닝 아이덴티티** (0개) | **iOS M2b 판정 불가.** 엔타이틀먼트가 비어 키체인이 안 돌고 `expo-secure-store`가 아예 실행되지 않는다. iOS는 그 코드가 *실제로 필요한 유일한 플랫폼*인데(Android는 앱 삭제 시 secure-store가 원래 사라진다) 그 시험을 못 한다 | `.prd/09` §R. 재서명 우회 2회 실패(`containerization was prevented`) — 3회째 금지 |
+| **코드사이닝 아이덴티티** (0개) | **iOS M2b 판정 불가 + 앱이 실제로 망가진다.** 2026-08-23 M3 QA 실측: `Keychain access failed: A required entitlement isn't present` 배너가 **입력 필드를 완전히 덮어**(배너 `{{10,786.7},{382,67.3}}` ⊃ 필드 `{{13,798.7},{330,32.3}}`) 배너를 닫기 전엔 타이핑이 불가능하다. **판정 문제가 아니라 제품 결함이다.** 그리고: 엔타이틀먼트가 비어 키체인이 안 돌고 `expo-secure-store`가 아예 실행되지 않는다. iOS는 그 코드가 *실제로 필요한 유일한 플랫폼*인데(Android는 앱 삭제 시 secure-store가 원래 사라진다) 그 시험을 못 한다 | `.prd/09` §R. 재서명 우회 2회 실패(`containerization was prevented`) — 3회째 금지 |
 | **Expo 계정 + EAS projectId** | **M5 푸시의 동작 경로 전체.** `getExpoPushTokenAsync`가 projectId 없이는 `ERR_NOTIFICATIONS_NO_EXPERIENCE_ID`로 던진다 | `npx expo whoami` = `Not logged in` · `eas.json` 부재 · `~/.expo/state.json`의 `auth` 없음 · 코드 경로 `use-blocked-push.ts:210-233` |
 
 **M5의 절반은 이 게이트 없이도 닫힌다** — 푸시가 안 오는 것이 *보이게* 만드는 쪽(`app/settings.tsx`의
