@@ -209,14 +209,39 @@ launchd/systemd 센더가. 훅 런타임에 타임아웃·재시도·DLQ가 없�
 > *"herdr has no message to move an observe target, so even a warm channel could not retarget today"*
 > 라고 적혀 있는데 그 메시지는 존재하고 서버가 처리한다. M6 작업 시 함께 고칠 것.
 
-**남은 실제 작업 = 앱 배선 3단위** (per-unit dispatch):
-- **M6a** 스와이프 → `retarget(paneId)` 호출. 수용 = **재연결 없이 <200ms**
-- **M6b** 입력 순간 `mode=Control{takeover}` 승격 → 즉시 `Observe` 복귀. 백그라운드 진입 시 항상 detach
+**남은 실제 작업 = 앱 배선 2단위** (per-unit dispatch):
+- **M6a** 스와이프 → `retarget(paneId)`. ✅ **완료** (`e383868e`) — 와이어로 재연결 부재 실증, 기기 실측은 QA
 - **M6c** 스크롤백 열람
 
-**됐다** = pane 스와이프 전환이 재연결 없이 <200ms · 스크롤백 열람 · 제어 해제 시 데스크톱 크기 자동 복원.
+**됐다** = pane 스와이프 전환이 재연결 없이 <200ms · 스크롤백 열람.
 
-> ⚠️ **M3의 계약을 깨지 마라**: PTY 불변 · `resize` 이벤트 0건 (QA가 와이어 1468파일 전수 grep으로 확인).
-> M6b의 제어 승격은 데스크톱을 리사이즈할 수 있는 유일한 지점이므로 **해제 시 복원**이 수용 기준에 있다.
+---
+
+### ⛔ M6b(제어 승격) 삭제 — §2.3이 이미 반대를 결정했다 (2026-08-23)
+
+이 마일스톤은 *"입력 순간에만 `ControlTerminal`로 임시 승격하고 즉시 복귀"* 를 요구했다.
+**그건 이 앱의 아키텍처 결정과 정면으로 모순되고, 그 결정이 이미 출하돼 양 플랫폼 QA를 통과했다.**
+
+`.prd/02-architecture.md` §2.3 "쓰기는 JSON API — 와이어로 쓰지 않는다"가 근거와 함께 정한 것:
+
+| | 서버 동작 | 확인 |
+|---|---|---|
+| `observe_terminal_client` | `(cols, rows)`를 **`info!` 로그에만** 쓴다. 리사이즈·락 없음 | `src/server/headless.rs:1916-1940` 직독 |
+| `control_terminal_client` | `attach_terminal_client(…, takeover)`로 위임 | `:1942-1948` |
+| `attach_terminal_client` | `direct_attach_resize_locks` + 공유 런타임을 effective size로 리사이즈 | `:3068~`, `resize_shared_runtime_to_effective_size` `:1097` |
+
+→ **제어 승격은 공유 PTY를 폰 그리드로 리사이즈하고 락을 건다. 데스크톱 파괴다.**
+§2.3의 판단: *"이 분리 하나로 세 블로커가 동시에 사라진다 — 그리드 락 · takeover 경쟁 · stale attach 미회수."*
+
+**그리고 M3가 그 결정 위에서 출하됐다**: 입력은 `pane.send_input{text?, keys[]}`로 가고,
+**PTY 불변 · `resize` 이벤트 0건**이 M3의 측정된 계약이다 (Android 4/4, iOS 11/11 바이트 일치,
+QA가 와이어 1468파일 전수 grep으로 확인). M6b를 구현하면 **방금 양 플랫폼에서 통과한 계약을 스스로 깬다.**
+
+**남는 유일한 M6b 논거는 비용이다** — `pane.send_input`은 호출 1회 = ssh exec 1회(B8)라 빠른 타이핑에서 비싸다.
+그러나 스트림으로 쓰려면 control 모드여야 하고(observe 모드는 입력을 조용히 버린다 — `mode == TerminalObserve`면
+`return false`), control 모드는 리사이즈한다. **즉 B8 비용은 데스크톱을 안 부수는 값이고, §2.3이 그 거래를
+알고 한 것이다.** 되살리려면 새 근거가 필요하지 이 마일스톤 문장으로는 안 된다.
+
+수용 기준의 *"제어 해제 시 데스크톱 크기 자동 복원"* 도 함께 삭제 — 승격을 안 하면 복원할 것이 없다.
 
 ---
