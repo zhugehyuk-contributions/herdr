@@ -141,7 +141,10 @@ pub(crate) struct WorkspaceSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentSummary {
+    /// Stable client-side identity sourced from `AgentInfo.terminal_id`.
     pub(crate) agent_id: String,
+    /// Current public pane target accepted by `agent.focus`.
+    pub(crate) pane_id: String,
     pub(crate) workspace_id: String,
     pub(crate) label: String,
     pub(crate) status: String,
@@ -3395,14 +3398,15 @@ impl ClientSupervisorModel {
             };
         }
 
-        if !server
+        let Some(target) = server
             .summaries
             .agents
             .iter()
-            .any(|agent| agent.agent_id == agent_id)
-        {
+            .find(|agent| agent.agent_id == agent_id)
+            .map(|agent| agent.pane_id.clone())
+        else {
             return FocusRoute::NotFound;
-        }
+        };
 
         self.close_new_workspace_picker();
         self.active_server_id = server_id.clone();
@@ -3415,7 +3419,7 @@ impl ClientSupervisorModel {
         self.optimistic_focus_stale_applies = 0;
         FocusRoute::Agent {
             server_id: server_id.clone(),
-            target: agent_id.to_string(),
+            target,
         }
     }
 
@@ -4219,6 +4223,7 @@ impl ServerSummary {
                     let status = agent_status_label(agent.agent_status);
                     AgentSummary {
                         agent_id: agent.terminal_id,
+                        pane_id: agent.pane_id,
                         workspace_id: agent.workspace_id,
                         label,
                         status,
@@ -4508,6 +4513,67 @@ mod tests {
             foreground_cwd: None,
             revision: 1,
         }
+    }
+
+    #[test]
+    fn api_agent_focus_uses_pane_id_and_reconciles_by_stable_identity() {
+        let terminal_id = "term_6599e968195d64";
+        let pane_id = "pane-1";
+        let summary = ServerSummary::from_api(
+            vec![workspace_info("main-workspace", "herdr", true)],
+            vec![agent_info(
+                terminal_id,
+                "main-workspace",
+                "claude",
+                crate::api::schema::AgentStatus::Idle,
+                false,
+            )],
+        );
+        assert_eq!(summary.agents[0].agent_id, terminal_id);
+        assert_eq!(summary.agents[0].pane_id, pane_id);
+
+        let mut model = ClientSupervisorModel::new("local");
+        model
+            .set_summary(&ServerId::main(), summary)
+            .expect("main server should exist");
+
+        let route = model.focus_agent_route(&ServerId::main(), terminal_id);
+        assert_eq!(
+            route.api_request("client:agent-focus"),
+            Some(crate::api::schema::Request {
+                id: "client:agent-focus".into(),
+                method: crate::api::schema::Method::AgentFocus(crate::api::schema::AgentTarget {
+                    target: pane_id.into(),
+                }),
+            })
+        );
+        assert!(model.agent_groups().iter().any(|group| {
+            group
+                .agents
+                .iter()
+                .any(|agent| agent.agent_id == terminal_id && agent.focused)
+        }));
+
+        let confirming = ServerSummary::from_api(
+            vec![workspace_info("main-workspace", "herdr", true)],
+            vec![agent_info(
+                terminal_id,
+                "main-workspace",
+                "claude",
+                crate::api::schema::AgentStatus::Idle,
+                true,
+            )],
+        );
+        model
+            .set_summary(&ServerId::main(), confirming)
+            .expect("main server should exist");
+        assert_eq!(model.optimistic_focus, None);
+        assert!(model.agent_groups().iter().any(|group| {
+            group
+                .agents
+                .iter()
+                .any(|agent| agent.agent_id == terminal_id && agent.focused)
+        }));
     }
 
     #[derive(Default)]
@@ -5536,6 +5602,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "main-agent".into(),
+                        pane_id: "main-agent".into(),
                         workspace_id: "main-herdr".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -5560,6 +5627,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "remote-agent".into(),
                         workspace_id: "remote-herdr".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -5674,7 +5742,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_agent_route_switches_active_server_for_connected_owner() {
+    fn focus_agent_route_uses_pane_target_for_connected_owner() {
         let mut model = ClientSupervisorModel::new("local");
         let remote_id = ServerId::secondary("remote-x");
         model.add_secondary(ssh_remote("remote-x", "x", "x"));
@@ -5691,6 +5759,7 @@ mod tests {
                     }],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "pane-remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -5709,7 +5778,7 @@ mod tests {
             route,
             FocusRoute::Agent {
                 server_id: remote_id.clone(),
-                target: "remote-agent".into(),
+                target: "pane-remote-agent".into(),
             }
         );
         assert_eq!(model.active_server_id(), &remote_id);
@@ -5718,7 +5787,7 @@ mod tests {
             Some(crate::api::schema::Request {
                 id: "client:agent-focus".into(),
                 method: crate::api::schema::Method::AgentFocus(crate::api::schema::AgentTarget {
-                    target: "remote-agent".into(),
+                    target: "pane-remote-agent".into(),
                 },),
             })
         );
@@ -5787,6 +5856,7 @@ mod tests {
                     ],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -5965,6 +6035,7 @@ mod tests {
                     ],
                     agents: vec![AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: "idle".into(),

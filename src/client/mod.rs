@@ -8850,6 +8850,7 @@ mod tests {
                     }],
                     agents: vec![supervisor::AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "pane-remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: "idle".into(),
@@ -10196,7 +10197,7 @@ mod tests {
     }
 
     #[test]
-    fn composited_input_clicking_agent_returns_owner_api_request() {
+    fn composited_input_clicking_agent_focuses_pane_target() {
         let (mut model, remote_id) = mixed_remote_model();
         let mut compositor = compositor::ClientCompositor::new(26);
 
@@ -10216,13 +10217,47 @@ mod tests {
                     id: "client:agent-focus".into(),
                     method: crate::api::schema::Method::AgentFocus(
                         crate::api::schema::AgentTarget {
-                            target: "remote-agent".into(),
+                            target: "pane-remote-agent".into(),
                         },
                     ),
                 }),
             }
         );
         assert_eq!(model.active_server_id(), &remote_id);
+    }
+
+    #[test]
+    fn next_agent_key_focuses_pane_target_for_stable_agent_row() {
+        with_client_keys_config("[keys]\nnext_agent = \"alt+j\"\n", || {
+            let (mut model, remote_id) = mixed_remote_model();
+            let mut compositor = compositor::ClientCompositor::new(26);
+
+            let dispatch =
+                dispatch_composited_input(b"\x1bj".to_vec(), &mut compositor, &mut model, (60, 16));
+
+            assert_eq!(
+                dispatch,
+                ClientInputDispatch::ApiRequest {
+                    server_id: remote_id.clone(),
+                    refresh: ClientApiRefreshPolicy::ImmediateFocused,
+                    request: Box::new(crate::api::schema::Request {
+                        id: "client:agent-focus".into(),
+                        method: crate::api::schema::Method::AgentFocus(
+                            crate::api::schema::AgentTarget {
+                                target: "pane-remote-agent".into(),
+                            },
+                        ),
+                    }),
+                }
+            );
+            assert_eq!(model.active_server_id(), &remote_id);
+            assert!(model.agent_groups().iter().any(|group| {
+                group
+                    .agents
+                    .iter()
+                    .any(|agent| agent.agent_id == "remote-agent" && agent.focused)
+            }));
+        });
     }
 
     // ---------------------------------------------------------------------------
@@ -12562,6 +12597,7 @@ mod tests {
                     }],
                     agents: vec![supervisor::AgentSummary {
                         agent_id: "remote-agent".into(),
+                        pane_id: "pane-remote-agent".into(),
                         workspace_id: "remote-api".into(),
                         label: "claude".into(),
                         status: status.into(),
