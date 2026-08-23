@@ -47,6 +47,23 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
 ) {
   const webViewRef = useRef<WebView>(null)
   const isWebReadyRef = useRef(false)
+  // Why these two exist, and why `init` is deliberately NOT carried by `pendingMessages`:
+  //
+  // `handleLoadStart` clears that queue, because after a *reload* its `write`s are diffs against a
+  // buffer that no longer exists. But an `init` queued before the document ever started loading is
+  // not stale — it has never been delivered to any document — and dropping it is unrecoverable:
+  // `TerminalFrameSink` marks the stream `opened` before it calls `init` and never issues a second
+  // one (`./terminal-frame-sink.ts`), so the pane stays blank for the life of the screen with no
+  // error anywhere. Measured on the iOS simulator, 2026-08-23 (`.prd/10-mobile-qa.md` iOS lab, cold
+  // launch, 80x40 fixture): `pm.queue init` at t+396ms, `wv.loadStart` + `pm.clear-dropping
+  // ["set-theme","set-font-scale","init"]` at t+466ms, `web-ready` + `pm.flush []` at t+501ms —
+  // 2,033,316 background pixels and not one `[fit]renderer` line for the rest of the session.
+  //
+  // So the snapshot is held here instead and (re)sent by `confirmWebReady`, exactly like the theme
+  // one line below it: every fresh document owes the reader a terminal, whether it is the first one
+  // or a replacement after a WebKit content-process loss.
+  const lastInitRef = useRef<TerminalWebViewCommand | null>(null)
+  const initDeliveredRef = useRef(false)
   const pendingMessages = useMemo(() => createTerminalWebViewPendingMessages(), [])
   const messageIdRef = useRef(0)
   const pendingPingIdRef = useRef<number | null>(null)
@@ -114,6 +131,13 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
       // Why: reload clears queued commands, so readiness must always restore the
       // native-selected theme even when its value did not change in React.
       sendToWebView({ type: 'set-theme', terminalTheme })
+      // Before the queue, never after: everything in it is a diff that only means anything against
+      // the buffer this snapshot builds.
+      const lastInit = lastInitRef.current
+      if (!initDeliveredRef.current && lastInit !== null) {
+        initDeliveredRef.current = true
+        sendToWebView(lastInit)
+      }
       flushPendingMessages()
     },
     [
@@ -198,12 +222,21 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
 
   const handleLoadStart = useCallback(() => {
     isWebReadyRef.current = false
+    // A new document has no terminal in it, whatever the last one was told.
+    initDeliveredRef.current = false
     pendingPingIdRef.current = null
     armWebReadyWatchdog()
     // Why: messages queued for a previous WebView generation are stale after a reload;
     // dropping them avoids replaying terminal chunks before the next init snapshot.
-    pendingMessages.clear()
-    writeCoalescer.clear()
+    //
+    // Only when there is no snapshot to restore, though. `init` clears this queue and
+    // `confirmWebReady` sends the held snapshot ahead of whatever refilled it, so once a snapshot
+    // exists the queue is by construction the diffs that come *after* it — the chunks the reader
+    // loses if they are dropped here, with nothing upstream that would ever resend them.
+    if (lastInitRef.current === null) {
+      pendingMessages.clear()
+      writeCoalescer.clear()
+    }
   }, [armWebReadyWatchdog, pendingMessages, writeCoalescer])
 
   const handleReload = useCallback(() => {
@@ -215,6 +248,7 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
     // Why: WKWebView content-process loss is recoverable; stale commands belong
     // to the dead document and the replacement must prove readiness before replay.
     isWebReadyRef.current = false
+    initDeliveredRef.current = false
     pendingPingIdRef.current = null
     pendingMessages.clear()
     writeCoalescer.clear()
@@ -273,9 +307,13 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
           readyResolveRef.current = resolve
         })
         // Why: pending chunks are pre-snapshot data; the init snapshot supersedes
-        // them, and writing them after init would corrupt the fresh buffer.
+        // them, and writing them after init would corrupt the fresh buffer. The queue is
+        // emptied for the same reason the coalescer is — with the snapshot now sent ahead of
+        // the queue by `confirmWebReady`, a chunk left in it would replay *after* the buffer
+        // it predates.
         writeCoalescer.clear()
-        postMessage({
+        pendingMessages.clear()
+        const message: TerminalWebViewCommand = {
           type: 'init',
           cols,
           rows,
@@ -284,7 +322,12 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
           terminalTheme,
           fontScale: textScale,
           preserveScroll
-        })
+        }
+        lastInitRef.current = message
+        initDeliveredRef.current = isWebReadyRef.current
+        if (isWebReadyRef.current) {
+          sendToWebView(message)
+        }
       },
       resize(cols: number, rows: number) {
         // Why: resize/reflow must observe all prior writes or bytes reorder.
@@ -363,7 +406,15 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
         })
       }
     }),
-    [armWebReadyWatchdog, postMessage, sendToWebView, terminalTheme, textScale, writeCoalescer]
+    [
+      armWebReadyWatchdog,
+      pendingMessages,
+      postMessage,
+      sendToWebView,
+      terminalTheme,
+      textScale,
+      writeCoalescer
+    ]
   )
 
   return (
