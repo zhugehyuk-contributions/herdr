@@ -208,6 +208,11 @@ QA 사이에 랩이 죽어 있다(sshd·tmux 종료, `app.json` 원복). 매번 
 
 ## WebView 조작 — CDP
 
+> ⚠️ **"uiautomator가 앱 화면을 못 읽는다"는 이제 stale이다 (2026-08-24, 6차 실측).** RN 0.83 /
+> expo 55에서는 agents·nodes·pair·settings·terminal **전 화면에서 텍스트가 읽혔다.** 먼저
+> `uiautomator dump`를 시도하고, 그게 답하면 스크린샷 OCR보다 그쪽이 싸고 정확하다. 아래 CDP는
+> **터미널 문서 내부**(xterm은 canvas 렌더러라 DOM에 글자가 없다)에 여전히 필요하다.
+
 `uiautomator`가 앱 화면을 못 읽으므로 터미널 내부를 다루려면 CDP를 쓴다.
 
 - **소켓 이름이 문서 기본값과 다르다**: `chrome_devtools_remote`가 **아니라**
@@ -414,7 +419,7 @@ Android (b)는 **80컬럼** pane으로 PASS했고, iOS (b)는 **240컬럼** pane
 | 넣을 것 | 안 넣으면 |
 |---|---|
 | **도달 불가 원격 1개**(리스너 없는 포트) | 목업 #6 `reconnecting… · last seen …` 행이 화면에 **영영 안 나온다.** 4차가 이걸 심어서 "행째로 증발"하는 상류 결함을 잡았다 — 심지 않았으면 통과했을 결함이다 |
-| **장시간 명령이 도는 pane 1개**(터미널 타이틀이 서는 것, 예: `cargo nextest run`) | `└` 활동줄이 렌더되지 않아 **판정불가**가 된다. `paneActivityLabel`은 터미널 타이틀이 identity와 다를 때만 줄을 내므로 bash 프롬프트 pane은 null로 폴백한다(4차 실측) |
+| **터미널 타이틀 ≠ 에이전트 identity인 pane 1개** | `└` 활동줄이 안 뜬다. `paneActivityLabel`은 타이틀이 **identity와 다를 때만** 줄을 내는데, `agentIdentityLabel`의 폴백 사슬 끝이 그 타이틀이다 — **타이틀만 세우면 identity가 그 타이틀이 되어 둘이 같아지고 null이 나온다**(6차 실측, 4차의 처방이 불충분했다). 레시피: pane에 **에이전트를 붙이고**(`agent=claude` 등) *그와 다른* 터미널 타이틀(`cargo nextest run`)을 세워라 |
 
 랩을 세울 때 `tmux new-session -x <폭> -y 52`의 폭을 **보고에 반드시 적어라.** 안 적으면 다음 사람이
 플랫폼 차이와 픽스처 차이를 구별할 수 없다.

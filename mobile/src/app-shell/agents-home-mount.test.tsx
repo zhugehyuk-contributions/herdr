@@ -218,8 +218,12 @@ describe('Agents home', () => {
     // header reading `1 nodes`. A disabled remote is still a node the user has; what it is not is
     // *unreachable*, and `fleetSummary` keeps those two readings apart rather than folding one into
     // the other (`../nodes/node-list-model.ts`).
-    expect(texts).toContain('5 nodes')
-    // …and no second clause, because every remote that was dialled answered in this fixture.
+    // The fleet reading moved out of the appbar and into the summary line below it: the 6차 device
+    // round measured `2 nodes · 1 unreachable` pushing `settings` — an action — off the right edge
+    // (ink x=1079, 12 scanlines on the bezel, against a 992~1035 baseline). Same lesson as
+    // `.prd/11` ②, so it is asserted here as one line rather than as two readings.
+    expect(texts).toContain('5 nodes · 8 blocked · 16 working')
+    // …and no `unreachable` clause, because every remote that was dialled answered in this fixture.
     expect(texts.some((text) => text.includes('unreachable'))).toBe(false)
     // Agents from at least three different remotes are on screen at once. In a per-box list this is
     // structurally impossible, which is what makes it worth asserting.
@@ -230,7 +234,7 @@ describe('Agents home', () => {
   })
 
   it('leads with the number the screen exists for', async () => {
-    expect(textNodes(await mountShell())).toContain('8 blocked · 16 working')
+    expect(textNodes(await mountShell())).toContain('5 nodes · 8 blocked · 16 working')
   })
 
   it('puts blocked at the very top — asserted by position, not by presence', async () => {

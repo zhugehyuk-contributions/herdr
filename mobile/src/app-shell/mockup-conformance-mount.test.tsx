@@ -39,12 +39,17 @@ vi.mock('expo-router', () => ({
   useLocalSearchParams: () => routerState.params
 }))
 
+/** What `useCameraPermissions()` reports for the next mount. */
+const cameraPermission = vi.hoisted(() => ({
+  value: { granted: false, canAskAgain: true } as { granted: boolean; canAskAgain: boolean }
+}))
+
 vi.mock('expo-camera', () => ({
   // The scan screen is goal condition 5 and mockup ①. The permission hook reports "not granted" so
   // this suite exercises the path a first-run user actually lands on — the one that has to offer a
   // way forward without a camera.
   CameraView: 'CameraView',
-  useCameraPermissions: () => [{ granted: false, canAskAgain: true }, () => Promise.resolve()]
+  useCameraPermissions: () => [cameraPermission.value, () => Promise.resolve()]
 }))
 
 vi.mock('lucide-react-native', () => ({
@@ -153,6 +158,7 @@ async function mount(node: ReactNode): Promise<ReactTestRenderer> {
 
 /** The two screens whose bottom edge is a pinned bar, and the label that bar puts on it. */
 beforeEach(() => {
+  cameraPermission.value = { granted: false, canAskAgain: true }
   safeArea.insets = IPHONE_PORTRAIT
   routerState.params = { remoteId: 'remote-1', paneId: 'ws-1-p1' }
   routerState.pushed = []
@@ -220,6 +226,17 @@ describe('.prd/11 누락 #1·#2 — the scan screen exists, and has a way past t
       .findAllByType(host('Text'))
       .map((node) => String(node.props['children']))
     expect(texts.join(' ')).toContain('show qr')
+  })
+
+  it('offers the one control that still works once the refusal is permanent', async () => {
+    // The 6차 device round pressed the old `camera blocked` button in this state and measured the
+    // result: no dialog, no navigation, nothing at all. `requestPermission` cannot ask again once
+    // the OS has latched it, so the button was the silent no-op `.prd/12` Q2 ruled out by name.
+    cameraPermission.value = { granted: false, canAskAgain: false }
+    const target = await mount(createElement(PairScreen))
+    expect(byLabel(target, 'open system settings')).toBeTruthy()
+    expect(() => byLabel(target, 'allow camera')).toThrow()
+    expect(byLabel(target, 'add by hand')).toBeTruthy()
   })
 })
 

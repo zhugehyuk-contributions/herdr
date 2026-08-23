@@ -125,6 +125,13 @@ export default function RootLayout() {
               <Stack.Screen name="index" options={{ headerShown: false }} />
               <Stack.Screen name="nodes" options={{ headerShown: false }} />
               <Stack.Screen name="h" options={{ headerShown: false }} />
+              {/* Goal condition 5's scan screen carries its own `‹ nodes / scan` bar, like the three
+                  above it. Registering it is not cosmetic: an unregistered route gets the default
+                  Stack header, which the 6차 device round found rendering `← pair` in the system's
+                  proportional sans next to this app's monospaced chrome — two typefaces and two back
+                  affordances in one frame. That is the same defect the 2차 round caught on
+                  `settings`, arriving again through a route nobody listed here. */}
+              <Stack.Screen name="pair" options={{ headerShown: false }} />
               {/* M2b. The one screen with a real header: it is pushed from a list screen and the
                 only way back is the header's own back button — the bottom nav has two entries and
                 they are the mockup's (`src/components/BottomNav.tsx`). */}

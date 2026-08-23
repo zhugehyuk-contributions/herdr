@@ -67,12 +67,13 @@ export default function AgentsHomeScreen() {
         <Text style={styles.logo}>herdr</Text>
         <Text style={styles.crumb}>/ agents</Text>
         <View style={styles.spacer} />
-        {/* Which remotes this list is the union of — the mockup's "all nodes" (mockup.html:637).
-            The count is the *fleet*, not the remotes that answered: see `fleetSummary`, and the 5차
-            device round that measured this header saying `1 nodes` over a two-row node list. */}
-        <Text style={styles.meta}>
-          {fleetSummary({ remotes: snapshot.remotes, answered: snapshot.perRemote.length })}
-        </Text>
+        {/* The fleet reading used to sit here, and the 6차 device round measured what that cost:
+            with a remote down the string grows to `2 nodes · 1 unreachable`, the row goes over
+            budget, and `settings` — an *action* — is what falls off the right edge (ink reached
+            x=1079 with 12 scanlines touching the bezel, against a 992~1035 baseline). Same lesson
+            as `.prd/11` ②: a row that is over budget does not get fixed by shortening one item,
+            because then a different item is the one that is lost. It moved to the summary line
+            below, which already carries a reading of the same kind and has the full width. */}
         {/* The residual §G left: without this, a link that has been failing for ten minutes renders
             exactly like a healthy one and the screen just quietly ages. Healthy renders *nothing*
             here — there is no "up to date" badge to invent (`ConnectionStatusLine.tsx` property 1). */}
@@ -102,7 +103,15 @@ export default function AgentsHomeScreen() {
           fixture it replaced. */}
       {status === 'error' ? <Text style={styles.error}>{error ?? 'Load failed'}</Text> : null}
       {status === 'ready' ? (
-        <Text style={styles.summary}>{`${blocked} blocked · ${working} working`}</Text>
+        // One line, two readings that answer the same question at different scales: how many boxes,
+        // and what is happening on them. `fleetSummary` adds its `· N unreachable` clause only when
+        // there is one, so a healthy fleet reads exactly as it did before this line grew.
+        <Text style={styles.summary} numberOfLines={1}>
+          {`${fleetSummary({
+            remotes: snapshot.remotes,
+            answered: snapshot.perRemote.length
+          })} · ${blocked} blocked · ${working} working`}
+        </Text>
       ) : null}
       <ScrollView style={styles.body}>
         {groups.map((group) => (

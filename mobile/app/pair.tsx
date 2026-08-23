@@ -13,7 +13,7 @@
 // anything without the user pressing save — a screen that wrote a credential to the keystore
 // because a camera saw a shape would be the wrong shape of automatic.
 import { useCallback, useState } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { CameraView, useCameraPermissions } from 'expo-camera'
@@ -104,16 +104,28 @@ export default function PairScreen() {
           )}
         </View>
 
-        {permission?.granted === true ? null : (
+        {permission?.granted === true ? null : permission?.canAskAgain === false ? (
+          // The 6차 device round pressed the old button in this state and measured what it did:
+          // no dialog, no navigation, nothing. Once the OS has latched the refusal `requestPermission`
+          // cannot ask again, so the button was the silent no-op `.prd/12` Q2 explicitly ruled out.
+          // The one control that still works here is the one that opens the place the refusal can be
+          // undone.
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="open system settings"
+            onPress={() => void Linking.openSettings()}
+            style={styles.primary}
+          >
+            <Text style={styles.primaryLabel}>open system settings</Text>
+          </Pressable>
+        ) : (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="allow camera"
             onPress={() => void requestPermission()}
             style={styles.primary}
           >
-            <Text style={styles.primaryLabel}>
-              {permission?.canAskAgain === false ? 'camera blocked' : 'allow camera'}
-            </Text>
+            <Text style={styles.primaryLabel}>allow camera</Text>
           </Pressable>
         )}
 
