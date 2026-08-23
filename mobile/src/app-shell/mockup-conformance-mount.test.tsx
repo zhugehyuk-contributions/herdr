@@ -196,6 +196,40 @@ describe('.prd/11 누락 #4 — the node list can add a remote', () => {
   })
 })
 
+describe('.prd/11 ② — the pane header is not where the status chain lives', () => {
+  it('keeps the state / stream / connection readings out of the header row', async () => {
+    // Three device rounds measured the same overflow at x=1079 while every other screen stopped at
+    // x≤1035. Two of them were spent removing *one item* from the row, and both times the clipping
+    // simply moved to whatever was now last — first `observing`, then `Connected`. The mockup's
+    // answer is that this chain belongs under the terminal (`assets/mockup.html:587`, `agentline`),
+    // and this assertion is what stops it drifting back up: a pixel is not observable here, but
+    // "which row owns these readings" is, and that is the thing that was wrong.
+    const target = await mount(
+      createElement(PaneViewerScreen, { remoteId: 'remote-1', paneId: 'ws-1-p1' })
+    )
+    const crumb = byLabel(target, 'back to workspaces')
+    let header = crumb.parent
+    while (header && header.type !== 'View') {
+      header = header.parent
+    }
+    if (!header) {
+      throw new Error('back crumb has no enclosing View')
+    }
+    const headerTexts = header
+      .findAllByType(host('Text'))
+      .map((node) => String(node.props['children']))
+    // The reading itself, wherever it is: this must not pass by the screen simply not rendering it
+    // any more. `no transport` is what `streamSummary` returns for this fixture's unconnected
+    // mount — the exact string rather than a pattern, so a rename cannot quietly satisfy both
+    // halves at once.
+    const allTexts = target.root
+      .findAllByType(host('Text'))
+      .map((node) => String(node.props['children']))
+    expect(allTexts).toContain('no transport')
+    expect(headerTexts).not.toContain('no transport')
+  })
+})
+
 describe('.prd/11 누락 #14 — a blocked pane row is inverted', () => {
   it('renders the blocked state as ink-on-foreground, and nothing else that way', async () => {
     // `assets/mockup.html:538`. In a grayscale ramp inversion is the top emphasis level, and the

@@ -5,9 +5,10 @@
 // message, because the *omissions* are the design.
 //
 // Taken, by unit:
-//   · `TerminalPaneView` (`src/session/TerminalPaneView.tsx`, 105 lines) — copied byte-identically
-//     next to this file; the absolute-fill + `pointerEvents` + hidden-but-mounted structure and the
-//     keyboard-lift transform are orca's.
+//   · `TerminalPaneView` (`src/session/TerminalPaneView.tsx`, 105 lines) — copied next to this
+//     file; the absolute-fill + `pointerEvents` + hidden-but-mounted structure and the
+//     keyboard-lift transform are orca's. It was byte-identical until M6a's iOS repair added one
+//     pass-through prop (`onPaneSwipe`); that file's header states the divergence and its reason.
 //   · the chip strip — orca's `:4413-4460` horizontal `ScrollView` of `Pressable`s, its
 //     `keyboardShouldPersistTaps="handled"` (its comment cites #5106: taps eaten by keyboard
 //     dismissal) and the reveal arithmetic in `tab-strip-scroll.ts`, copied byte-identically.
@@ -81,7 +82,7 @@
 // `src/session/use-pane-observer.ts:80-89` is the caller and it fires on a changed pane id — which
 // is why both switch affordances here, the chip and the M6a swipe, do nothing but route.
 import { useCallback, useMemo, useRef } from 'react'
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -312,7 +313,6 @@ export function PaneViewerScreen({
           <Text style={styles.backLabel}>{`‹ ${remote?.name ?? 'nodes'}`}</Text>
         </Pressable>
         <Text style={styles.title}>{active ? active.handle : (paneId ?? 'Pane')}</Text>
-        {activePane ? <AgentStateDot state={activePane.agent_status} /> : null}
         <Text style={styles.subtitle} numberOfLines={1}>
           {activePane ? paneTitle(activePane) : (remote?.name ?? remoteId ?? '')}
         </Text>
@@ -338,18 +338,6 @@ export function PaneViewerScreen({
         >
           <Text style={styles.headerActionLabel}>History</Text>
         </Pressable>
-        {activePane ? (
-          <Text style={styles.meta}>
-            {agentStateLabel({
-              agent_status: activePane.agent_status,
-              state_labels: activePane.state_labels
-            })}
-          </Text>
-        ) : null}
-        <Text style={styles.meta}>
-          {streamSummary(observer.status, observer.error, connection !== null)}
-        </Text>
-        <ConnectionStatusLine status={connectionStatus} />
       </View>
 
       {chips.length > 1 ? (
@@ -410,8 +398,8 @@ export function PaneViewerScreen({
                 handleRef.current = ref
               }}
               // Everything below is a write path or a gesture this milestone does not consume. They are
-              // wired to no-ops rather than removed so `TerminalPaneView` stays byte-identical to orca
-              // and M3 has only to fill them in.
+              // wired to no-ops rather than removed so `TerminalPaneView` stays as close to orca as
+              // it can (one prop apart now, see its header) and M3 has only to fill them in.
               onWebReady={NOOP}
               onSelectionMode={NOOP}
               onSelectionCopy={NOOP}
@@ -425,10 +413,44 @@ export function PaneViewerScreen({
               onFileTap={NOOP}
               onOpenUrl={NOOP}
               onTextScaleChange={NOOP}
+              // iOS only, and the asymmetry is the design. On Android RNGH takes the gesture at
+              // the native layer and `paneSwipe` above already switches panes (184ms, measured on
+              // emulator-5554); the document still posts its `pane-swipe` message there, and this
+              // `undefined` is what makes RN drop it. Wiring both would let one finger count twice
+              // — the recognizer switching on `onEnd` and the page switching again on touchend —
+              // and a double switch lands two panes away from the one the reader aimed at.
+              //
+              // On iOS the recognizer never receives a touchesMoved at all (eight rounds, always
+              // dx=0, `.prd/09-review-followups.md` §JJ), so this is the only live path.
+              onPaneSwipe={Platform.OS === 'ios' ? onPaneSwipe : undefined}
             />
           </View>
         </GestureDetector>
       </GestureHandlerRootView>
+
+      {/* .prd/11 ② — the mockup's `agentline` (`assets/mockup.html:587`): dot, who, state, and the
+          connection reading, *below* the terminal rather than crammed into the top bar.
+          Three device rounds measured that bar overflowing: at 2차 the node name was in it twice
+          and `observing` hard-cut at x=1079; removing the duplicate slot let `observing` through
+          and the 3차 round measured the *next* item (`Connected`) cut at the same x, with nine
+          scanlines touching the bezel while every other screen stopped at x≤1035. Taking one item
+          out of a row that is over budget only moves which item is lost — the mockup's answer is
+          that this chain was never supposed to be up there. */}
+      <View style={styles.agentLine}>
+        {activePane ? <AgentStateDot state={activePane.agent_status} /> : null}
+        {activePane ? (
+          <Text style={styles.agentLineText} numberOfLines={1}>
+            {agentStateLabel({
+              agent_status: activePane.agent_status,
+              state_labels: activePane.state_labels
+            })}
+          </Text>
+        ) : null}
+        <Text style={styles.agentLineText} numberOfLines={1}>
+          {streamSummary(observer.status, observer.error, connection !== null)}
+        </Text>
+        <ConnectionStatusLine status={connectionStatus} />
+      </View>
 
       <PaneInputBar input={input} />
 
@@ -490,6 +512,23 @@ const styles = StyleSheet.create({
   title: { color: mono.fg, fontSize: 15, fontWeight: '700', fontFamily: typography.monoFamily },
   subtitle: { color: mono.fgSoft, fontSize: 12, flexShrink: 1, fontFamily: typography.monoFamily },
   meta: { color: mono.dim, fontSize: 11, marginLeft: 8, fontFamily: typography.monoFamily },
+  // The mockup's `agentline` (:587, `.agentline` at :169-ish): one row under the terminal, dim,
+  // items separated by their own spacing rather than by a literal `·` so a missing item leaves no
+  // orphan separator. `flexShrink` on the texts is what keeps this row from repeating the header's
+  // failure — the reading that runs long gives up width instead of the row running off the bezel.
+  agentLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 6
+  },
+  agentLineText: {
+    color: mono.dim,
+    fontSize: 11,
+    flexShrink: 1,
+    fontFamily: typography.monoFamily
+  },
   spacer: { flex: 1 },
   back: { paddingRight: 6 },
   backLabel: { color: mono.fgSoft, fontSize: 13, fontFamily: typography.monoFamily },

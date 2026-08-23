@@ -1716,7 +1716,10 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
     // Gesture origin + the yield latch read by shouldYieldHorizontal. Declared here rather than
     // sprung into existence on the first touchstart so the shape of this object is its own
     // documentation — every other field already reads that way.
-    startX: 0, startY: 0, yieldedH: false
+    startX: 0, startY: 0, yieldedH: false,
+    // How far a yielded gesture travelled before the finger left, written by the touchmove branch
+    // in terminal-webview-touch-pan-injected.ts and read by the touchend reporter below.
+    yieldDx: 0, yieldDy: 0
   };
 
   function updateTouchVelocity(deltaY, dt) {
@@ -1750,6 +1753,32 @@ ${TERMINAL_TOUCH_PAN_JS}
       // §DD measured on Android that an activated recognizer stops forwarding, so a gesture the
       // recognizer took ends with no touchend at all.
       notify({ type: 'touch-probe', phase: 'end', moves: ts.moveCount || 0 });
+      // iOS M6a, and the reason this message exists at all: on iOS the WebView wins the UIKit
+      // gesture arbitration outright. Eight measured rounds — passive listeners, touch-action:
+      // none, preventDefault removed, RNGH blocksExternalGesture(Gesture.Native()) — every one of
+      // them ended with the RN pan recognizer reporting dx=0 while this document counted every
+      // touchmove of the same drag. The recognizer path is spent. So: if the page is the only
+      // thing that receives the gesture, the page is what reports it — and it reports the *same*
+      // window the recognizer would have used, because shouldYieldHorizontal is compiled from the
+      // recognizer's own thresholds (src/session/pane-swipe.ts). Deciding the switch stays on the
+      // RN side; this only says how far the finger went.
+      //
+      // Why one finger cannot switch two panes on Android, where the recognizer does work: an
+      // activated RNGH recognizer stops forwarding the gesture, so for exactly the drags that
+      // become a swipe there this handler never runs (§DD, emulator-5554: horizontal drag =
+      // touchstart 1, touchmove 1, touchend 0). The RN side then gates the callback on iOS as
+      // well, so both halves have to fail at once before a gesture counts twice.
+      //
+      // The touches check is "the last finger has left": a second finger landing mid-drag ends the
+      // gesture as a pinch, and a pinch is not a swipe.
+      if (ts.yieldedH && e.touches.length === 0) {
+        notify({
+          type: 'pane-swipe',
+          translationX: ts.yieldDx || 0,
+          translationY: ts.yieldDy || 0
+        });
+        ts.yieldedH = false;
+      }
       if (dispatcherShouldBlockSurface()) return;
       if (!term) return;
 

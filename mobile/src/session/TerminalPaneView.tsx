@@ -1,9 +1,19 @@
 // Ported from orca mobile/src/session/TerminalPaneView.tsx
 // at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
 // MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.
+//
+// No longer byte-identical to that file, and this is the whole of the difference: one added prop,
+// `onPaneSwipe`, passed straight through to `TerminalWebView`. orca has no such prop because orca
+// switches surfaces by chip press only — in orca a drag on the terminal is TUI *input*
+// (`mobile/src/terminal/terminal-gesture-input.ts`, a file herdr did not port), so the horizontal
+// axis was already spent (`src/session/pane-swipe.ts` header). herdr spends it on pane switching,
+// and on iOS the WebView wins the gesture arbitration outright, so the *document* is what measures
+// that swipe and posts it back (`src/terminal/terminal-webview-html.ts` touchend,
+// `.prd/09-review-followups.md` §JJ). This view is the only thing between the two.
 import { useCallback } from 'react'
 import { StyleSheet, View } from 'react-native'
 import { TerminalWebView } from '../terminal/TerminalWebView'
+import type { PaneSwipeTranslation } from './pane-swipe'
 import type {
   MobileTerminalTheme,
   TerminalKeyboardAvoidanceMetrics,
@@ -31,6 +41,10 @@ type TerminalPaneViewProps = {
   onFileTap: (handle: string, pathText: string, line: number | null, column: number | null) => void
   onOpenUrl: (handle: string, url: string) => void
   onTextScaleChange: (scale: number) => void
+  // Optional, unlike every prop above it: the iOS-only page-reported pane swipe. The screen passes
+  // it on iOS and leaves it undefined on Android, where RNGH takes the gesture before the document
+  // ever sees a touchend.
+  onPaneSwipe?: (translation: PaneSwipeTranslation) => void
 }
 
 export function TerminalPaneView({
@@ -52,7 +66,8 @@ export function TerminalPaneView({
   onTerminalTap,
   onFileTap,
   onOpenUrl,
-  onTextScaleChange
+  onTextScaleChange,
+  onPaneSwipe
 }: TerminalPaneViewProps) {
   const setRef = useCallback(
     (ref: TerminalWebViewHandle | null) => {
@@ -90,6 +105,7 @@ export function TerminalPaneView({
         onFileTap={(pathText, line, column) => onFileTap(handle, pathText, line, column)}
         onOpenUrl={(url) => onOpenUrl(handle, url)}
         onTextScaleChange={onTextScaleChange}
+        onPaneSwipe={onPaneSwipe}
       />
     </View>
   )

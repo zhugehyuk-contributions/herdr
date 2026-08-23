@@ -12,8 +12,10 @@
 // dispatcherShouldBlockSurface, and the yield rule injected by
 // `./terminal-webview-horizontal-yield-injected.ts`.
 //
-// The one line here that is *not* orca's is the yield guard at the top of touchmove — see that
-// module's header and .prd/09-review-followups.md §HH.
+// The lines here that are *not* orca's are the yield guard at the top of touchmove and the travel
+// it records into ts.yieldDx/ts.yieldDy — see that module's header, .prd/09-review-followups.md §HH
+// and, for why the page has to measure a gesture it is giving away, the touchend reporter in
+// terminal-webview-html.ts.
 
 import { TERMINAL_HORIZONTAL_YIELD_JS } from './terminal-webview-horizontal-yield-injected'
 
@@ -54,6 +56,11 @@ export const TERMINAL_TOUCH_PAN_JS = `
         ts.startX = ts.lastX;
         ts.startY = ts.lastY;
         ts.yieldedH = false;
+        // How far the yielded gesture has travelled, in the same frame as startX/startY. Cleared
+        // with the latch rather than left over: a drag that never yields must report nothing, and a
+        // stale pair from the previous drag would otherwise be reported as this one's translation.
+        ts.yieldDx = 0;
+        ts.yieldDy = 0;
         ts.lastTime = Date.now();
         ts.velY = 0;
         ts.accumDelta = 0;
@@ -73,6 +80,13 @@ ${TERMINAL_HORIZONTAL_YIELD_JS}
       if (!term) return;
       if (e.touches.length === 1 && !ts.isPinching && shouldYieldHorizontal(e.touches[0])) {
         ts.yieldedH = true;
+        // Written on every move after the latch, not only on the one that set it:
+        // shouldYieldHorizontal short-circuits on ts.yieldedH, so this branch is the whole rest of
+        // the gesture and the last write is the release position. That total is what touchend
+        // reports as a pane swipe on iOS, where the native recognizer never sees a touchesMoved at
+        // all (.prd/09-review-followups.md §JJ) and this document is the only witness left.
+        ts.yieldDx = e.touches[0].clientX - ts.startX;
+        ts.yieldDy = e.touches[0].clientY - ts.startY;
         return;
       }
       // No preventDefault any more: this listener is passive (§LL) and calling it would log a

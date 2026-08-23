@@ -5,6 +5,7 @@ import { useRef, useCallback, forwardRef, useImperativeHandle, useEffect, useMem
 import { Platform, View } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import type { TerminalOscLinkRange } from '../shared/terminal-osc-link-ranges'
+import type { PaneSwipeTranslation } from '../session/pane-swipe'
 import type { TerminalWebViewHandle, TerminalWebViewProps } from './terminal-webview-contract'
 import {
   TerminalWebViewEngineErrorOverlay,
@@ -19,7 +20,21 @@ import { dispatchTerminalWebViewNotification } from './terminal-webview-notifica
 import { routeTerminalQueryReply } from './terminal-webview-query-reply-routing'
 import { createTerminalWriteCoalescer } from './terminal-write-coalescer'
 
-type Props = TerminalWebViewProps
+// Not orca's, and deliberately not in `terminal-webview-contract.ts` either: that file is the
+// ported prop surface and this prop exists only because iOS gesture arbitration hands the whole
+// drag to the document (`terminal-webview-html.ts` touchend, `.prd/09-review-followups.md` §JJ).
+// The page measures the swipe with the recognizer's own thresholds and posts the total; the
+// decision — which pane, or none — stays with `resolvePaneSwipeTarget` on the screen.
+type Props = TerminalWebViewProps & {
+  onPaneSwipe?: (translation: PaneSwipeTranslation) => void
+}
+
+// The page is outside the trust boundary — this app serves the document, but everything arriving at
+// `handleMessage` is JSON that document wrote — so a reported translation is narrowed, never cast.
+// `Number.isFinite` already rejects non-numbers; the `typeof` is what narrows the type.
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
 
 export type { TerminalWebViewHandle } from './terminal-webview-contract'
 
@@ -41,7 +56,8 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
     onTerminalTap,
     onFileTap,
     onOpenUrl,
-    onTextScaleChange
+    onTextScaleChange,
+    onPaneSwipe
   },
   ref
 ) {
@@ -165,6 +181,21 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
         // in the same Metro stream so one run answers "did the document see the touches the
         // recognizer did not". Removed once iOS M6a closes either way.
         console.log(`[touchProbe] ${JSON.stringify(msg)}`)
+      } else if (msg.type === 'pane-swipe') {
+        // iOS M6a. The document measures the swipe because on iOS it is the only thing that
+        // receives one (`./terminal-webview-html.ts` touchend, `.prd/09-review-followups.md` §JJ);
+        // the decision stays on the screen, which is why this only forwards.
+        //
+        // A malformed pair is dropped here rather than passed on, and that is worth a line: a
+        // `translationX` of `"120"` or `null` would flow into `paneSwipeDirection`, whose own
+        // `Number.isFinite` guard rejects it *silently* — leaving a swipe that does nothing and no
+        // way to tell that from a swipe the page never sent, which is the reading §JJ spent eight
+        // rounds on.
+        const x = msg.translationX
+        const y = msg.translationY
+        if (isFiniteNumber(x) && isFiniteNumber(y)) {
+          onPaneSwipe?.({ translationX: x, translationY: y })
+        }
       } else if (msg.type === 'web-ready') {
         confirmWebReady(true)
       } else if (
@@ -221,7 +252,8 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
       onTerminalTap,
       onFileTap,
       onOpenUrl,
-      onTextScaleChange
+      onTextScaleChange,
+      onPaneSwipe
     ]
   )
 
