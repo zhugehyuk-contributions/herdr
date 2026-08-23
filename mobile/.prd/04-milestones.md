@@ -192,9 +192,31 @@ launchd/systemd 센더가. 훅 런타임에 타임아웃·재시도·DLQ가 없�
 **디바이스 독립적인 건 `blocked`뿐.** v1 푸시는 blocked만.
 **됐다** = 데스크톱을 안 보고 있을 때 blocked 발생 → 폰 알림 → 탭 → 해당 pane 도달, 5회 연속.
 
-### M6 — 제어·스크롤·리타겟 (서버 변경 동반)
-B6 + 스크롤백 + observe 뷰포트. 입력 순간에만 `ControlTerminal`로 임시 승격하고 즉시 복귀하는 계약
-(백그라운드 진입 시 항상 detach, 복귀 시 항상 takeover).
+### M6 — 제어·스크롤·리타겟 (~~서버 변경 동반~~ → **앱 배선만**)
+
+> **⚠️ 2026-08-23 재조사: 이 절의 "서버 변경 동반"은 틀렸다. 와이어가 양쪽 다 이미 있다.**
+>
+> | 조각 | 서버 | TS 코덱 | 앱 |
+> |---|---|---|---|
+> | `RetargetTerminal` | ✅ 종단 처리 (`src/server/client_transport.rs:988` → `headless.rs:3368`, 테스트 4개) | ✅ `encodeRetargetTerminal(target, mode)` (`messages.ts:232`) | `PaneObserver.retarget(paneId)` 존재, **호출자 0** |
+> | 제어 승격 | ✅ 같은 메시지의 `mode` | ✅ `TerminalSessionModeTag = { Observe: 0, Control: 1 }` (`constants.ts:185`, 태그 동결 + 픽스처 바이트 고정) | `retarget()`에 mode 인자 **없음** |
+> | 스크롤백 | `wire.rs:455`에 host scrollback 행 수 필드 | 미조사 | 미착수 |
+>
+> **즉 제어 승격은 별도 `ControlTerminal` 메시지가 아니라 `RetargetTerminal`의 mode다** —
+> `Observe`는 unit variant, `Control`은 `takeover: bool`을 실어 프레임이 정확히 1바이트 길다.
+>
+> **그리고 `app/h/[remoteId]/pane/[paneId].tsx:56`의 주석이 stale이다** —
+> *"herdr has no message to move an observe target, so even a warm channel could not retarget today"*
+> 라고 적혀 있는데 그 메시지는 존재하고 서버가 처리한다. M6 작업 시 함께 고칠 것.
+
+**남은 실제 작업 = 앱 배선 3단위** (per-unit dispatch):
+- **M6a** 스와이프 → `retarget(paneId)` 호출. 수용 = **재연결 없이 <200ms**
+- **M6b** 입력 순간 `mode=Control{takeover}` 승격 → 즉시 `Observe` 복귀. 백그라운드 진입 시 항상 detach
+- **M6c** 스크롤백 열람
+
 **됐다** = pane 스와이프 전환이 재연결 없이 <200ms · 스크롤백 열람 · 제어 해제 시 데스크톱 크기 자동 복원.
+
+> ⚠️ **M3의 계약을 깨지 마라**: PTY 불변 · `resize` 이벤트 0건 (QA가 와이어 1468파일 전수 grep으로 확인).
+> M6b의 제어 승격은 데스크톱을 리사이즈할 수 있는 유일한 지점이므로 **해제 시 복원**이 수용 기준에 있다.
 
 ---
