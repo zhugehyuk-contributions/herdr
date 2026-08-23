@@ -233,7 +233,17 @@ export function PaneViewerScreen({
         // finger has travelled ±32 horizontally — more than the WebView's own 24px tap slop — and
         // fails outright the moment it travels ±12 vertically, which is where scrollback,
         // alt-screen scroll and selection edge-scroll live. Until it activates the WebView receives
-        // every touch unchanged; only on activation does it get a cancel.
+        // every touch unchanged; on activation delivery to it simply stops mid-gesture.
+        //
+        // That last clause used to read "only on activation does it get a cancel", and it was wrong
+        // in a way that cost a QA cycle (.prd/09 §CC read `touchcancel === 0` as proof the
+        // recognizer never activated). Android RNGH does not inject an ACTION_CANCEL into this
+        // WebView; the root view stops forwarding the rest of the gesture to its children. Measured
+        // on emulator-5554, counting listeners inside the terminal document:
+        //   · vertical drag (pan FAILED)      → touchstart 1, touchmove 24, touchend 1, cancel 0
+        //   · horizontal drag (pan ACTIVATED) → touchstart 1, touchmove  1, touchend 0, cancel 0
+        // So the signal that the recognizer took the gesture is the **missing touchend**, not a
+        // touchcancel. `touchcancel` is 0 in both states and discriminates nothing.
         .activeOffsetX([-PANE_SWIPE_ACTIVATE_OFFSET_X, PANE_SWIPE_ACTIVATE_OFFSET_X])
         .failOffsetY([-PANE_SWIPE_FAIL_OFFSET_Y, PANE_SWIPE_FAIL_OFFSET_Y])
         .onEnd(onPaneSwipe),

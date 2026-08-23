@@ -338,6 +338,26 @@ describe('pane viewer swipe (M6a)', () => {
     expect(streams[0]!.closed).toBe(false)
   })
 
+  it('does not let the terminal WebView disallow touch interception — the M6a killer', async () => {
+    // RED on revert. `nestedScrollEnabled` on Android is one line of native code:
+    // `RNCWebView.onTouchEvent` calls `requestDisallowInterceptTouchEvent(true)` on every
+    // MotionEvent, which `RNGestureHandlerRootView` turns into `tryCancelAllHandlers()` — so the
+    // pan above is CANCELLED at ACTION_DOWN and can never reach `activeOffsetX`. Measured on
+    // emulator-5554 in both directions (`src/terminal/TerminalWebView.tsx` carries the trace).
+    //
+    // Why the assertion is a *prop* and not a gesture: everything that actually breaks lives in
+    // Android native code — the orchestrator, the disallow-intercept walk, the cancel — and this
+    // repo runs no Android runtime in any suite (`test/gesture-handler-double.ts` says the same of
+    // `activeOffsetX`/`failOffsetY`). The prop is the whole of the input to that native behaviour,
+    // so pinning it is the entire part of this defect a unit test can hold.
+    const target = await mountAt(FIRST_PANE)
+    const webView = target.root.findAllByType(host('WebView'))[0]
+    if (!webView) {
+      throw new Error('the pane viewer rendered no WebView')
+    }
+    expect(webView.props.nestedScrollEnabled).toBeFalsy()
+  })
+
   it('renders the same tree it did before the gesture — one WebView, the chips still there', async () => {
     const target = await mountAt(FIRST_PANE)
     expect(target.root.findAllByType(host('WebView'))).toHaveLength(1)

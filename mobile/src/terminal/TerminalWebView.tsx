@@ -426,9 +426,36 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
         originWhitelist={['*']}
         javaScriptEnabled
         scrollEnabled={false}
-        // Why: Android parent gesture containers can intercept vertical drags
-        // before the injected xterm scroll router sees them.
-        nestedScrollEnabled
+        // `nestedScrollEnabled` used to be set here, ported from orca with the note "Android parent
+        // gesture containers can intercept vertical drags before the injected xterm scroll router
+        // sees them". It is removed, and the removal is the fix for M6a's swipe never firing on
+        // Android (.prd/09 §CC).
+        //
+        // The prop is Android-only (`react-native-webview/lib/WebViewTypes.d.ts:926-930`) and its
+        // entire implementation is one line —
+        // `RNCWebView.onTouchEvent` (`node_modules/react-native-webview/android/src/main/java/
+        // com/reactnativecommunity/webview/RNCWebView.java:125-131`) calls
+        // `requestDisallowInterceptTouchEvent(true)` on **every** MotionEvent, starting with
+        // ACTION_DOWN. That call walks the parent chain into
+        // `RNGestureHandlerRootView.requestDisallowInterceptTouchEvent`
+        // (`node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/
+        // gesturehandler/react/RNGestureHandlerRootView.kt:52-57`) →
+        // `RNGestureHandlerRootHelper.requestDisallowInterceptTouchEvent` (`…RootHelper.kt:104-112`)
+        // → `tryCancelAllHandlers()`, which cancels every handler under that root. The root view has
+        // already returned from `orchestrator.onTouchEvent` by then (`…RootHelper.kt:114-123` clears
+        // `passingTouch` before delivering to children), so the guard that exists for exactly this
+        // case does not apply and the cancel goes through. Measured on emulator-5554: with the prop,
+        // the pane's `Gesture.Pan()` reaches BEGAN and is CANCELLED in the same millisecond as
+        // ACTION_DOWN — it never sees a single move, so `activeOffsetX` can never be crossed.
+        //
+        // Nothing here needs it. `scrollEnabled={false}` two lines up means the native WebView never
+        // scrolls — the injected script owns both axes — and the pane viewer has no scrolling
+        // ancestor. The one ancestor that *does* hold a recognizer is M6a's pan, and it already
+        // yields the vertical axis by configuration rather than by this prop: `failOffsetY(±12)`
+        // kills it the moment a drag goes vertical (`src/session/pane-swipe.ts`). Measured on the
+        // same device: a vertical drag now leaves the pan FAILED and delivers the WebView the whole
+        // sequence (touchstart 1 / touchmove 24 / touchend 1), which is what the old note was
+        // defending and what the prop was not needed for.
         scalesPageToFit={false}
         // Why: Android WebView defaults textZoom to the system font scale, inflating
         // xterm's DOM glyphs past its canvas-measured cell grid (#4579). iOS ignores it.
