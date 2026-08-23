@@ -1278,3 +1278,81 @@ RNGH가 그걸 해결하도록 설계돼 있지만, WebView가 `requestDisallowI
 스와이프가 고쳐져도 이 항은 남는다 — 그리고 예상대로 **공백 구간**이 있다(서버가 베이스라인을 리셋하고
 보내는 풀 프레임이 무압축 ANSI로 건너오는 B13 비용).
 **재연결은 없다**(sshd 연결 2건, 전환 전후 불변) — 지연은 재다이얼이 아니라 프레임 크기다.
+
+## DD. M6a·M6c 수리 — 근인 2건, 그리고 내 주석이 QA의 판정 기준을 틀리게 했다 (2026-08-23)
+
+### M6a 근인 — `nestedScrollEnabled` 한 줄이 모든 제스처를 터치다운에서 죽였다 (`9a256d0a`)
+
+계측(실기 Pan에 `onBegin`/`onTouchesDown`/`onFinalize` 부착):
+```
+onBegin → touchesDown → onFinalize success=false state=3(CANCELLED)
+                        같은 밀리초, move 한 번 없이
+```
+
+`nestedScrollEnabled`는 Android 전용이고 구현이 한 줄이다 — `RNCWebView.onTouchEvent`
+(`node_modules/react-native-webview/android/.../RNCWebView.java:125-131`)가 **모든** MotionEvent에서
+`requestDisallowInterceptTouchEvent(true)`를 부르고, 그게 `RNGestureHandlerRootView.kt:52-57` →
+`RootHelper.kt:104-112` → `tryCancelAllHandlers()`로 올라간다.
+
+**어긋나는 두 가지**: RootHelper가 `passingTouch` 플래그로 이걸 막게 돼 있는데(`:114-123`),
+**자식에게 디스패치하기 전에 플래그를 지운다.** 그래서 WebView의 호출은 항상 가드 밖에 떨어지고 항상 취소한다.
+`GestureHandlerRootView`의 화면 스코프는 **원인이 아니었다.**
+
+**A/B (같은 합성 입력, prop만 변경)**:
+
+| `nestedScrollEnabled` | pan 상태 | 전환 |
+|---|---|---|
+| on | CANCELLED(3) at DOWN, `onStart` 없음 | 없음 |
+| off | `onStart` → `onUpdate dx=-118…` → `onEnd dx=-232` → success | **w1:p3 → w1:p2** |
+
+⇒ **QA가 남긴 "합성 입력 한계" 가설은 죽었다.** 합성 입력은 이 인식기를 활성화까지 몰고 간다.
+
+**아이러니**: 그 prop은 orca에서 이식됐고 주석이 *"Android parent gesture containers can intercept
+vertical drags"* 였다 — **우리가 나중에 원하게 된 바로 그것을 방어하고 있었다.** 이식 당시엔 옳았다.
+
+### ⛔ 내 주석이 QA의 오라클을 틀리게 했다
+
+M6a 구현 때 내가 승인한 주석(`[paneId].tsx:236-240`)이 *"활성화되는 순간에만 cancel을 받는다"* 라고 적었다.
+**Android RNGH는 `touchcancel`을 주입하지 않는다 — 전달을 멈출 뿐이다.**
+`touchcancel`은 **양쪽 상태에서 다 0**이라 아무것도 구별하지 못하고, 진짜 신호는 **사라진 `touchend`**다:
+
+| 제스처 | pan 상태 | WebView document 수신 |
+|---|---|---|
+| 수직 | FAILED(1) | ts 1 / tm 24 / **te 1** — 전체 유지 |
+| 수평 | ACTIVE → END(5) | ts 1 / tm 1 / **te 0** — 활성화에서 전달 중단 |
+
+**QA의 FAIL 판정은 옳았고 근거만 틀렸다 — 그리고 그 근거를 내가 제공했다.**
+
+### M6c — orca는 왜 되고 herdr은 왜 안 되나 (`264b4479`)
+
+수리 에이전트가 orca를 직접 읽었다(`/tmp/orca-probe`):
+
+| | 전송 | 히스토리 |
+|---|---|---|
+| **orca** | 스냅샷 프레임 + **raw PTY 바이트** (`rpc-client-terminal-binary-frame.ts:33-38,67`) | 바이트에 개행이 있어 로컬 버퍼가 스크롤 → **히스토리 = xterm 버퍼**. `scrollback` 참조 20건 전부 로컬, fetch 0건 |
+| **herdr** | 셀마다 절대 커서 위치 (`render_ansi.rs:613`) | 덮어쓰기라 쌓일 것이 없다 |
+
+**같은 기능인데 전송 형식이 달라 구현 형태가 갈린다.** 닫힌 전제를 따르려고 orca를 읽은 것이
+"왜 못 따르는가"의 답을 줬다.
+
+→ **`pane.read{source:"recent_unwrapped", lines:1000}` + 터미널을 *덮는* 별도 오버레이.**
+`lines: 1000`은 서버 자신의 clamp(`api_helpers.rs:118`, 생략 시 기본 80 ≈ 두 화면).
+B8(호출 1회 = exec 1회)이 나머지를 결정: pane별 캐시 · in-flight 공유 · **타이머 만료 없음**
+(자기 갱신은 폴링이고 폴링이 B8이 금지하는 것) · pane 전환은 재읽기가 아니라 닫기.
+
+**진입은 버튼이다** — 수직 드래그가 아니다. `failOffsetY(±12)`가 수직을 터미널에 준 것을 되돌리면
+M6a가 방금 지킨 스크롤 라우팅이 죽는다.
+
+### ⚠️ 기기 QA가 답해야 할 최대 위험 (유닛으로 못 봄)
+
+**herdr 서버 쪽 스크롤백 버퍼에 실제로 내용이 있는가.** API가 존재하고 `text`를 반환한다는 것까지가
+현재 증거다. **비어 있으면 M6c는 다른 이유로 또 FAIL이다.**
+
+### 부수 발견 (고치지 않음)
+
+- **`pane.read`의 `strip_ansi`가 죽은 파라미터다** — `src/api/schema/panes.rs:283`에 기본값 `true`로
+  선언돼 있는데 `handle_pane_read`(`src/app/api/panes.rs:1189-1228`)가 **한 번도 읽지 않는다**(참조 0건, 직접 확인).
+  `format`만 text/ANSI를 고른다. 서버 쪽 정리 대상.
+- **pane 전환마다 터미널 WebView 문서가 통째로 재생성된다** — CDP 타깃 id로 측정. **칩 탭도 마찬가지라
+  M6a 이전부터다.** 와이어 주장(재연결 없음)은 참이지만 **730KB xterm 문서 재빌드**가 미검증 `<200ms`
+  예산이 실제로 쓰이는 곳이다(실측 592ms와 맞물린다). 별도 측정 대상.
