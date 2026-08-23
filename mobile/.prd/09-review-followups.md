@@ -1229,9 +1229,24 @@ write!(writer, "\x1b[{};{}H", y + 1, x + 1)
 | ③ JSON API에 pane 히스토리 메서드 신설 | 서버 변경(작음). observe와 직교 | 없음 — **현재 API에 그런 메서드가 없다**(`src/api/schema/panes.rs` 확인) |
 | ④ **M6c를 드롭한다** | 기능 없음 | 없음 |
 
-**디스패처 권고 = ③ 또는 ④.** ②는 §2.3이 이미 닫았고, ①은 M6c 하나를 위해 치르기엔 크다.
-③은 "폰이 히스토리를 **요청**한다"로 observe 스트림과 직교해서 §2.3의 거래를 안 건드린다.
-**이건 유저 결정이다** — 스크롤백이 v1의 요구인지가 갈림점이다.
+**⚠️ 정정 (같은 날, 위 표를 쓴 직후):** ③은 **신설이 아니다. 이미 있다.**
+
+```
+pane.read { pane_id, source: "recent" | "recent_unwrapped", lines: Option<u32>,
+            format, strip_ansi }          src/api/schema/panes.rs:275-287
+  → ReadSource::Recent
+  → terminal.recent_text_snapshot(recent_lines)   src/app/api_helpers.rs:123
+```
+
+즉 **폰이 히스토리를 요청하는 경로가 JSON API에 이미 있고, M3의 입력이 쓰는 바로 그 API다.**
+observe 스트림과 직교하므로 §2.3의 거래를 건드리지 않는다. **서버 변경 0.**
+
+→ **결정은 필요 없다. ③으로 간다.** 유저 결정으로 올렸던 것은 내가 API 표면을 다 안 보고 쓴 것이다
+(`grep -rhoE '"pane\.[a-z_]+"' src/api/`로 36개 메서드가 나온다).
+
+**다만 설계 제약이 하나 남는다**: 가져온 히스토리를 **xterm 버퍼에 이어붙일 수 없다** — 렌더러가
+절대 위치로 덮어쓰므로 그 버퍼는 "현재 화면"이지 스트림이 아니다. 그러므로 히스토리는 **별도 표면**
+(오버레이/화면)이어야 하고, 그게 아키텍처와 싸우지 않는 유일한 형태다.
 
 ### M6a — RNGH는 있는데 활성화되지 않는다
 
