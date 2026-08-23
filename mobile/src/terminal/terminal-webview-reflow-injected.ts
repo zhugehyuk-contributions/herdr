@@ -4,7 +4,7 @@
 // In-WebView reflow routine, injected into XTERM_HTML. Extracted from
 // terminal-webview-html.ts to keep that file within its max-lines budget.
 // Closes over term / isAlternateBufferActive / applyFitScale /
-// updateScrollIndicator / initRows defined in the host IIFE.
+// updateScrollIndicator / initRows / serverCols / serverRows defined in the host IIFE.
 export const TERMINAL_REFLOW_JS = `
   // Why: rewrap the local xterm buffer (scrollback included) to a new width
   // after a server PTY reflow. Skip the alternate screen: those snapshots are
@@ -22,6 +22,10 @@ export const TERMINAL_REFLOW_JS = `
     var wasAtBottom = buffer.viewportY >= buffer.baseY;
     var distanceFromBottom = buffer.baseY - buffer.viewportY;
     initRows = nextRows;
+    // A reflow follows a server PTY reflow, so the new width/height is the server's grid too —
+    // recorded only from what arrived, never from the term.cols fallback above.
+    if (cols) serverCols = cols;
+    if (rows) serverRows = rows;
     term.resize(nextCols, nextRows);
     var rewrapped = term.buffer.active;
     if (wasAtBottom) {

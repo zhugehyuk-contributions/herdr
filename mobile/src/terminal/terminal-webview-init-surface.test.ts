@@ -181,11 +181,14 @@ describe('terminal WebView init surface replacement', () => {
       renderer: 'webgl',
       domRows: false,
       // The painted-cell probe (`terminal-webview-painted-cell-injected.ts`) is inert on this
-      // path by construction, so the grid width is xterm's own `css.cell.width` x cols.
+      // path by construction, so the grid width is xterm's own `css.cell.width` x cols — which is
+      // why contentW is read against xtermCols and not against the server's grid.
       paintedCellW: 0,
       cellW: 8,
       contentW: 640,
-      cols: 80
+      xtermCols: 80,
+      cols: 80,
+      rows: 40
     })
   })
 
@@ -197,7 +200,44 @@ describe('terminal WebView init surface replacement', () => {
     settleInit()
 
     expect(rendererLogs()).toHaveLength(1)
-    expect(rendererLogs()[0]).toMatchObject({ renderer: 'dom', domRows: true, cols: 80 })
+    expect(rendererLogs()[0]).toMatchObject({ renderer: 'dom', domRows: true, cols: 80, rows: 40 })
+  })
+
+  // \u00a7AA: the first version of this report read `term.cols`, i.e. `cols || 80` — xterm's own
+  // default — and printed "80" for a pane `tput cols` measured at 53. The two grids are separate
+  // fields now, and the stub terminal ignores the constructor's dimensions on purpose: it stays at
+  // xterm's 80x24 whatever init asks for, so a report that reads xterm cannot pass this.
+  it("reports the server grid init delivered, not xterm's own", () => {
+    dispatchInit(120, 'payload')
+    settleInit()
+
+    expect(rendererLogs()).toHaveLength(1)
+    expect(rendererLogs()[0]).toMatchObject({
+      cols: 120,
+      rows: 40,
+      xtermCols: 80,
+      xtermRows: 24
+    })
+  })
+
+  // And the case the defaulting hid entirely: init without geometry. `cols: 0` says "the server
+  // told us nothing and xterm is painting its own 80x24", which is a different diagnosis from a
+  // server that really asked for 80 columns.
+  it('reports a zero server grid when init carried none', () => {
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'init', initialData: 'payload' })
+      })
+    )
+    settleInit()
+
+    expect(rendererLogs()).toHaveLength(1)
+    expect(rendererLogs()[0]).toMatchObject({
+      cols: 0,
+      rows: 0,
+      xtermCols: 80,
+      xtermRows: 24
+    })
   })
 
   it("keeps xterm's inactive cursor visible across replacement surfaces", () => {

@@ -1,5 +1,5 @@
 // Not from orca. Grid width for the pan/fit maths, injected into the terminal WebView IIFE.
-// It closes over term, terminalGeneration and getCellWidth().
+// It closes over term, terminalGeneration, serverCols/serverRows and getCellWidth().
 //
 // Why this exists (`.prd/09-review-followups.md` §P): xterm's `css.cell.width` is a *canvas*
 // measurement. `CharSizeService`'s preferred strategy measures 'W' with `OffscreenCanvas
@@ -79,6 +79,17 @@ export const TERMINAL_PAINTED_CELL_JS = `
   // Once per init, not per fit: a re-fit (keyboard, orientation, first data) changes the scale but
   // never the renderer, and flog crosses the RN bridge. It lands in the RN console through
   // terminal-webview-notification-dispatch.ts, which handles type: 'log'.
+  //
+  // cols/rows are the *server* grid (serverCols/serverRows, what init/resize/reflow delivered),
+  // not xterm's — .prd/09-review-followups.md §AA: the first version reported term.cols, which is
+  // cols || 80, so a missing geometry read out as a confident "80" indistinguishable from a real
+  // 80-column server. xtermCols/xtermRows carry xterm's own grid alongside, and the two disagreeing
+  // is itself the finding: the terminal is painting a grid the server never asked for.
+  //
+  // contentW and scale describe the grid xterm *painted* — getContentWidth() is cellW x term.cols
+  // and scale is min(1, vpWidth / contentW) on top of it — so they pair with xtermCols, not cols.
+  // They are only statements about the server's grid when xtermCols === cols. vpWidth is
+  // window.innerWidth and depends on neither.
   function reportRendererIdentity(reason, cellW, vpWidth) {
     if (reason !== 'init-replay' || !term) return;
     flog('renderer', {
@@ -89,8 +100,10 @@ export const TERMINAL_PAINTED_CELL_JS = `
       contentW: getContentWidth(),
       vpWidth: vpWidth,
       scale: getTotalScale(),
-      cols: term.cols,
-      rows: term.rows
+      cols: serverCols,
+      rows: serverRows,
+      xtermCols: term.cols,
+      xtermRows: term.rows
     });
   }
 

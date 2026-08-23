@@ -310,6 +310,11 @@ window.onerror = function(msg) {
   var pendingNormalScrollDeltaY = 0;
   var normalScrollFrameId = null;
   var initRows = 24;
+  // The grid the *server* handed over, kept apart from xterm's own term.cols/term.rows: the
+  // cols || 80 below substitutes xterm's default when init carries no geometry, and nothing then
+  // tells that from a server that said 80 (§AA). Un-defaulted — 0 means init delivered no grid.
+  var serverCols = 0;
+  var serverRows = 0;
   var terminalGeneration = 0;
   var defaultTheme = ${JSON.stringify(DEFAULT_TERMINAL_THEME)};
   var terminalThemeInput = null;
@@ -722,6 +727,8 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
     writesDraining = false;
     afterDrainCallbacks = [];
     initRows = rows || 24;
+    serverCols = typeof cols === 'number' && cols > 0 ? cols : 0;
+    serverRows = typeof rows === 'number' && rows > 0 ? rows : 0;
     firstDataPending = true;
     smoothScrollOffsetY = 0;
     // A fresh terminal is a fresh screen: the old zoom and pan addressed a grid that is gone.
@@ -830,6 +837,9 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
   function resize(cols, rows) {
     if (!term) return;
     initRows = rows || initRows;
+    // Supersedes init's grid — only what arrived, so a partial resize launders nothing.
+    if (cols) serverCols = cols;
+    if (rows) serverRows = rows;
     term.resize(cols || term.cols, rows || term.rows);
     emitKeyboardAvoidanceMetrics();
     // The server handed over a different grid (the desktop layout changed under the observer), so
