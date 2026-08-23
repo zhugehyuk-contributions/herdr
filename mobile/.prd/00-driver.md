@@ -196,6 +196,20 @@ iOS 한 케이스에서 `[fit]renderer`가 관측 헤더 커밋보다 **먼저**
 **M6a의 `<200ms` 예산은 제스처가 아니라 여기서 깨진다.** 수리 방향은 pane별 문서를 **재사용**하는 것
 (리타겟은 이미 §2.3대로 같은 채널에서 일어난다 — 문서만 버려지고 있다).
 
+**원인 확정 + 수리 (2026-08-24, `PaneViewerRoute`)**: 재빌드의 원인은 터미널 컴포넌트가 아니라
+**라우팅 한 줄**이었다. `[paneId]`가 동적 세그먼트라 `router.replace(paneHref(...))`는 *다른 라우트*이고,
+expo-router가 화면을 언마운트하면서 문서가 같이 죽는다. `TerminalPaneView`/`TerminalWebView`엔
+handle 기반 `key`가 없어(`src/session/TerminalPaneView.tsx`) 컴포넌트 인스턴스만 살면 문서는 산다.
+→ `router.setParams({ paneId })`. URL은 그대로 pane을 가리키므로 Back·딥링크·알림 탭
+(`src/notifications/pane-deep-link.ts`)의 복원 경로가 불변이다.
+
+**게이트**: `pane-viewer-mount.test.tsx`에 ①`replaced`가 비어 있고 `paramsSet`만 찍힐 것
+②pane 전환 전후로 **WebView 마운트 카운트 1**. ②만으론 부족하다 — 렌더 트리는 "같은 문서를 리타겟한
+것"과 "똑같이 생긴 새 문서"를 구별하지 못해서 마운트를 센다. ①이 라우트 정체성 변경을 잡는 절반이다.
+`pane-swipe-mount.test.tsx` 4건도 같은 계약으로 갱신.
+
+**⚠️ 기기 미검증**: 실제 지연 감소(iOS 523~731ms → ?)는 아직 안 쟀다. 다음 기기 QA 라운드의 1순위.
+
 ### N3. 유저 게이트 3건 — 내가 못 넘는다
 
 | 항목 | 필요한 것 |

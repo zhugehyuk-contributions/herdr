@@ -33,7 +33,9 @@ import type { HerdrRemoteConnection } from '../transport/herdr-connection'
 
 const routerState = vi.hoisted(() => ({
   params: {} as Record<string, string | undefined>,
-  replaced: [] as string[]
+  replaced: [] as string[],
+  /** N2: pane selection is `setParams`, not a route change — see the route wrapper for why. */
+  paramsSet: [] as Record<string, string>[]
 }))
 
 const nativeWebView = vi.hoisted(() => ({
@@ -41,11 +43,22 @@ const nativeWebView = vi.hoisted(() => ({
   reload: vi.fn<() => void>()
 }))
 
+/**
+ * N2. How many times a terminal document has been created.
+ *
+ * The defect this counts is not a wrong pixel: switching pane used to *replace the route*, which
+ * unmounts the screen and rebuilds the 730KB xterm document — 523–731ms on iOS, up to 3s blank and
+ * 15s to content on Android, against a ~180ms swipe. Nothing in the rendered tree distinguishes
+ * "the same document, retargeted" from "a new one that looks identical", so the mount is counted.
+ */
+const webViewMounts = vi.hoisted(() => ({ count: 0 }))
+
 vi.mock('expo-router', () => ({
   useLocalSearchParams: () => routerState.params,
   useRouter: () => ({
     replace: (href: string) => routerState.replaced.push(href),
-    push: (href: string) => routerState.replaced.push(href)
+    push: (href: string) => routerState.replaced.push(href),
+    setParams: (params: Record<string, string>) => routerState.paramsSet.push(params)
   })
 }))
 
@@ -59,6 +72,9 @@ vi.mock('react-native-webview', async () => {
   const React = await import('react')
   const WebView = React.forwardRef((props: Record<string, unknown>, ref) => {
     React.useImperativeHandle(ref, () => nativeWebView)
+    React.useEffect(() => {
+      webViewMounts.count += 1
+    }, [])
     return React.createElement('WebView', props)
   })
   return { WebView, default: WebView }
@@ -263,6 +279,8 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   routerState.params = { remoteId: 'remote-1', paneId: 'ws-1-p1' }
   routerState.replaced = []
+  routerState.paramsSet = []
+  webViewMounts.count = 0
   nativeWebView.postMessage.mockClear()
 })
 
@@ -355,8 +373,14 @@ describe('pane viewer route', () => {
     await act(async () => {
       chips[2]!.props.onPress()
     })
-    // The route form navigates laterally rather than stacking panes.
-    expect(routerState.replaced).toEqual(['/h/remote-1/pane/ws-1-p3'])
+    // N2. The route form navigates laterally rather than stacking panes — and it does it by
+    // *setting a param*, never by routing. `[paneId]` is a dynamic segment, so `replace` to another
+    // pane is a different route: expo-router unmounts this screen and the 730KB xterm document dies
+    // with it (523–731ms iOS, up to 3s blank / 15s to content on Android, against a ~180ms swipe).
+    // An empty `replaced` is the half of this contract a rendering assertion cannot see.
+    expect(routerState.paramsSet).toEqual([{ paneId: 'ws-1-p3' }])
+    expect(routerState.replaced).toEqual([])
+    expect(webViewMounts.count).toBe(1)
 
     // Now drive the screen at the new segment, as expo-router would.
     routerState.params = { remoteId: 'remote-1', paneId: 'ws-1-p3' }
@@ -370,6 +394,10 @@ describe('pane viewer route', () => {
       )
     })
     await settle()
+
+    // …and the other half: after the param moved, the document that was already on screen is still
+    // the one on screen. One mount, across a pane switch.
+    expect(webViewMounts.count).toBe(1)
 
     // M6/B6. Before `RetargetTerminal` this was two `ObserveTerminal`s on two channels; now it is
     // one handshake, one observe, one retarget, all on the channel that was already open.

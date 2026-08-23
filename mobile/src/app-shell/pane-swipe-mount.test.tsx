@@ -37,7 +37,9 @@ import type { HerdrRemoteConnection } from '../transport/herdr-connection'
 
 const routerState = vi.hoisted(() => ({
   params: {} as Record<string, string | undefined>,
-  replaced: [] as string[]
+  replaced: [] as string[],
+  /** N2: pane selection is `setParams`, not a route change — see the route wrapper for why. */
+  paramsSet: [] as Record<string, string>[]
 }))
 
 /** Every `Gesture.Pan()` the screen built, newest last — the gesture is rebuilt when chips change. */
@@ -47,7 +49,8 @@ vi.mock('expo-router', () => ({
   useLocalSearchParams: () => routerState.params,
   useRouter: () => ({
     replace: (href: string) => routerState.replaced.push(href),
-    push: (href: string) => routerState.replaced.push(href)
+    push: (href: string) => routerState.replaced.push(href),
+    setParams: (params: Record<string, string>) => routerState.paramsSet.push(params)
   })
 }))
 
@@ -253,6 +256,7 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   routerState.params = { remoteId: 'remote-1', paneId: FIRST_PANE }
   routerState.replaced = []
+  routerState.paramsSet = []
   gestures.pans = []
 })
 
@@ -267,22 +271,26 @@ describe('pane viewer swipe (M6a)', () => {
   it('routes to the next chip on a left swipe — the same href a chip tap produces', async () => {
     await mountAt(FIRST_PANE)
     await swipe(-140)
-    expect(routerState.replaced).toEqual([`/h/remote-1/pane/${MIDDLE_PANE}`])
+    expect(routerState.paramsSet).toEqual([{ paneId: MIDDLE_PANE }])
+    expect(routerState.replaced).toEqual([])
   })
 
   it('routes to the previous chip on a right swipe', async () => {
     await mountAt(MIDDLE_PANE)
     await swipe(140)
-    expect(routerState.replaced).toEqual([`/h/remote-1/pane/${FIRST_PANE}`])
+    expect(routerState.paramsSet).toEqual([{ paneId: FIRST_PANE }])
+    expect(routerState.replaced).toEqual([])
   })
 
   it('does nothing at either end of the strip — no wrap-around, no routing call', async () => {
     await mountAt(FIRST_PANE)
     await swipe(140)
+    expect(routerState.paramsSet).toEqual([])
     expect(routerState.replaced).toEqual([])
 
     await routeTo(LAST_PANE, [])
     await swipe(-140)
+    expect(routerState.paramsSet).toEqual([])
     expect(routerState.replaced).toEqual([])
   })
 
@@ -294,6 +302,7 @@ describe('pane viewer swipe (M6a)', () => {
     await swipe(30, 400)
     // And a diagonal that clears the horizontal floor but stays mostly vertical.
     await swipe(-100, -90)
+    expect(routerState.paramsSet).toEqual([])
     expect(routerState.replaced).toEqual([])
   })
 
@@ -319,7 +328,8 @@ describe('pane viewer swipe (M6a)', () => {
     await settle()
 
     await swipe(-140)
-    expect(routerState.replaced).toEqual([`/h/remote-1/pane/${MIDDLE_PANE}`])
+    expect(routerState.paramsSet).toEqual([{ paneId: MIDDLE_PANE }])
+    expect(routerState.replaced).toEqual([])
     // The swipe itself put nothing on the wire: it routed, and the observer follows the route.
     expect(server.sent.flat().filter((hex) => hex.startsWith('0e'))).toEqual([])
 

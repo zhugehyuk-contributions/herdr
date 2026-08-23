@@ -102,7 +102,6 @@ import {
   resolvePaneSwipeTarget,
   type PaneSwipeTranslation
 } from '../../../../src/session/pane-swipe'
-import { paneHref } from '../../../../src/agents/fleet-agents'
 import { usePaneObserver } from '../../../../src/session/use-pane-observer'
 import { usePaneInput } from '../../../../src/session/use-pane-input'
 import { usePaneHistory } from '../../../../src/session/use-pane-history'
@@ -232,7 +231,7 @@ export function PaneViewerScreen({
   )
 
   // M6a. A swipe lands on the same callback a chip tap does — `onSelectPane`, i.e.
-  // `router.replace(paneHref(...))` and back in as a route param. It deliberately does **not** call
+  // `router.setParams({paneId})` and back in as a route param. It deliberately does **not** call
   // `observer.retarget()`: that would move the stream under a URL still naming the old pane, and the
   // URL is what Back, a deep link and a notification tap
   // (`src/notifications/pane-deep-link.ts`) all restore from. The retarget happens anyway, one hop
@@ -457,12 +456,24 @@ const NOOP = () => {}
 export default function PaneViewerRoute() {
   const { remoteId, paneId } = useLocalSearchParams<{ remoteId?: string; paneId?: string }>()
   const router = useRouter()
-  // `replace`, not `push`: a chip is a lateral move inside one viewer, so Back should return to the
-  // workspace browser rather than walk a stack of panes the user never meant to build.
-  const select = useCallback(
-    (next: string) => router.replace(paneHref(remoteId ?? '', next)),
-    [remoteId, router]
-  )
+  // `setParams`, not `replace` — and this line is N2, the largest measured defect in the viewer.
+  //
+  // `[paneId]` is a dynamic segment, so `replace` to a different pane is a *different route*: the
+  // screen unmounts and a new one mounts, taking the 730KB xterm document with it. Measured cost of
+  // that rebuild: 523–731ms on iOS and, on Android, up to 3s of blank plus 15s to content on a pane
+  // with a deep buffer — while the swipe itself is ~180ms on both. The gesture was never the
+  // problem.
+  //
+  // `setParams` merges into the focused route (`expo-router/build/global-state/routing.js:174`,
+  // which forwards to React Navigation's own `setParams`), so the URL still names the pane — Back,
+  // a deep link and a notification tap (`src/notifications/pane-deep-link.ts`) all restore from it
+  // exactly as before — while this component instance, and therefore the document, survives. The
+  // observer retargets on the same stream it already had (`src/session/use-pane-observer.ts`),
+  // which is what §2.3 always intended: only the document was being thrown away.
+  //
+  // Still not `push`, for the original reason: a chip is a lateral move inside one viewer, so Back
+  // should return to the workspace browser rather than walk a stack of panes nobody meant to build.
+  const select = useCallback((next: string) => router.setParams({ paneId: next }), [router])
   return <PaneViewerScreen remoteId={remoteId} paneId={paneId} onSelectPane={select} />
 }
 
