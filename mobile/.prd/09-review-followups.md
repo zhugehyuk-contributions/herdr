@@ -1531,3 +1531,81 @@ ssh exec 채널 수준의 주장은 **어느 쪽으로도 하지 않았다**고 
 `accessibilityLabel="Open pane history"` 문자열은 기기에서 못 읽었다 —
 `uiautomator`가 앱 화면에서 텍스트 0개라, 보이는 라벨 `History`와 "누르면 열린다"로 대신했다.
 라벨 문자열 자체는 소스·유닛에서만 검증됨.
+
+---
+
+## HH. iOS M6a FAIL — 그리고 내 리그가 조용히 다른 커밋을 서빙하고 있었다 (2026-08-23, 별도 에이전트, `qa-ios-m6` @ `264b4479`)
+
+### ⚠️ 먼저: 리그 결함은 내 것이다
+
+판정자가 시작하자마자 발견했다 — 설치된 앱의 **dev-launcher 최근목록이 `8081`을 최신값으로 갖고 있었고,
+`8081`은 `qa-ios-m2b`(커밋 `105a2ea5`)다.** 앱을 install하고 Metro를 8086에 띄우는 것만으로는
+격리가 성립하지 않는다. 판정자가 `simctl openurl` 딥링크를 시도했으나 SpringBoard 확인창에 막혔고,
+`recentlyopenedapps` plist의 타임스탬프를 직접 재작성해 8086을 최신으로 만든 뒤 재기동해서 해결했다.
+**이후 증거만 판정에 썼다.**
+
+`.prd/10`이 경고하는 그 함정을 **셋업 쪽에서** 내가 밟았다. 절차에 반영: iOS 리그는
+"install + Metro"로 끝나지 않고 **앱이 실제로 그 포트에 붙었음을 확증**해야 완성이다.
+
+### 판정: FAIL — 대조 실험이 이걸 "판정 불가"가 아니라 FAIL로 만들었다
+
+제스처 합성은 성공했다. `idb`·`cliclick` 부재, `CGEvent` 주입은 Accessibility 미승인(보안 설정이라
+켜지 않음)으로 막혔지만, **삭제된 `qa-ios-m2` 워크트리가 남긴 DerivedData에서 XCUITest 하네스를 복원**해
+UI-test 타깃을 새로 만들고 `XCUICoordinate.press(forDuration:thenDragTo:)`로 실제 터치를 합성했다.
+
+**같은 화면, 같은 드래그 파라미터(x 0.88→0.22, dur 0.15), 두 지점:**
+
+| 지점 | 결과 |
+|---|---|
+| 단축키 행 (y=0.868, RN 가로 ScrollView) | **스크롤됨 −425.7pt** (17개 요소 이동) |
+| 터미널 (y=0.35, `GestureDetector` 안) | **이동 0**, pane `w1:p1` 불변 (6초/35 샘플) |
+
+즉 **가로 press-drag는 RN까지 확실히 도달한다.** 그런데 pane 스와이프는 발화하지 않는다.
+합성 경로 3종(0.6s 느린 드래그 · 0.02s 플릭 · `swipeLeft()`) 전부 10초/20~26 샘플 동안 불변.
+이동 ~426pt는 `activeOffsetX` 32와 커밋 임계 64를 크게 넘고, 수평 고정이라 `failOffsetY` 12에도 안 걸린다.
+
+픽스처: tmux `-x 80 -y 52`, pane 3개(`27×26` / `27×25` / `27×51`), 칩 순서 = `pane list` 순서.
+live 확증 = pane별 난수 토큰(`ZQ6A-ALPHA-042dbeb442` 등).
+
+### 판정자의 위양성 자진 정정 (귀중하다)
+
+초기 측정에서 `waitFor w1:p3 HIT 77ms` 같은 42~97ms 값이 나왔는데 **전부 거짓**이었다 —
+XCUITest 요소 쿼리가 **칩 버튼 *내부*의 static text `w1:p3`에 매칭**됐다(`debugDescription`이
+그 자식을 접어 보여주지 않는다). 원자적 스냅샷 기반으로 바꾸자 헤더는 한 번도 안 변했다.
+**이 수치를 지연으로 보고했으면 "iOS가 Android보다 빠르다"는 허구가 원장에 남을 뻔했다.**
+
+### 근인 — 판정자의 가설은 코드와 어긋난다. 진짜 후보는 다른 줄이다
+
+판정자는 **[가설]**로 *"WKWebView 내부 recognizer가 터치 스트림을 선점"* 을 지목했다.
+그 문장이 이름 붙인 recognizer는 스크롤뷰의 pan인데, **코드가 그걸 이미 껐다**:
+
+- `src/terminal/TerminalWebView.tsx:428` — **`scrollEnabled={false}`**. `:451` 주석이 이유까지
+  적어놨다("Nothing here needs it"). 스크롤뷰 pan은 애초에 경합 대상이 아니다.
+
+읽어서 나온 실제 후보는 **페이지 자신**이다:
+
+- `src/terminal/terminal-webview-html.ts:1754` — `touchmove` 리스너가 **무조건**
+  `e.preventDefault(); e.stopPropagation();` 를 부른다(`term`이 있고 dispatcher가 안 막으면 항상).
+- 그리고 그 아래 `:1780`은 **가로 팬을 "내용이 뷰포트보다 넓을 때만"** 처리한다 — 즉 **fit 폭에서는
+  페이지가 아무 것도 안 하면서 preventDefault만 하고 있다.** `pane-swipe.ts` 헤더가 설계 시점에
+  적어둔 *"At fit width — every unzoomed pane — a horizontal drag does nothing today"* 가
+  바로 이 상태다.
+
+**플랫폼 비대칭이 이 그림과 맞는다 [가설]**: Android는 RNGH 루트 뷰가 네이티브 층에서 가로채므로
+페이지의 `preventDefault`가 영향을 못 준다(§DD에서 실측 — 활성화 시 루트가 자식으로 전달을 멈춘다).
+iOS는 WKWebView가 페이지의 touch 처리 결과를 기다리는 구조라, 페이지가 소비를 선언하면 바깥
+recognizer가 못 가져간다. **이건 코드에서 유도한 가설이지 내가 증명한 인과가 아니다.**
+
+### 다음 행동 — 추측으로 고치지 않는다
+
+계측을 먼저 넣는다: pan의 `onBegin`/`onStart`/`onEnd`가 iOS에서 **한 번이라도 발화하는지**.
+그게 갈리기 전에는 "recognizer가 활성화 못 함"과 "활성화 후 규칙이 기각"이 구분되지 않는다.
+후보 수리(가로 우세 + fit 폭이면 `preventDefault`를 건너뛴다)를 같은 빌드에 얹어 한 사이클에
+①메커니즘 확정 ②수리 검증을 함께 받는다.
+
+### 못 본 것 (FAIL과 구분)
+
+전환이 0이므로 **전환 지연·양 끝 no-op은 측정 대상이 없다**. **수직축 보존은 공허한 통과** —
+수직 후 불변이지만 수평도 불변이라 터미널이 수직을 실제로 소비했는지는 미증명.
+**재연결 부재**는 스와이프 구간 `Accepted publickey` 증분 0으로 관측됐으나, 리타겟이 없었으니
+§2.3을 실제로 시험한 것은 아니다. 시뮬레이터 한정 — 실기기에서 경합이 다를 가능성 배제 못 함.
