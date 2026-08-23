@@ -27,7 +27,12 @@ export type PanGestureDouble = {
   finalize:
     | ((event: { translationX: number; translationY: number }, success: boolean) => void)
     | null
+  /** Gestures this pan takes priority over — `Gesture.Native()` objects in practice (§QQ). */
+  blocksExternal: unknown[]
 }
+
+/** What `Gesture.Native()` returns here: an identity, which is all `blocksExternalGesture` needs. */
+export type NativeGestureDouble = { kind: 'native' }
 
 export type GestureHandlerRegistry = {
   pans: PanGestureDouble[]
@@ -46,12 +51,13 @@ export function createGestureHandlerRegistry(): GestureHandlerRegistry {
  * gesture — existing assertions about the pane viewer keep meaning what they meant.
  */
 export function createGestureHandlerDouble(registry: GestureHandlerRegistry): {
-  Gesture: { Pan: () => PanGestureBuilder }
+  Gesture: { Pan: () => PanGestureBuilder; Native: () => NativeGestureDouble }
   GestureDetector: (props: { gesture: unknown; children: ReactNode }) => ReactNode
   GestureHandlerRootView: string
 } {
   return {
     Gesture: {
+      Native: () => ({ kind: 'native' }) as NativeGestureDouble,
       Pan: () => {
         const pan: PanGestureDouble = {
           activeOffsetX: null,
@@ -60,6 +66,7 @@ export function createGestureHandlerDouble(registry: GestureHandlerRegistry): {
           begin: null,
           start: null,
           finalize: null,
+          blocksExternal: [],
           end: null
         }
         registry.pans.push(pan)
@@ -74,6 +81,13 @@ export function createGestureHandlerDouble(registry: GestureHandlerRegistry): {
           },
           failOffsetY(range) {
             pan.failOffsetY = range
+            return builder
+          },
+          // .prd/09 §QQ: recorded, not swallowed. The arbitration this expresses is the whole of
+          // the iOS repair, and a double that quietly accepted the call would let a screen that
+          // stopped arbitrating pass every test here.
+          blocksExternalGesture(...gestures) {
+            pan.blocksExternal.push(...gestures)
             return builder
           },
           onBegin(handler) {
@@ -105,6 +119,7 @@ type PanGestureBuilder = {
   runOnJS: (value: boolean) => PanGestureBuilder
   activeOffsetX: (range: readonly [number, number]) => PanGestureBuilder
   failOffsetY: (range: readonly [number, number]) => PanGestureBuilder
+  blocksExternalGesture: (...gestures: unknown[]) => PanGestureBuilder
   onBegin: (handler: () => void) => PanGestureBuilder
   onStart: (handler: () => void) => PanGestureBuilder
   onFinalize: (

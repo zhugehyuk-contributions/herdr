@@ -2085,3 +2085,53 @@ require-failure / simultaneity 설정, 또는 capture-phase claim. **JS에서 �
 
 단, 수직축 예약(`failOffsetY`)은 여전히 값이 있다 — alt-screen 스크롤이 **입력으로 라우팅**되는 경로
 (`shouldRouteScrollToTerminalInput`)가 그 축을 쓴다. TUI 앱에서는 살아 있는 축이다.
+
+---
+
+## QQ. N1 후보 1의 막힌 지점이 열렸다 — `Gesture.Native()` (2026-08-23, 구현)
+
+§OO는 N1(네이티브 recognizer 중재)의 후보 1을 이렇게 적어뒀다: *"RNGH `blocksExternalGesture(ref)` —
+막히는 지점: `react-native-webview`의 `ref`는 `useImperativeHandle`이라 **네이티브 뷰 ref가 아니다**."*
+
+**그 전제가 틀렸다.** `GestureRef`는 컴포넌트 ref만 받는 게 아니라 **`GestureType`(제스처 객체 자체)** 도
+받는다(`gesture.d.ts:5`). 그리고 RNGH는 이 상황을 위한 기제를 이미 갖고 있다 — **`Gesture.Native()`**.
+
+```
+const terminalNativeGesture = useMemo(() => Gesture.Native(), [])
+
+Gesture.Pan()
+  …
+  .blocksExternalGesture(terminalNativeGesture)   // 제스처 객체, ref 아님
+
+<GestureDetector gesture={paneSwipe}>
+  <View>
+    <GestureDetector gesture={terminalNativeGesture}>   ← 이게 WebView 호스트에 붙는다
+      <TerminalPaneView … />
+```
+
+**의미**: `Gesture.Native()`가 WebView 자신의 recognizer들에 RNGH가 부를 수 있는 이름을 준다.
+`blocksExternalGesture`가 순서를 정한다 — **네이티브 쪽이 우리 pan의 실패를 기다린다.**
+그 실패는 싸고 이르다(수직 ±12px, `pane-swipe.ts`) — 터미널은 자기 축을 전부 지키고 그만큼만 지연을 낸다.
+
+내부 `GestureDetector`가 없으면 `blocksExternalGesture`가 **아무것도 이름 부르지 못한다** —
+RNGH는 네이티브 제스처가 그 recognizer들을 대표하는 뷰에 마운트돼 있어야 한다.
+
+### 이건 §OO의 "JS 레버 소진"과 모순되지 않는다
+
+§OO가 소진됐다고 한 것은 **문서 안에서**(`passive`·`touch-action`·`preventDefault`) 할 수 있는
+것이었고, 그 셋은 전부 출하됐는데 `dx`를 0에서 못 움직였다. 이건 **문서 밖, 네이티브 중재**를
+JS API로 지시하는 것이다 — §OO가 "수리 지점은 네이티브다"라고 한 그 지점에, 네이티브 코드를
+쓰지 않고 닿는 경로다.
+
+### 게이트
+
+**이 배선은 이 레포의 어떤 테스트에도 안 보인다** — 네이티브 recognizer 사이의 중재이고 여기선
+아무도 네이티브를 안 돌린다. 그래서 테스트 더블이 `blocksExternalGesture` 호출을 **기록**하도록
+확장하고(조용히 삼키면 중재를 멈춘 화면이 green으로 통과한다), 마운트 스위트가 배선의 존재를 고정한다.
+게이트 107파일/919테스트, typecheck·lint·format 0.
+
+### 미검증 — 다음 QA가 답한다
+
+- **iOS**: 글자 위 y=200/300/400에서 `dx ≠ 0`이 되는가. 그게 §OO의 수용 기준이다.
+- **Android**: `blocksExternalGesture`는 Android에서도 중재를 바꾼다. §PP가 방금 회귀 없음을
+  확인한 그 경로 위라 **iOS가 통과하면 Android 재확인이 다시 필요하다.**

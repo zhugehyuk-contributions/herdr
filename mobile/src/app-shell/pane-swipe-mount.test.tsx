@@ -358,6 +358,23 @@ describe('pane viewer swipe (M6a)', () => {
     expect(webView.props.nestedScrollEnabled).toBeFalsy()
   })
 
+  it("takes priority over the WebView's own recognizers", async () => {
+    // .prd/09 §OO is the reason this assertion exists, and it is not a style preference: over
+    // painted glyphs on iOS the document received all 40 `touchmove`s of a drag while this pan
+    // received none. WKWebView wins UIKit's arbitration, and three shipped attempts at changing
+    // that from inside the document (`passive: true`, `touch-action: none`, dropping
+    // `preventDefault`) moved `dx` not at all. `Gesture.Native()` names the competitor and
+    // `blocksExternalGesture` orders the two — the native side waits for this pan to fail, which
+    // it does at ±12px of vertical travel.
+    //
+    // Nothing else here can see this: it is arbitration between native recognizers, and no test in
+    // this repo runs one. So what is guarded is that the wiring exists at all.
+    await mountAt(FIRST_PANE)
+    const pan = gestures.pans.at(-1)
+    expect(pan?.blocksExternal).toHaveLength(1)
+    expect(pan?.blocksExternal[0]).toEqual({ kind: 'native' })
+  })
+
   it('renders the same tree it did before the gesture — one WebView, the chips still there', async () => {
     const target = await mountAt(FIRST_PANE)
     expect(target.root.findAllByType(host('WebView'))).toHaveLength(1)
