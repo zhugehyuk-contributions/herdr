@@ -209,11 +209,46 @@ launchd/systemd 센더가. 훅 런타임에 타임아웃·재시도·DLQ가 없�
 > *"herdr has no message to move an observe target, so even a warm channel could not retarget today"*
 > 라고 적혀 있는데 그 메시지는 존재하고 서버가 처리한다. M6 작업 시 함께 고칠 것.
 
-**남은 실제 작업 = 앱 배선 2단위** (per-unit dispatch):
+**남은 실제 작업**:
 - **M6a** 스와이프 → `retarget(paneId)`. ✅ **완료** (`e383868e`) — 와이어로 재연결 부재 실증, 기기 실측은 QA
-- **M6c** 스크롤백 열람
+- **M6c** 스크롤백 열람. ✅ **이미 구현돼 있었다** (아래) — **남은 것은 QA뿐**
 
 **됐다** = pane 스와이프 전환이 재연결 없이 <200ms · 스크롤백 열람.
+
+---
+
+### M6c 재조사 — 로컬 스크롤백은 완성돼 있고, 호스트 스크롤백은 §2.3이 막는다 (2026-08-23)
+
+**구현돼 있는 것** (`terminal-webview-html.ts`, 코드 직독):
+
+```
+scrollback: 5000                      :769   xterm 로컬 버퍼
+touchmove 핸들러                        :1751  (coalesce :1409)
+term.scrollLines(lines)                :1354  일반 버퍼 스크롤
+선택 중 엣지 스크롤                      :1624
+```
+
+그리고 세 경우를 **이미 구분한다** (`:1340-1354`):
+1. 마우스 인지 앱이 스크롤을 소유 → 경계된 화살표를 **터미널 입력**으로 보낸다
+2. **alt-screen** → xterm에 스크롤백이 없으므로 제스처를 터미널 입력으로 변환
+3. 일반 버퍼 → `term.scrollLines()` = 로컬 스크롤백
+
+M6a가 `failOffsetY(±12)`로 **수직축을 터미널에 남긴 것**이 정확히 이 경로를 보호한다.
+
+**⛔ 구현되지 않았고, 구현하면 안 되는 것 — 호스트 스크롤백.**
+
+`ClientMessage::AttachScroll` (`src/protocol/wire.rs:449`)의 doc이 *"Scroll input handled by a
+**direct terminal attach** client"* 라고 적는다. attach 모드 전용이고, **attach는 공유 PTY를 리사이즈하고
+락을 건다** — M6b를 삭제한 것과 **정확히 같은 이유**다(§2.3).
+
+**따라서 이 앱의 스크롤백에는 경계가 있다**:
+
+> **폰은 자기가 본 것까지만 거슬러 올라간다.** observe 시작 시 서버가 `render_state.reset_baseline()`
+> (`headless.rs:1931`)을 하고 **현재 화면**의 풀 프레임을 보내므로, 히스토리는 오지 않는다.
+> 몇 시간 돌던 pane을 지금 열면 스크롤백은 **비어 있고**, 프레임이 도착하는 만큼만 찬다.
+
+이건 결함이 아니라 §2.3 거래의 나머지 절반이다 — 데스크톱을 안 부수는 대가. **QA는 이 경계를 알고
+판정해야 한다**: "스크롤백이 비어 있다"는 열자마자는 정상이고, 출력이 쌓인 뒤에도 안 올라가면 결함이다.
 
 ---
 
