@@ -75,7 +75,10 @@ ${TERMINAL_HORIZONTAL_YIELD_JS}
         ts.yieldedH = true;
         return;
       }
-      e.preventDefault();
+      // No preventDefault any more: this listener is passive (§LL) and calling it would log a
+      // console error on each of the ~60 touchmoves one drag produces. What it used to suppress is
+      // now declined up front by touch-action: none. stopPropagation still works on a passive
+      // listener — only preventDefault does not — and that is what keeps xterm's own handlers out.
       e.stopPropagation();
 
       if (e.touches.length === 2) {
@@ -130,6 +133,6 @@ ${TERMINAL_HORIZONTAL_YIELD_JS}
         ts.lastX = x;
         ts.lastY = y;
       }
-    }, { capture: true, passive: false });
+    }, { capture: true, passive: true });
 
 `

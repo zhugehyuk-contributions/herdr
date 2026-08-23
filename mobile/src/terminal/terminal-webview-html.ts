@@ -2,6 +2,12 @@
 // at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
 // MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.
 // xterm.js WebView document + default Tokyonight theme; extracted from TerminalWebView.tsx for the max-lines budget.
+//
+// ⛔ EVERYTHING BELOW `XTERM_HTML = \`` IS INSIDE A TEMPLATE LITERAL. A backtick in a comment
+// there — the natural way to quote an identifier in this repo's prose — terminates the string and
+// the file stops parsing somewhere else entirely. It cost three build cycles in one session
+// (.prd/09 §LL). Quote identifiers bare inside the template; keep backticks for the module header.
+// The same applies to every `*-injected.ts` sibling, which are template literals end to end.
 import type { RuntimeMobileTerminalTheme } from '../shared/runtime-terminal-theme'
 import { colors } from '../theme/mobile-theme'
 import { TERMINAL_TEXT_SCALES } from '../storage/terminal-text-scales'
@@ -75,6 +81,17 @@ window.onerror = function(msg) {
     overflow: hidden;
     width: 100%;
     height: 100%;
+    /* .prd/09 §LL. This declaration is what lets the touchmove listener register *passive*, and
+       that is the whole point. Four iOS rounds proved the ancestor pane-swipe recognizer receives
+       zero touchesMoved while this document listens, and the fourth isolated the cause to the
+       non-passive registration itself rather than to the preventDefault call inside it — the yield
+       shipped, its precondition was met (userScale 1, |dx| 313, |dy| 0), and dx stayed 0.
+       A non-passive touchmove listener makes WebKit hold every touch until the page answers;
+       this says the same thing declaratively and up front, so there is nothing to hold.
+       -webkit-touch-callout covers what preventDefault was also suppressing by accident —
+       the Copy/Select All callout a QA run tripped on mid-pinch. */
+    touch-action: none;
+    -webkit-touch-callout: none;
   }
   #terminal-container {
     overflow: hidden;

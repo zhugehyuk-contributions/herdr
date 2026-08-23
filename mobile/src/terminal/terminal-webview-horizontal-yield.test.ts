@@ -12,6 +12,7 @@
 // wearing different numbers.
 import { describe, expect, it } from 'vitest'
 import { XTERM_HTML } from './terminal-webview-html'
+import { TERMINAL_TOUCH_PAN_JS } from './terminal-webview-touch-pan-injected'
 import { PANE_SWIPE_ACTIVATE_OFFSET_X, PANE_SWIPE_AXIS_RATIO } from '../session/pane-swipe'
 
 /** The two numbers the page compiled in, read back out of the document it will actually serve. */
@@ -137,5 +138,33 @@ describe('the touch probe stays wired', () => {
     expect(counted).toBeGreaterThan(-1)
     expect(counted).toBeLessThan(handler.indexOf('dispatcherShouldBlockSurface()'))
     expect(counted).toBeLessThan(handler.indexOf('shouldYieldHorizontal'))
+  })
+})
+
+// §LL. The repair is two declarations and one registration flag, and each of the three is invisible
+// to every behavioural test in this repo: nothing here runs a browser. What they replace — an
+// unconditional `preventDefault` — is what four iOS rounds proved was holding every touch away
+// from the ancestor recognizer, so a silent revert of any one of them restores the defect while
+// the suite stays green.
+describe('the terminal surface declines browser touch behaviour up front', () => {
+  it('declares touch-action and the callout suppression', () => {
+    expect(XTERM_HTML).toContain('touch-action: none;')
+    expect(XTERM_HTML).toContain('-webkit-touch-callout: none;')
+  })
+
+  it('registers the touch listeners passive, and calls no preventDefault in them', () => {
+    // Asserted against the module rather than the assembled document on purpose: the served HTML
+    // contains three other `touchstart` registrations and a dozen `preventDefault` calls that are
+    // none of this claim's business (button clicks, the mouse/click-drag suppressors). Slicing the
+    // document by marker landed on the wrong module's listener twice; the claim is a property of
+    // this file, so this file is what is read.
+    expect(TERMINAL_TOUCH_PAN_JS).not.toContain('passive: false')
+    expect(TERMINAL_TOUCH_PAN_JS).toContain('passive: true')
+    // The *call*, not the word: the comment above the removal says "preventDefault" out loud, and
+    // asserting on the bare identifier fails on the explanation rather than on the behaviour.
+    expect(TERMINAL_TOUCH_PAN_JS).not.toContain('e.preventDefault(')
+    // `stopPropagation` must survive — it is what keeps xterm's own handlers out of the gesture,
+    // and unlike `preventDefault` it works on a passive listener.
+    expect(TERMINAL_TOUCH_PAN_JS).toContain('e.stopPropagation();')
   })
 })

@@ -1799,3 +1799,60 @@ if (currentScale >= 0.95) currentScale = 1;   // ← 스냅
 (15초 타임아웃), 판정자가 유저 데몬 생존을 사후 확인했다. **내가 재확인**: pid 8329 생존(경과 1일 7시간),
 `~/.config/herdr/herdr.sock` 정상, `herdr server` 프로세스 18개. `pkill -f herdr`는 쓰이지 않았다.
 자진 신고가 정확했다. **랩 정리는 PID 지정으로만** — `.prd/10`에 이미 있는 규칙이 한 번 더 확인됐다.
+
+---
+
+## LL. iOS M6a 4차 — `dx`는 여전히 0. **비수동 리스너 등록 자체**가 범인이다 (2026-08-23, 별도 에이전트, `qa-ios-m6a4` @ `723a392e`)
+
+§KK가 세운 2지선다에 답이 나왔다. 판정자가 **양보의 전제가 충족됐음을 실측으로 보이고** 그래도 안 됐다:
+
+- `userScale = 1` (S1–S4 내내 손대지 않음), 드래그 `|dx| ≈ 313px`, `|dy| = 0`, 임계 32px / 1.5 비율
+  → `shouldYieldHorizontal`이 참 → **`preventDefault`는 건너뛰어졌다**
+- 그런데 페이지는 여전히 touchmove **63개**를 셌고, 조상 recognizer는 **여전히 0개**를 받았다
+- 6/6 제스처 전부 `dx=0 dy=0`, `[paneSwipe] start`는 **한 번도** 안 찍힘 (begin/finalize만)
+
+**결론: `preventDefault` *호출*이 아니라 `{capture:true, passive:false}` *등록 자체*가 전파를 막는다.**
+비수동 touchmove 리스너는 WebKit이 페이지의 응답을 기다리게 만들고, 그 대기가 조상
+`UIGestureRecognizer`로의 전달을 죽인다.
+
+판정자가 서빙된 번들(17MB)을 직접 받아 grep해 **앱이 수리된 코드를 돌렸음**을 확인했다
+(`userScale > 1` ×1, `shouldYieldHorizontal` ×3). stale 번들이 아니다.
+대조: **칩 탭은 전환된다**(`w1:p1`→`w1:p2`, 토큰 확인) — pane 전환 자체는 살아 있고 제스처만 죽었다.
+픽스처 80컬럼 × 2 pane, 스크롤백 120줄, pane별 다른 토큰(`ZALPHA2DF529` / `ZBRAVO-74071D`, 교차 0건).
+
+**부수 PASS 2건**: 확대 상태 회귀 없음(핀치 줌인 성공 — 3차의 텍스트선택 콜아웃 **재발 안 함** —
+그리고 줌 상태 가로 드래그가 여전히 페이지를 팬). 재연결 부재(연결 1건을 전 구간 유지, exec 289건이 그 위).
+
+### 수리 — `preventDefault`를 CSS로 대체하고 리스너를 수동으로
+
+페이지는 브라우저 기본 터치 동작 억제를 **전적으로 `preventDefault`에 의존**하고 있었다 —
+`touch-action`이 문서에 **한 줄도 없었다**. 그게 비수동 등록을 강제한 이유다.
+
+| 이전 | 이후 |
+|---|---|
+| `touch-action` 없음 | `html, body { touch-action: none; -webkit-touch-callout: none; }` |
+| `touchmove` `{capture:true, **passive:false**}` | `{capture:true, **passive:true**}` |
+| 핸들러가 `e.preventDefault()` 호출 | 호출 제거 (`stopPropagation`은 유지 — 수동 리스너에서도 동작하고, xterm 자체 핸들러를 막는 건 그쪽이다) |
+
+`touch-action: none`은 같은 말을 **선언적으로, 미리** 한다 — 그래서 붙잡을 것이 없다.
+`-webkit-touch-callout: none`은 `preventDefault`가 곁다리로 억제하던 것을 덮는다(3차가 밟은 Copy/Select All 콜아웃).
+
+**이 수리는 브라우저를 돌리지 않는 이 레포의 어떤 테스트에도 안 보인다** — 선언 2개와 등록 플래그 1개뿐이다.
+그래서 셋 다 테스트로 고정했다. 하나라도 조용히 되돌아가면 결함이 스위트 green인 채로 부활한다.
+
+### ⚠️ 이 수리는 Android 회귀 위험을 만든다
+
+Android M6a·M6c는 **PASS 상태**이고 둘 다 이 터치 경로 위에 있다. iOS 재QA가 통과하면
+**Android 두 항목 재QA가 필수**다. iOS가 또 FAIL이면 이 변경은 이득 없이 위험만 남으므로
+되돌리고 네이티브 작업(RNGH iOS `simultaneousWithExternalGesture` 계열 / WKWebView recognizer)으로 넘긴다.
+
+### 이번 라운드에 내가 만든 결함 2종 (같은 실수의 반복)
+
+1. **템플릿 리터럴 안 주석의 백틱** — 세 번째다. `XTERM_HTML` 안에서 식별자를 백틱으로 감싸면
+   문자열이 끊기고 파싱이 엉뚱한 곳에서 죽는다. `terminal-webview-html.ts` **헤더에 경고를 박았다** —
+   다음 편집자가 실제로 서 있을 자리다.
+2. **`indexOf`로 구간 자르기** — 끝 마커가 시작보다 앞에 있어 빈 슬라이스가 나오고, 그러면
+   `not.toContain`이 전부 **엉뚱한 이유로 통과**한다. 이 파일에서만 두 번 냈다.
+   fromIndex + `expect(len).toBeGreaterThan(0)` 가드를 넣었고, 그래도 마커가 **다른 모듈의**
+   리스너를 잡아서, 결국 주장의 대상 모듈(`TERMINAL_TOUCH_PAN_JS`)에 직접 검사하도록 바꿨다.
+   **문서에서 잘라내지 말고 주장하는 모듈을 읽어라** — 그게 교훈이다.
