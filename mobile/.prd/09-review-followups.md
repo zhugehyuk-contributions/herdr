@@ -2135,3 +2135,66 @@ JS API로 지시하는 것이다 — §OO가 "수리 지점은 네이티브다"�
 - **iOS**: 글자 위 y=200/300/400에서 `dx ≠ 0`이 되는가. 그게 §OO의 수용 기준이다.
 - **Android**: `blocksExternalGesture`는 Android에서도 중재를 바꾼다. §PP가 방금 회귀 없음을
   확인한 그 경로 위라 **iOS가 통과하면 Android 재확인이 다시 필요하다.**
+
+---
+
+## RR. iOS M6a 8차 — `blocksExternalGesture`도 안 된다. **되돌렸다** (2026-08-23, 별도 에이전트, `qa-ios-m6a8` @ `bfee682e`)
+
+§QQ가 연 줄 알았던 N1 후보 1이 닫혔다. 글자 위 `dx`는 **여전히 0**이고, 7차 표가 **그대로 재현**됐다.
+
+| 좌표 | `[paneSwipe]` | `[touchProbe]` |
+|---|---|---|
+| y=200/300/400 (+ 500·560·620·660) | `success=false` **dx=0 dy=0** | moves **20~40** (WebView가 전부 수신) |
+| y=680/690/700 | `begin→start→finalize` **dx=∓295**, 전환 정상 | **무음** |
+
+판정자가 서빙 번들에서 `blocksExternalGesture` **7회**를 확인했고
+`bfee682e^`=0 / `bfee682e`=4로 **이 커밋 전용 심볼**임까지 확인했다 — stale 아님. 배선은 살아 있었고 효과가 없었다.
+
+### 판정자가 내 기하 이해를 바로잡았다 — 이게 이 라운드의 두 번째 수확
+
+내가 §NN·§OO에서 "**마지막 도색 행 아래 공백**"이라고 쓴 것을 판정자가 정밀화했다:
+
+`[fit]renderer`가 `cols:80, contentW:640, scale:0.628125, vpWidth:402` → 서피스 폭 = 640×0.628 =
+**402pt = 뷰포트 전폭**. XCUITest 스냅샷도 `{{0,130},{402,546}}`.
+**즉 가로 공백은 존재하지 않는다. 경계는 세로뿐이다.**
+
+그리고 **7차의 "y≥500 공백"은 상수가 아니었다** — 그 픽스처의 서피스가 짧았을 뿐이고,
+이번 픽스처에선 공백대가 **y≥680**이다. 판정자가 y를 쓸어 확인했다(560/620/660=글자, 680/700=공백).
+**같은 좌표계에서 7차 표가 재현된 것이 하네스 유효성의 증거다.**
+
+### 되돌렸다 — §OO에서 안 지킨 규율을 여기서는 지킨다
+
+`blocksExternalGesture(Gesture.Native())`를 `git revert`했다. §OO의 passive 변경을 유지한 판단과
+**다르게 판단한 이유**를 남긴다:
+
+| | passive/`touch-action` (§LL~§NN) | `Gesture.Native()` 중재 (§QQ) |
+|---|---|---|
+| 독립적 값 | **있다** — 표준 형태이고 `-webkit-touch-callout`으로 콜아웃 억제까지 얻었다 | **없다.** 오직 이 결함만 겨냥했다 |
+| 측정된 이득 | iOS 회귀 4종 PASS + **Android 회귀 없음**(§PP) | **0** |
+| 남는 위험 | 측정으로 해소됨(§PP) | Android가 **이 변경 없이** PASS 받았다(§PP). 중재를 바꾸면 그 리시트가 다시 미검증이 된다 |
+
+**이득 0 + 미검증 위험 + 4줄 되돌림.** 여기서 유지할 이유가 없다.
+네이티브 수리는 Swift에서 recognizer 관계를 직접 세우므로, 필요하면 그때 다시 만든다.
+게이트 107파일/**918테스트**(§QQ의 배선 테스트가 함께 빠져 919→918), typecheck·lint·format 0.
+
+### 수용 기준 하나가 구조적으로 측정 불가다 — 5번째 "공허한 통과"
+
+**수직축 보존**: 브리프가 요구한 형태("수평이 되는 그 좌표에서 수직이 안 되는가")는 **원리적으로 불가**다.
+수평이 되는 유일한 곳(y≥680)은 **터미널 문서가 아예 없는 곳**이라 `touchProbe`가 울릴 수 없다.
+
+다만 판정자가 **글자 위 수직은 정상임을 따로 실증**했다: `finalize success=false dy=−14`
+(`failOffsetY=12`에서 실패) + `touchProbe moves=19`로 터미널 수신. **터미널은 자기 축을 갖고 있다.**
+남은 미지는 "수평이 살아난 뒤에도 그런가"뿐이고, 그건 N1이 닫힌 다음에만 물을 수 있다.
+
+### 부수 — 지연은 이번에도 M6a 소유가 아니다
+
+스와이프분(DRAGEND→헤더 커밋) **30·99·123·178·188·221·247ms, 중앙값 ≈178ms** — Android(184ms)와 동급, 예산 내.
+문서 재빌드분(`finalize`→`[fit]renderer`) **495·533·760·822ms, 중앙값 ≈646ms** — **N2**.
+
+### N1에 남은 것
+
+RNGH가 제공하는 JS 레버는 **둘 다 소진**됐다(문서 안 `passive`/`touch-action` = §OO,
+문서 밖 `blocksExternalGesture` = 여기). 남은 것은 **진짜 네이티브**:
+`WKWebView.scrollView.panGestureRecognizer`(및 `UIWebTouchEventsGestureRecognizer`)에 대해
+RNGH의 pan을 `require(toFail:)` 시키거나 `shouldRecognizeSimultaneouslyWith`를 여는 Swift 코드.
+Expo config plugin 또는 소형 네이티브 모듈이 그릇이다.

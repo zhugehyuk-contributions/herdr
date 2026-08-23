@@ -36,7 +36,7 @@
 | M3 입력 | ✅ | **✅ PASS 4/4** | **✅ PASS** (§BB) — 바이트 11/11 Android와 동일 |
 | M4 transport 생존성 | ✅ + 재다이얼·배너·세대가드 | **✅ PASS** (§Z) — 강제종료 0건. ×10·30분은 이전 빌드 교차 | ❌ (시뮬로 안 닫힘) |
 | M5 푸시 | 서버 ✅ · 앱 ✅ · **센더 ❌ (Expo 계정 게이트)** | ❌ | ❌ |
-| M6a 스와이프 리타겟 | ✅ + 근인 수리 `9a256d0a` | **PASS** §FF·§PP(회귀 재확인, 184ms 동일) — 스와이프분 184ms(<200ms), 재연결 0, 양끝 no-op | **FAIL ×7 — JS 레버 소진** §OO. WebView가 move 40개 받는 동안 RN은 0개. `passive`는 `preventDefault`만 없앨 뿐 WKWebView pan recognizer의 UIKit 중재 승리를 못 막는다. **다음은 네이티브 recognizer 중재**(require-failure/simultaneity). 지연은 분해됨 — 스와이프분 ≈0, **문서 재빌드분 ~715ms**(별건) |
+| M6a 스와이프 리타겟 | ✅ + 근인 수리 `9a256d0a` | **PASS** §FF·§PP(회귀 재확인, 184ms 동일) — 스와이프분 184ms(<200ms), 재연결 0, 양끝 no-op | **FAIL ×8 — RNGH 레버까지 소진** §RR(`blocksExternalGesture` 무효, 되돌림) · §OO. WebView가 move 40개 받는 동안 RN은 0개. `passive`는 `preventDefault`만 없앨 뿐 WKWebView pan recognizer의 UIKit 중재 승리를 못 막는다. **다음은 네이티브 recognizer 중재**(require-failure/simultaneity). 지연은 분해됨 — 스와이프분 ≈0, **문서 재빌드분 ~715ms**(별건) |
 | M6b 제어 승격 | ⛔ **삭제** — §2.3과 모순, M3가 그 결정 위에 출하됨 | — | — |
 | M6c 스크롤백 | ✅ `cde4eb2b` | **PASS** §GG·§PP(회귀 재확인) — 버튼 y 53→169, Refresh 재읽기·B8 캐시 양방향 확증 | **PASS** §II — 7/7, Close y=62 = inset 62pt 정확 일치 |
 
@@ -157,9 +157,9 @@ pane 행에 목업이 명시한 `└ 요약 줄 = pane.read`가 안 보임 / 터
 
 **따라서 수리 지점은 네이티브다.** 후보 2종:
 
-1. **RNGH 쪽** — `Gesture.Pan().blocksExternalGesture(ref)` / `.simultaneousWithExternalGesture(ref)`.
-   막히는 지점: `react-native-webview`의 `ref`는 `useImperativeHandle`(postMessage/reload)이라
-   **네이티브 뷰 ref가 아니다.** 네이티브 뷰에 닿는 경로를 먼저 찾아야 한다.
+1. ~~**RNGH 쪽**~~ — **소진됐다**(§QQ→§RR). `Gesture.Native()`로 ref 문제를 우회해
+   `blocksExternalGesture`를 실제로 배선했고(서빙 번들에서 7회 확인), **`dx`는 0에서 안 움직였다.**
+   되돌렸다. **이 경로를 다시 시도하지 마라.**
 2. **WKWebView 쪽** — `webView.scrollView.panGestureRecognizer`에 대해 RNGH의 pan을
    `require(toFail:)` 시키거나 `shouldRecognizeSimultaneouslyWith`를 열어준다.
    `scrollEnabled={false}`여도 recognizer 객체는 살아 있다(`TerminalWebView.tsx:428`).

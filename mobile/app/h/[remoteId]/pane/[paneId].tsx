@@ -242,22 +242,6 @@ export function PaneViewerScreen({
     },
     [active?.id, chips, onSelectPane]
   )
-  /**
-   * The WebView's own recognizers, given a name RNGH can arbitrate against.
-   *
-   * .prd/09 §OO measured the problem this solves: over painted glyphs the document received all 40
-   * `touchmove`s of a drag while the pane-swipe pan received none — WKWebView wins UIKit's gesture
-   * arbitration, and no amount of `passive: true` or `touch-action` changes who wins (§LL, §MM,
-   * §NN all shipped and none moved `dx` off zero). Off the glyphs, where the touch misses
-   * `#terminal-surface` entirely, there is no competitor and the pan works — which is what proves
-   * the competitor is the whole story.
-   *
-   * `Gesture.Native()` is RNGH's handle on exactly that competitor, and `blocksExternalGesture`
-   * below is the ordering: the native side waits for our pan to fail. It fails cheaply and early —
-   * ±12px of vertical travel (`src/session/pane-swipe.ts`) — so the terminal keeps every gesture it
-   * owns and pays only that much delay for it.
-   */
-  const terminalNativeGesture = useMemo(() => Gesture.Native(), [])
   const paneSwipe = useMemo(
     () =>
       Gesture.Pan()
@@ -282,11 +266,6 @@ export function PaneViewerScreen({
         // touchcancel. `touchcancel` is 0 in both states and discriminates nothing.
         .activeOffsetX([-PANE_SWIPE_ACTIVATE_OFFSET_X, PANE_SWIPE_ACTIVATE_OFFSET_X])
         .failOffsetY([-PANE_SWIPE_FAIL_OFFSET_Y, PANE_SWIPE_FAIL_OFFSET_Y])
-        // The arbitration §OO showed was missing. Takes the gesture *object*, not a component ref
-        // — which is why this works where the ref route does not: `react-native-webview` hands its
-        // `ref` to a `useImperativeHandle` (postMessage/reload) with no native tag behind it, so
-        // RNGH could never resolve it.
-        .blocksExternalGesture(terminalNativeGesture)
         // §HH's instrument, and it is here because no other signal can tell the two iOS failures
         // apart. On iOS the recognizer produced no pane switch while the *same* synthetic drag
         // scrolled an RN ScrollView 425pt away on the same screen — which leaves two stories:
@@ -307,7 +286,7 @@ export function PaneViewerScreen({
           )
         )
         .onEnd(onPaneSwipe),
-    [onPaneSwipe, terminalNativeGesture]
+    [onPaneSwipe]
   )
 
   return (
@@ -385,42 +364,37 @@ export function PaneViewerScreen({
       <GestureHandlerRootView style={styles.terminalFrame}>
         <GestureDetector gesture={paneSwipe}>
           <View style={styles.terminalSurface}>
-            {/* The inner detector is what gives `terminalNativeGesture` something to attach to —
-                RNGH needs the native gesture mounted on the view whose recognizers it stands for,
-                and that is the WebView's host. Without it `blocksExternalGesture` names nothing. */}
-            <GestureDetector gesture={terminalNativeGesture}>
-              <TerminalPaneView
-                handle={active?.id ?? 'pane'}
-                active
-                // Still zero after M3, and now on purpose rather than for want of a keyboard: this lift
-                // slides the *terminal* to keep a caret above the keyboard (orca `:4205-4211`), and M3's
-                // keyboard problem was the input bar, which now clears the keyboard by itself
-                // (`src/session/PaneInputBar.tsx`). Sliding the pane as well would hide its top rows
-                // behind the header and needs `onKeyboardAvoidanceMetrics` — the caret row — which is
-                // still dropped below. Left as a caret-visibility residual, not a hittability one.
-                keyboardLift={0}
-                textScale={1}
-                onRef={(_handle, ref) => {
-                  handleRef.current = ref
-                }}
-                // Everything below is a write path or a gesture this milestone does not consume. They are
-                // wired to no-ops rather than removed so `TerminalPaneView` stays byte-identical to orca
-                // and M3 has only to fill them in.
-                onWebReady={NOOP}
-                onSelectionMode={NOOP}
-                onSelectionCopy={NOOP}
-                onSelectionEvicted={NOOP}
-                onModesChanged={NOOP}
-                onKeyboardAvoidanceMetrics={NOOP}
-                onHaptic={NOOP}
-                onTerminalInput={onTerminalInput}
-                onTerminalQueryReply={NOOP}
-                onTerminalTap={NOOP}
-                onFileTap={NOOP}
-                onOpenUrl={NOOP}
-                onTextScaleChange={NOOP}
-              />
-            </GestureDetector>
+            <TerminalPaneView
+              handle={active?.id ?? 'pane'}
+              active
+              // Still zero after M3, and now on purpose rather than for want of a keyboard: this lift
+              // slides the *terminal* to keep a caret above the keyboard (orca `:4205-4211`), and M3's
+              // keyboard problem was the input bar, which now clears the keyboard by itself
+              // (`src/session/PaneInputBar.tsx`). Sliding the pane as well would hide its top rows
+              // behind the header and needs `onKeyboardAvoidanceMetrics` — the caret row — which is
+              // still dropped below. Left as a caret-visibility residual, not a hittability one.
+              keyboardLift={0}
+              textScale={1}
+              onRef={(_handle, ref) => {
+                handleRef.current = ref
+              }}
+              // Everything below is a write path or a gesture this milestone does not consume. They are
+              // wired to no-ops rather than removed so `TerminalPaneView` stays byte-identical to orca
+              // and M3 has only to fill them in.
+              onWebReady={NOOP}
+              onSelectionMode={NOOP}
+              onSelectionCopy={NOOP}
+              onSelectionEvicted={NOOP}
+              onModesChanged={NOOP}
+              onKeyboardAvoidanceMetrics={NOOP}
+              onHaptic={NOOP}
+              onTerminalInput={onTerminalInput}
+              onTerminalQueryReply={NOOP}
+              onTerminalTap={NOOP}
+              onFileTap={NOOP}
+              onOpenUrl={NOOP}
+              onTextScaleChange={NOOP}
+            />
           </View>
         </GestureDetector>
       </GestureHandlerRootView>
