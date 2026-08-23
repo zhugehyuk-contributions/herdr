@@ -36,7 +36,7 @@
 | M3 입력 | ✅ | **✅ PASS 4/4** | **✅ PASS** (§BB) — 바이트 11/11 Android와 동일 |
 | M4 transport 생존성 | ✅ + 재다이얼·배너·세대가드 | **✅ PASS** (§Z) — 강제종료 0건. ×10·30분은 이전 빌드 교차 | ❌ (시뮬로 안 닫힘) |
 | M5 푸시 | 서버 ✅ · 앱 ✅ · **센더 ❌ (Expo 계정 게이트)** | ❌ | ❌ |
-| M6a 스와이프 리타겟 | ✅ + 근인 수리 `9a256d0a` | **PASS** §FF — 스와이프분 184ms(<200ms), 재연결 0, 양끝 no-op | **FAIL ×4** §LL — 근인 확정: `preventDefault` 호출이 아니라 **비수동 리스너 등록 자체**. 수리 = `touch-action: none` + 리스너 passive. **iOS 재QA → 통과 시 Android 2항목 회귀 재QA 필수** |
+| M6a 스와이프 리타겟 | ✅ + 근인 수리 `9a256d0a` | **PASS** §FF — 스와이프분 184ms(<200ms), 재연결 0, 양끝 no-op | **FAIL ×6 → 근인 좌표 확정** §NN — 글자 위 dx=0 / 마지막 행 아래 공백 dx=−295 **전환 성공**. 경계 = `#terminal-surface`(inline-block) 끝. 마지막 비수동 등록(레거시 boolean form) 수리 → 재QA 대기. **별건: 전환 지연 473~719ms = 예산의 2.4~3.6배** |
 | M6b 제어 승격 | ⛔ **삭제** — §2.3과 모순, M3가 그 결정 위에 출하됨 | — | — |
 | M6c 스크롤백 | ✅ `cde4eb2b` | **PASS** §GG — 버튼 y 53→169, Refresh 재읽기·B8 캐시 양방향 확증 | **PASS** §II — 7/7, Close y=62 = inset 62pt 정확 일치 |
 

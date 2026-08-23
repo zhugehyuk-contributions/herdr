@@ -154,23 +154,29 @@ describe('the terminal surface declines browser touch behaviour up front', () =>
   })
 
   it('registers every touch listener in the served document passive', () => {
-    // Scope is the point, and getting it wrong is what let §LL ship half a repair: the previous
-    // version of this test asserted on TERMINAL_TOUCH_PAN_JS alone, so it stayed green while
-    // `terminal-webview-tap-dispatch-injected.ts` kept two non-passive capture listeners on
-    // `document` — which fire *before* the surface ones and hold the touch just the same. The
-    // device measured no change at all (14/14 gestures, dx=0). So this reads the whole document.
+    // Scope is the point, and getting it wrong shipped two half-repairs. §MM: this asserted on one
+    // module while `document`-level listeners stayed non-passive — and a document capture listener
+    // fires *first*. §NN: it then read an options object that belonged to a *later* registration,
+    // so a legacy boolean-capture form (`addEventListener('touchstart', fn, true)`) — which has no
+    // passive flag at all, and WebKit defaults those to non-passive on a non-root element — sailed
+    // through. That one listener sat on `targetSurface`, which is `display: inline-block` and so is
+    // exactly the painted grid: drags starting on a glyph got dx=0 while drags starting in the
+    // blank strip below the last row got dx=-295 and switched panes.
     //
-    // `wheel` is deliberately not included: it is not a touch event and cannot hold a touch.
+    // So the window is bounded by the *next* registration rather than by a marker, and a window
+    // that never says `passive` is an offender exactly like one that says `passive: false`.
+    // `wheel` is deliberately out of scope: it is not a touch event and cannot hold a touch.
+    const NEEDLE = "addEventListener('touch"
     const offenders: string[] = []
-    let i = XTERM_HTML.indexOf("addEventListener('touch")
+    let i = XTERM_HTML.indexOf(NEEDLE)
     while (i !== -1) {
       const name = XTERM_HTML.slice(i + 18, XTERM_HTML.indexOf("'", i + 18))
-      const close = XTERM_HTML.indexOf('}, {', i)
-      const options = close === -1 ? '' : XTERM_HTML.slice(close, XTERM_HTML.indexOf('});', close))
-      if (options.includes('passive: false')) {
+      const next = XTERM_HTML.indexOf('addEventListener(', i + NEEDLE.length)
+      const decl = XTERM_HTML.slice(i, next === -1 ? i + 4000 : next)
+      if (decl.includes('passive: false') || !decl.includes('passive')) {
         offenders.push(name)
       }
-      i = XTERM_HTML.indexOf("addEventListener('touch", i + 1)
+      i = XTERM_HTML.indexOf(NEEDLE, i + 1)
     }
     expect(offenders).toEqual([])
   })

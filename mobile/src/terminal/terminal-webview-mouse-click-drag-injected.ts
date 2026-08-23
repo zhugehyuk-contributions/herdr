@@ -194,8 +194,15 @@ export const TERMINAL_MOUSE_CLICK_DRAG_JS = `
     // Why: Android input injection can pair a mouse-flavored pointerdown with
     // real touch events (SOURCE_MOUSE + TOOL_TYPE_FINGER). If touch arrives,
     // the document touch dispatcher owns the gesture.
+    // The options object is not decoration: a legacy boolean-capture registration carries no
+    // passive flag, and WebKit defaults a touch listener on a non-root element to
+    // passive:false. That is the whole of .prd/09 §NN — this one listener kept the ancestor
+    // pane-swipe recognizer starved *only where it was attached*, and targetSurface is
+    // display:inline-block so it is exactly the painted grid. A drag beginning on a glyph got
+    // dx=0; the same drag beginning in the blank strip below the last row got dx=-295 and
+    // switched panes. The boundary the device measured, y about 482, is this element's edge.
     targetSurface.addEventListener('touchstart', function() {
       if (mouseGesture) abandonMouseGesture();
-    }, true);
+    }, { capture: true, passive: true });
   }
 `

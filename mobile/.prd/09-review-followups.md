@@ -1913,3 +1913,74 @@ Android M6a·M6c는 **PASS 상태**이고 둘 다 이 터치 경로 위에 있�
 
 Android M6a·M6c가 **PASS 상태**이고 둘 다 이 터치 경로 위다. iOS가 통과하면 **Android 2항목 재QA 필수**.
 iOS가 또 FAIL이면 이 변경은 이득 없이 위험만 남으므로 되돌리고 네이티브 작업으로 넘긴다.
+
+---
+
+## NN. iOS M6a 6차 — **`dx`가 시작 y에 따라 갈린다.** 경계는 도색 영역의 끝이었다 (2026-08-23, 별도 에이전트, `qa-ios-m6a6` @ `a869cf23`)
+
+이 라운드가 근인을 좌표로 못 박았다.
+
+| 드래그 시작 y | `[paneSwipe]` | `[touchProbe]` | 전환 |
+|---|---|---|---|
+| 200 / 300 / 400 (**글자 위**) | `success=false` **dx=0 dy=0** | start·first-move·end (moves 20~40) | 없음 |
+| 500 / 600 / 680 (**마지막 행 아래 공백**) | `begin→start→finalize` **success=true dx=−295** | **0건** | **됐다** |
+
+**누름 시간은 판별자가 아니다** — y=400 고정, hold 0.05~0.50 매트릭스 5회 전부 dx=0.
+스크린샷 실측상 마지막 도색 행은 **y≈482**. 경계가 정확히 거기다.
+
+공백에서의 전환은 완전히 정상이었다: 좌 p1→p3→p2, 우 p2→p3→p1(칩 순서 일치), **양 끝 no-op ×2씩**
+(`success=true`인데 `[fit]renderer` 없음 = 제스처는 인식, 방향만 거부), 재연결 0(같은 소켓 :52549 유지).
+
+### 근인 — 판정자가 스스로 "잔존 구멍"으로 적어둔 그 줄이다
+
+`terminal-webview-mouse-click-drag-injected.ts:197`:
+
+```js
+targetSurface.addEventListener('touchstart', function() { … }, true);   // ← 옵션 객체 없음
+```
+
+**레거시 boolean-capture 등록은 passive 플래그를 안 싣고, WebKit은 비루트 엘리먼트의 터치
+리스너를 `passive: false`로 기본 처리한다.** 그리고 이건 `targetSurface`에 붙어 있는데
+`#terminal-surface`는 `display: inline-block` — **정확히 도색된 그리드**다.
+
+그래서 y 경계가 설명된다: 글자 위에서 시작하면 이 비수동 리스너가 경로에 있어 WebKit이 붙잡고,
+마지막 행 아래에서 시작하면 그 엘리먼트가 경로에 없어 조상 recognizer가 −295를 받는다.
+**§LL이 확정한 기제 그대로이고, 남은 마지막 등록 하나였다.**
+
+판정자는 근인 후보로 *네이티브 텍스트 선택*을 지목했는데, 그건 이 경계를 설명하지 못한다 —
+xterm 자체 CSS가 `.xterm { user-select: none }`이고 앱의 선택은 xterm API로 그린다.
+
+### 내 스캔이 이걸 통과시킨 이유 — 두 번째 스코프 실패
+
+§MM에서 만든 문서 전체 스캔은 등록 지점에서 `'}, {'`를 찾아 옵션 객체를 읽었다. 레거시 형태엔
+그 객체가 없으므로 **`indexOf`가 한참 뒤 *다른* 등록의 옵션을 집어왔고**, 거기엔 `passive: false`가
+없으니 통과했다. §NN에서 다시: **마커로 찾지 말고 다음 등록까지로 창을 닫아라.**
+
+이제 창이 `passive`를 **한 번도 말하지 않는 것**도 `passive: false`와 똑같이 위반으로 잡는다.
+RED 확증: 그 줄을 레거시 형태로 되돌리면 스캔이 잡는다(이전 판본은 못 잡았다 — 그것도 RED로 확인했다).
+
+### ⚠️ 판정자의 "선택 콜아웃 FAIL"은 오귀속이다 — 정정
+
+판정자가 접근성 트리에서 `Button 'Copy'` / `Button 'Select All'`을 보고 회귀 FAIL로 적었다.
+**그 둘은 앱 자신의 선택 메뉴다** — `terminal-webview-html.ts:228-229`의
+`<button id="sel-menu-copy">Copy</button>` / `<button id="sel-menu-all">Select All</button>`,
+그리고 `:1057`이 그 기능을 이렇게 이름 붙여놨다: *"SELECTION MODE (long-press → handles → Copy)"*.
+
+즉 같은 표의 **"선택 진입 + 핸들 드래그: PASS"와 동일한 기능**이고, 롱프레스 후 메뉴가 뜨는 것이
+설계된 동작이다. 회귀 아님. (프레임 두 개가 같은 y에 66·93 폭으로 인접한 것도 `#sel-menu`의
+flex row와 일치한다.)
+
+### 남은 진짜 문제 — 전환 지연이 예산의 2.4~3.6배다
+
+공백에서 전환이 성공한 경우의 실측: `finalize` → `[fit]renderer` **473 / 527 / 624 / 690 / 712 / 719 ms**,
+헤더 텍스트 변경까지 633~913 ms. 그리드 `webgl, 94×39, vpWidth 402, scale 0.535`.
+**기준 `<200ms`를 크게 넘는다.** Android는 스와이프분 184ms였고 나머지는 문서 재빌드분이었다(§FF).
+iOS는 그 분해를 아직 못 했지만, §CC/§FF가 지목한 **pane 전환마다 730KB xterm 문서 전체 재생성**이
+같은 자리에서 다시 나타난 것으로 읽힌다. **제스처가 고쳐져도 이 항목은 별도로 남는다.**
+
+### 부수 — 유저 데몬을 또 겨눌 뻔했다
+
+판정자 셸에 `HERDR_SOCKET_PATH=~/.config/herdr/herdr.sock`가 있어 랩 CLI가 **유저 프로덕션 서버**에
+붙었고, 그 서버가 `protocol_mismatch` 에러로 **"`herdr server stop`을 실행하라"** 고 지시했다.
+3차가 당한 바로 그 경로다. 판정자는 실행하지 않고 래퍼에서 소켓을 랩 경로로 오버라이드했다.
+`.prd/10`의 unset 목록에 **`HERDR_SOCKET_PATH`를 추가**해야 한다 — `HERDR_ENV`/`HERDR_SESSION`만으로는 부족하다.
