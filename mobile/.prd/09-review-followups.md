@@ -1356,3 +1356,50 @@ M6a가 방금 지킨 스크롤 라우팅이 죽는다.
 - **pane 전환마다 터미널 WebView 문서가 통째로 재생성된다** — CDP 타깃 id로 측정. **칩 탭도 마찬가지라
   M6a 이전부터다.** 와이어 주장(재연결 없음)은 참이지만 **730KB xterm 문서 재빌드**가 미검증 `<200ms`
   예산이 실제로 쓰이는 곳이다(실측 592ms와 맞물린다). 별도 측정 대상.
+
+---
+
+## EE. exec 데드라인 vs redial 정책 — 오분류는 있으나 내 회귀가 아니다 (2026-08-23, 미독 잔여 해소)
+
+`b411ef04`(exec-ack 데드라인)이 기존 redial 정책과 이중 계상되는지가 미독 잔여였다. 읽었다.
+
+### 파일이 스스로 그은 선
+
+`src/transport/observe-stream-link.ts` 헤더가 비싼 수리(ssh 재다이얼 = TCP+KEX+서명+원격 herdr
+신규 프로세스, B8)를 두 기준으로 나눈다:
+
+| 기준 | 증거 등급 | 행동 |
+|---|---|---|
+| **exec 채널 개설 거부** | 사실 — ssh 세션이 죽었다 | 다음 다이얼에서 즉시 재다이얼 |
+| **연속 `SSH_REDIAL_AFTER_FAILED_DIALS`(=3) 다이얼이 `Welcome` 미도달** | 의심 — "half-open TCP는 채널을 *받아준다*, 뭔가 타임아웃 날 때까지" | 3회 후 재다이얼 + `redialledAtFailure` 레이트리밋 |
+
+### 실제 코드
+
+`observe-stream-link.ts:386`이 `connection.transport.openChannel(...)`의 **모든** rejection에
+`execOpenRefused = true`를 놓는다. 그런데 그 rejection에는 **타임아웃도 들어온다**:
+
+- **Android**: `HerdrSshSession.kt:101` `client.timeout = config.connectTimeoutMs` — sshj가
+  `startSession()`/`session.exec()`를 그 예산으로 묶는다. **`b411ef04` 이전부터 그랬다.**
+- **iOS**: `awaitExecAck`(`ssh-transport.ts:291`)가 같은 20s 예산으로 reject. `b411ef04`부터.
+
+**타임아웃은 사실이 아니라 의심이고, 정확히 위 표의 두 번째 행이 쓰라고 쓰인 그 의심이다**
+("뭔가 타임아웃 날 때까지" — 내 데드라인이 바로 그 "뭔가"다).
+
+### 결과
+
+`owed = execOpenRefused || failedDials - redialledAtFailure >= 3` — 왼쪽이 단락시켜
+**레이트리밋을 통째로 우회**한다. 느리지만 살아 있는 원격에서는 L3 rung마다 full ssh 재다이얼 1회가
+되고, 그 재다이얼은 같은 느린 링크 위에서 핸드셰이크를 다시 해야 한다.
+
+### 판정: 기록만, 수리 안 함
+
+1. **회귀가 아니다.** 오분류는 Android에 선재했고 `b411ef04`는 iOS를 Android 동작에 맞춘 것이다.
+   데드라인 이전 iOS는 이 자리에서 **영구 행**이었다 — 오분류는 행보다 낫다.
+2. **관측된 증상이 없다.**
+3. **M4(생존성/재연결)가 이미 별도-에이전트 PASS다**(§Z). 재연결 분류를 지금 바꾸면 그 PASS가
+   무효가 되고, 재QA 2건이 아직 미결인 상태에서 green 리시트 하나를 churn하게 된다.
+
+수리한다면 최소 형태: 데드라인 rejection에 식별 가능한 에러 타입을 주고(`channel-failure.ts`가
+이미 `ChannelCloseError`의 집이고 `modules/herdr-ssh`가 이미 거기서 import한다),
+`:386`에서 그 타입만 `execOpenRefused`에서 제외 → 인내 기준으로 흘려보낸다. half-open TCP 복구는
+여전히 일어나되 1 rung이 아니라 3 rung 후가 된다 — 그게 설계가 고른 값이다.
