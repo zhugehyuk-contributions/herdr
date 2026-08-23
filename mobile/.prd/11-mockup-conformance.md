@@ -277,3 +277,20 @@ RN Stack 헤더(`← settings`)만 비례 sans로 남아 한 화면에 두 서�
 화면 ①(라우트 부재) · 화면 ③ 시트 형태 · 화면 ⑦ 요소 단위 ·
 **N5 "1차 대비 더 접혔나"의 엄밀 A/B**(수리 전 빌드를 못 돌림 — 판정자의 기하 논증은
 *"동일 문자열에서 모노는 비례보다 결코 늦게 줄바꿈하지 않으므로 same-or-worse, 개선은 불가능"*).
+
+## P2/P3 수리 — 노드 리스트 3건 + FAB 반전 (2026-08-23)
+
+| # | 항목 | 상태 |
+|---|---|---|
+| 3 | `hub` / `remotes` 섹션 | ✅ 분류축은 폰이 지어낸 게 아니라 레지스트리 자신의 `target.type`이다 — `local`이 목업의 `hub`(meta `local`)이고, 그건 `remoteSubtitle`이 이미 그 단어를 렌더하고 있었다. **빈 섹션은 헤딩을 안 그린다**: 폰은 보통 남의 hub에 다이얼하므로 `hub` 그룹이 비고, 상시 빈 제목은 가구다 |
+| 5 | 노드 dot 4종 | ✅ `nodeDotState` — disabled→off · 스냅샷 항목 없음→blocked(반전 링) · blocked pane 존재→blocked · working 존재→working · 그 외 ok. **blocked가 working을 이긴다**(`rollupText`가 blocked를 먼저 부르는 것과 같은 우선순위). 렌더는 `AgentStateDot` 재사용 — 노드 점만 pulse하고 아래 pane 점은 spin하면 한 화면에 두 어휘가 된다 |
+| 6 | `reconnecting… · last seen 2m ago` | ✅ 서버는 이 값을 안 준다(`remote.list`에 없다) → **앱이 관측한 것만** 쓴다(`mergeLastSeen`, 나이는 스냅샷 자신의 `updatedAt`에서 센다). 콜드 스타트 직후처럼 **한 번도 못 본 원격은 `last seen` 절을 생략한다** — 지어낸 나이보다 짧은 줄이 낫다 |
+| — | FAB 반전 | ✅ 목업 `:178-183`은 `background: var(--fg); color: var(--ink)`. 구현은 ink2 외곽선 알약이라 **크롬 한 줄로 읽혔다** — FAB의 목적과 반대다. 램프 최상단으로 올렸다 |
+
+**게이트**: `src/nodes/node-list-model.test.ts` 13건(순수 함수 — dot 우선순위·생략 규칙·5초 그리드가
+화면 마운트 없이 재검사된다) + `mockup-conformance-mount.test.tsx`에 #3 어서션(존재가 아니라 **순서**까지:
+`remotes`가 `hub` 위에 오면 분할의 의미가 반대가 된다). 111파일/949테스트.
+
+**남은 누락**: #1 QR(데스크톱 `show qr` 동반) · #2 수동추가 진입점 · #7 keybindings · #8 auto-update ·
+#11 워크스페이스 경로(2차 QA에서 **기기에 존재 확인** → 누락 아니라 차이-내용으로 재분류) ·
+#12 `+` 아이콘 · #14 pane 행 blocked 반전 뱃지 · #16 경과시간(서버 API 이슈).

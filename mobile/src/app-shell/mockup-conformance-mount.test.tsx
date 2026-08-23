@@ -193,6 +193,25 @@ describe('.prd/11 누락 #4 — the node list can add a remote', () => {
   })
 })
 
+describe('.prd/11 누락 #3 — the node list is sectioned, not flat', () => {
+  it('labels both sections, hub first', async () => {
+    // The mockup draws `hub` above the box herdr itself runs on and `remotes` above the rest
+    // (`assets/mockup.html:397`, `:402`), and the fixture models exactly that shape — one
+    // `{type:'local'}` remote and several ssh ones (`../api/mock/mock-fixture.ts:115`). Order is
+    // asserted, not just presence: the point of the split is that the box you are standing on
+    // reads differently from the ones you dial, and a `remotes` heading above `hub` says the
+    // opposite. An empty section renders no heading at all — structural (`remotes.length === 0`),
+    // and not reachable from this fixture. The split itself is `nodeSection`, tested there.
+    const target = await mount(createElement(NodeListScreen))
+    const labels = target.root
+      .findAllByType(host('Text'))
+      .map((node) => String(node.props['children']))
+    expect(labels).toContain('hub')
+    expect(labels).toContain('remotes')
+    expect(labels.indexOf('hub')).toBeLessThan(labels.indexOf('remotes'))
+  })
+})
+
 describe('.prd/11 타이포그래피 — the chrome is monospaced like the mockup', () => {
   it('gives every text style a font family', async () => {
     // The mockup's contract is one line and it is global: `body { font-family: var(--mono) }`

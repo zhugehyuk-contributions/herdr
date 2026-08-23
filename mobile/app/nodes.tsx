@@ -11,15 +11,23 @@
 // transport that does not exist until stage 6; porting the card now would mean porting a card whose
 // one interesting behaviour is stubbed. The row below shows reachability from the snapshot only,
 // and says nothing it cannot know.
+import { useRef } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { StatusDot } from '../src/components/StatusDot'
+import { AgentStateDot } from '../src/components/AgentStateDot'
 import { BottomNav } from '../src/components/BottomNav'
 import { useHerdrSnapshot, remoteSubtitle } from '../src/api/snapshot-context'
 import { useHerdrDataSource } from '../src/api/herdr-data-provider'
 import { snapshotStalenessLabel } from '../src/api/snapshot-staleness'
 import { rollupText } from '../src/panes/pane-tree'
+import {
+  NODE_DOT_AGENT_STATUS,
+  mergeLastSeen,
+  nodeDetail,
+  nodeDotState,
+  nodeSection
+} from '../src/nodes/node-list-model'
 import { safeChromePadding } from '../src/layout/safe-area-chrome'
 import { typography } from '../src/theme/mobile-theme'
 import { mono } from '../src/theme/monotone'
@@ -39,6 +47,22 @@ export default function NodeListScreen() {
   const staleness = snapshotStalenessLabel({ updatedAt, refreshError })
   const source = useHerdrDataSource()
   const byRemote = new Map(snapshot.perRemote.map((entry) => [entry.remote.id, entry]))
+  // .prd/11 누락 #6. Nothing in `remote.list` says when a remote last answered, so the only honest
+  // source for "last seen 2m ago" is what this app observed — folded in a ref rather than state
+  // because it is derived from the snapshot we are already rendering and must not schedule a
+  // second render of its own. Re-running the fold with the same `updatedAt` writes the same values.
+  const lastSeenRef = useRef<ReadonlyMap<string, number>>(new Map())
+  lastSeenRef.current = mergeLastSeen(
+    lastSeenRef.current,
+    snapshot.perRemote,
+    updatedAt ?? Date.now()
+  )
+  const nowMs = Date.now()
+  // .prd/11 누락 #3. Both sections keep the server's own order inside them; only the split is ours.
+  const sections = (['hub', 'remotes'] as const).map((section) => ({
+    section,
+    remotes: snapshot.remotes.filter((remote) => nodeSection(remote) === section)
+  }))
 
   return (
     <View style={styles.screen}>
@@ -88,33 +112,50 @@ export default function NodeListScreen() {
           fixture it replaced. */}
       {status === 'error' ? <Text style={styles.error}>{error ?? 'Load failed'}</Text> : null}
       <ScrollView style={styles.body}>
-        {snapshot.remotes.map((remote) => {
-          const entry = byRemote.get(remote.id)
-          // A disabled remote is never dialled, so it has no snapshot — and saying "0 panes" about
-          // a box we did not ask would be a lie the user cannot tell from a real zero.
-          const detail = remote.disabled
-            ? 'disabled'
-            : entry
-              ? `${remoteSubtitle(remote)} · ${entry.workspaces.length} spaces · ${entry.panes.length} panes · ${rollupText(entry.panes)}`
-              : remoteSubtitle(remote)
-          return (
-            <Pressable
-              key={remote.id}
-              accessibilityRole="button"
-              accessibilityLabel={`${remote.name} — ${detail}`}
-              onPress={() => router.push(`/h/${remote.id}`)}
-              style={styles.row}
-            >
-              <View style={styles.rowHead}>
-                <StatusDot state={remote.disabled ? 'disconnected' : 'connected'} />
-                <Text style={styles.name}>{remote.name}</Text>
-                <View style={styles.spacer} />
-                <Text style={styles.chevron}>›</Text>
-              </View>
-              <Text style={styles.meta}>{detail}</Text>
-            </Pressable>
+        {sections.map(({ section, remotes }) =>
+          remotes.length === 0 ? null : (
+            <View key={section}>
+              {/* An empty section renders no heading at all: a phone dials someone else's hub, so
+                  `hub` is normally empty here and a permanent empty label would be furniture. */}
+              <Text style={styles.listLabel}>{section}</Text>
+              {remotes.map((remote) => {
+                const entry = byRemote.get(remote.id)
+                // A disabled remote is never dialled, so it has no snapshot — and saying "0 panes"
+                // about a box we did not ask would be a lie the user cannot tell from a real zero.
+                const detail = nodeDetail({
+                  remote,
+                  subtitle: remoteSubtitle(remote),
+                  entry,
+                  rollup: entry ? rollupText(entry.panes) : '',
+                  lastSeenAt: lastSeenRef.current.get(remote.id) ?? null,
+                  nowMs
+                })
+                return (
+                  <Pressable
+                    key={remote.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${remote.name} — ${detail}`}
+                    onPress={() => router.push(`/h/${remote.id}`)}
+                    style={styles.row}
+                  >
+                    <View style={styles.rowHead}>
+                      {/* .prd/11 누락 #5: four states, not two — see `nodeDotState`. */}
+                      <AgentStateDot
+                        state={
+                          NODE_DOT_AGENT_STATUS[nodeDotState({ disabled: remote.disabled, entry })]
+                        }
+                      />
+                      <Text style={styles.name}>{remote.name}</Text>
+                      <View style={styles.spacer} />
+                      <Text style={styles.chevron}>›</Text>
+                    </View>
+                    <Text style={styles.meta}>{detail}</Text>
+                  </Pressable>
+                )
+              })}
+            </View>
           )
-        })}
+        )}
       </ScrollView>
       <BottomNav
         active="nodes"
@@ -135,6 +176,17 @@ const styles = StyleSheet.create({
   rowHead: { flexDirection: 'row', alignItems: 'center' },
   name: { color: mono.fg, fontSize: 15, fontFamily: typography.monoFamily },
   meta: { color: mono.dim, fontSize: 12, fontFamily: typography.monoFamily },
+  // mockup.html:185-188 — 10px, uppercase, wide tracking, the dimmest step on the ramp. It is a
+  // divider that happens to be a word, so it sits below `meta` in emphasis, not above it.
+  listLabel: {
+    color: mono.dim2,
+    fontSize: 10,
+    letterSpacing: 1.6,
+    textTransform: 'uppercase',
+    paddingTop: 10,
+    paddingBottom: 2,
+    fontFamily: typography.monoFamily
+  },
   // Padded, unlike `meta`: that one is a row subtitle inside the already-inset body, so an error
   // borrowing it rendered flush against the screen edge, out of line with everything else.
   error: {
@@ -157,13 +209,14 @@ const styles = StyleSheet.create({
     right: 16,
     bottom: 72,
     zIndex: 3,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: mono.line,
-    backgroundColor: mono.ink2
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 10,
+    // Inverted, per the mockup (:178-183). This is the one control on the screen the ramp puts at
+    // the top — an outlined pill on ink read as one more row of chrome, which is the opposite of
+    // what a FAB is for.
+    backgroundColor: mono.fg
   },
-  fabLabel: { color: mono.fg, fontSize: 13, fontWeight: '600', fontFamily: typography.monoFamily },
+  fabLabel: { color: mono.ink, fontSize: 12, fontWeight: '700', fontFamily: typography.monoFamily },
   spacer: { flex: 1 }
 })
