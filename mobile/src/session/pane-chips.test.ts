@@ -40,8 +40,13 @@ describe('pane chips', () => {
     const chips = buildPaneChips(PANES, AGENTS)
     expect(chips.map((chip) => chip.paneId)).toEqual(['ws-1-p1', 'ws-1-p2', 'ws-1-p3'])
     expect(chips.map((chip) => chip.tabLabel)).toEqual(['tab 1', 'tab 1', 'tab 2 · build'])
-    // The handle is herdr's own short form, falling back to the id when a pane was never named.
-    expect(chips.map((chip) => chip.handle)).toEqual(['1-1', '1-2', 'ws-1-p3'])
+    // The handle is the mockup's notation, derived from position rather than read off the wire
+    // (`.prd/11-mockup-conformance.md` N1/N3). It used to be the pane's *label* with the id as a
+    // fallback, and two device QAs measured what that cost: a pane renamed `claude` rendered
+    // `claude claude` once the strip's second slot became the agent, and an unnamed pane put a raw
+    // `ws-1-p3` where the mockup shows `2-1`. Position is what the reader sees, so position is what
+    // the handle says.
+    expect(chips.map((chip) => chip.handle)).toEqual(['1-1', '1-2', '2-1'])
     expect(chips[0]!.status).toBe('blocked')
   })
 

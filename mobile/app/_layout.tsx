@@ -30,6 +30,7 @@ import { View, StyleSheet } from 'react-native'
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import * as SplashScreen from 'expo-splash-screen'
+import { typography } from '../src/theme/mobile-theme'
 import { mono } from '../src/theme/monotone'
 import { HerdrDataProvider } from '../src/api/herdr-data-provider'
 import { HerdrClientsProvider } from '../src/transport/herdr-clients-context'
@@ -127,7 +128,16 @@ export default function RootLayout() {
               {/* M2b. The one screen with a real header: it is pushed from a list screen and the
                 only way back is the header's own back button — the bottom nav has two entries and
                 they are the mockup's (`src/components/BottomNav.tsx`). */}
-              <Stack.Screen name="settings" options={{ title: 'settings' }} />
+              <Stack.Screen
+                name="settings"
+                options={{
+                  title: 'settings',
+                  // The only native header left in the app, and the 2차 UI QA caught it wearing the
+                  // system's proportional sans next to this screen's own monospaced bar — two
+                  // typefaces in one frame. The mockup's contract is `body { font-family: var(--mono) }`.
+                  headerTitleStyle: { fontFamily: typography.monoFamily }
+                }}
+              />
             </Stack>
           </View>
         </BlockedPushProvider>

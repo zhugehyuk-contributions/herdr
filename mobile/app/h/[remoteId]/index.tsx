@@ -225,11 +225,18 @@ const styles = StyleSheet.create({
   paneHandle: { color: mono.dim, fontSize: 11, minWidth: 24, fontFamily: typography.monoFamily },
   paneTitle: { color: mono.fgSoft, fontSize: 13, flexShrink: 1, fontFamily: typography.monoFamily },
   paneRowOuter: { paddingVertical: 2 },
-  // Indented to sit under the handle, the way the mockup's `└` hangs off the row above it.
+  // Hangs *inside* the row, just right of the handle column, the way the mockup's `└` does.
+  //
+  // `.prd/11` N4 twice: the first attempt read the 1차 measurement ("x≈48, outside the row") and
+  // *reduced* the padding, which moved it further left — the 2차 QA measured the connector at
+  // x=25 device px against a row whose text starts at x=108. The row's own `paddingLeft` is 40 and
+  // the handle column is `minWidth: 24` with a 6px gap, so 46 is the first column boundary inside
+  // it. A sibling of the row `View` does not inherit that padding, which is what made both
+  // attempts guesses instead of arithmetic.
   paneActivity: {
     color: mono.dim,
     fontSize: 12,
-    paddingLeft: 6,
+    paddingLeft: 46,
     paddingBottom: 4,
     fontFamily: typography.monoFamily
   },

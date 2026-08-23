@@ -16,7 +16,12 @@
 // the one place a tab's identity has to survive into the row. `${tab_id}::${pane_id}` is orca's own
 // separator.
 import type { AgentInfo, AgentStatus, PaneInfo } from '../api/herdr-api-types'
-import { groupPanesByTab, tabLabelsFrom, type PaneTabGroup } from '../panes/pane-tree'
+import {
+  groupPanesByTab,
+  positionalPaneHandle,
+  tabLabelsFrom,
+  type PaneTabGroup
+} from '../panes/pane-tree'
 import { agentIdentityLabel } from '../agents/agent-display'
 import { resolveActiveSessionTab, type ResolveActiveSessionTabResult } from './active-session-tab'
 
@@ -66,12 +71,16 @@ export function buildPaneChips(
   agents: readonly AgentInfo[] = []
 ): PaneChip[] {
   const labels = tabLabelsFrom(agents)
-  return groupPanesByTab(panes, labels).flatMap((group: PaneTabGroup) =>
-    group.panes.map((pane) => ({
+  return groupPanesByTab(panes, labels).flatMap((group: PaneTabGroup, tabIndex: number) =>
+    group.panes.map((pane, paneIndex) => ({
       id: paneChipId(pane),
       paneId: pane.pane_id,
       tabId: pane.tab_id,
-      handle: paneChipHandle(pane),
+      // `.prd/11` N3/N1. The pane's *label* used to sit here, so a pane renamed `claude` rendered
+      // `claude claude` once the second slot became the agent — the same duplication N1 removed
+      // from the browser list, relocated to the strip. `positionalPaneHandle` is the mockup's
+      // notation (`1-1 claude`) and it is derived from the same ordering this flatten walks.
+      handle: positionalPaneHandle(tabIndex, paneIndex),
       tabLabel: group.label,
       agentLabel: agentIdentityLabel({
         agent_status: pane.agent_status,

@@ -318,15 +318,13 @@ export function PaneViewerScreen({
           {activePane ? paneTitle(activePane) : (remote?.name ?? remoteId ?? '')}
         </Text>
         <View style={styles.spacer} />
-        {/* .prd/11 누락 #15. The mockup puts the node on the right of this bar, and it used to be
-            reachable only through the subtitle's ternary — which prefers the pane title, so on the
-            normal path (a pane is attached) the node name vanished exactly when it mattered. An
-            app that shows several boxes at once has to say which box this is. */}
-        {remote ? (
-          <Text style={styles.node} numberOfLines={1}>
-            {remote.name}
-          </Text>
-        ) : null}
+        {/* .prd/11 누락 #15 is satisfied by the back crumb at the start of this bar, not by a
+            second slot here. There *was* one, and the 2차 device QA measured what it cost: the node
+            name appeared twice (`‹ qa-lab` and `qa-lab`), pushed the row past the bezel, and the
+            connection status hard-cut at x=1079 with no ellipsis — the one clipping that got worse
+            when the chrome became monospaced. The defect #15 named was "the node vanishes on the
+            normal path"; a crumb that always renders it fixes that without spending the width
+            twice. */}
         {/* M6c's entry point, and it is a button on purpose — see this file's header and
             `src/session/PaneHistoryOverlay.tsx`. Placed immediately after the spacer so a long
             agent label cannot push it off the row; the two meta readings that follow may be
