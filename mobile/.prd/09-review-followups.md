@@ -1403,3 +1403,77 @@ M6a가 방금 지킨 스크롤 라우팅이 죽는다.
 이미 `ChannelCloseError`의 집이고 `modules/herdr-ssh`가 이미 거기서 import한다),
 `:386`에서 그 타입만 `execOpenRefused`에서 제외 → 인내 기준으로 흘려보낸다. half-open TCP 복구는
 여전히 일어나되 1 rung이 아니라 3 rung 후가 된다 — 그게 설계가 고른 값이다.
+
+---
+
+## FF. M6a PASS · M6c FAIL — 그리고 §D1이 한 화면 뒤에서 재발했다 (2026-08-23, 별도 에이전트, `qa-m6b` @ `264b4479`)
+
+APK 16:15:35 / 커밋 `264b4479` 16:10:42 — 대상 코드 확인. live 판정, 근거는 pane별 난수 토큰
+(`TOKEN-0bb0dabe` / `PANE2-TOKEN-e8db32b0` / `PANE3-TOKEN-f4c23551`)이 각자의 화면에 렌더된 것.
+픽스처 pane 3개, 서버 보고 `viewport_rows` p1=27 / p2=13 / p3=12.
+
+### M6a PASS — 1차 FAIL의 근인이 실제로 죽었다
+
+`9a256d0a`(`nestedScrollEnabled` 제거)가 수리로 확증됐다. 좌 p1→p2→p3, 우 p3→p2→p1, 칩 순서 일치,
+양 끝 no-op(순환 없음), 수직축은 터미널이 보존, **sshd `Accepted publickey` = 2로 8회 이상 전환 내내 불변**
+(앱 다이얼 1 + 프로브 1) — §2.3의 "리타겟이지 재연결이 아니다"가 와이어에서 성립.
+
+**지연 분해가 이 판정의 값어치다.** 60fps VFR 녹화 프레임 실측:
+
+| 구간 | 시각 | 누적 | 귀속 |
+|---|---|---|---|
+| 제스처 종료 | t≈4.19 | — | — |
+| 헤더 커밋 시작 | t=4.3744 | **184ms** | **스와이프분 — `<200ms` 충족** |
+| 헤더 정착 | t=4.7754 | 585ms | 크로스페이드 |
+| 새 pane 본문 완전 페인트 | t=4.9061 | 716ms | + WebView 문서 재빌드 |
+
+즉 예산은 지켰고, 나머지 ~530ms는 M6a 소유가 아니다.
+
+### ⚠️ 별건이 M6a보다 크다 — 문서 재빌드가 초 단위로 튄다
+
+278줄 버퍼를 가진 p1로 **복귀**할 때 터미널이 `connecting` + 백지로 **+3s**, 내용 복귀까지 **+15s**.
+칩 탭도 동일하니 M6a 이전부터고, 730KB xterm 문서 재빌드가 pane 전환마다 통째로 일어나는 §CC의
+잔여가 여기서 초 단위로 드러났다. **M6a는 통과했지만 사용성은 여기서 죽는다** — 별도 항목.
+
+### M6c FAIL — 데이터는 멀쩡하고 크롬이 죽였다
+
+**게이팅 질문 해소: 서버 버퍼는 비어 있지 않다.** 앱을 거치기 전에 CLI로 갈랐다 —
+`pane read --source recent-unwrapped --lines 1000` = **301줄**(LINE-1~300), 같은 pane `visible` = 28줄.
+272줄 이상이 서버에 실재한다. "앱 결함"과 "서버에 없음"이 섞이지 않았다.
+
+오버레이도 **정상 렌더**됐다: `301 lines · read 16:36:18`이 서버 카운트와 정확히 일치, 라이브 뷰포트가
+27행(LINE-275~299)인데 오버레이는 LINE-1과 원본 명령줄까지 도달, 목업 픽스처 문자열 0건,
+**Android 세로 스크롤 동작**(ScrollView가 WebView 밖이라 깨끗 — 예측이 맞았다).
+
+**죽은 것은 닫기다.** `PaneHistoryOverlay.tsx:123-132`이 `StyleSheet.absoluteFillObject` + 평면
+`paddingTop: 16`뿐이고 `useSafeAreaInsets`를 부르지 않는다. 그래서 `Refresh`/`Close`가 실측 **y≈53–86**,
+Android 상태바 아래에 깔린다 — y 6점(70·74·75·78·84·95) 스윕 전부 무반응, 반면 라이브 헤더의
+`History`(y=169)는 정상. 유일한 탈출구인 back 키는 오버레이가 아니라 **터미널 화면 전체를 pop**한다.
+
+### 이것은 §D1의 재발이다
+
+`src/layout/safe-area-chrome.ts`가 자기 헤더에 §D1을 이렇게 적어놨다: *"Every screen's own top bar
+hardcoded `paddingTop: 24`"*. 이 오버레이는 `16`을 하드코딩했다. **같은 결함 계열, 한 화면 뒤.**
+윈도 가장자리에 고정되는 표면을 새로 만들 때마다 재발할 수 있다는 뜻이다.
+
+### 수리 (이 커밋)
+
+- `PaneHistoryOverlay`가 **`topPadding` prop**을 받는다. `useSafeAreaInsets()`를 직접 부르지 않은 것은
+  두 가지 이유다 — 이 컴포넌트의 doc이 약속한 *"reads no context"*(마운트 스위트가
+  `SafeAreaProvider` 없이 렌더)를 지키고, 라이브 헤더와 **같은 수 하나**임을 구조로 강제한다
+  (이 오버레이는 그 헤더가 있던 자리를 덮는다).
+- 라우트가 `safeChromePadding(insets.top, HEADER_TOP_PADDING)` — 라인 276이 자기 헤더에 쓰는
+  **바로 그 식**을 넘긴다.
+- `styles.header`에서 **`paddingTop`을 아예 없앴다.** 평면 상수가 다시 기어들어올 자리를 없앤 것이
+  주석보다 강한 게이트다.
+- 기계화: `src/app-shell/safe-area-mount.test.tsx`(=§D1의 테스트)에 오버레이 4건 추가 —
+  버튼 2종 × (iPhone 세로 / Android). RED 확증: 되돌리면 정확히 그 4건만 깨지고, 랜드스케이프
+  바닥 가드는 양쪽에서 통과.
+
+### 아직 못 본 것 (FAIL이 아니라 판정 불가)
+
+- **B8 캐시** — 마운트를 유지한 채 닫고 재진입해야 재는데 `Close`가 안 눌려 막혔다. 관측된 새 exec
+  (`16:36:18`→`16:39:19`)는 **화면 전체 언마운트 후** 재진입이라 예상된 값이지 위반 증거가 아니다.
+- **`Refresh`의 두 번째 exec** — 같은 이유.
+
+둘 다 이 수리로 판정 가능해진다.

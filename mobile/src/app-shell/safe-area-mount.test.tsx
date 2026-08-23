@@ -291,3 +291,50 @@ describe('bottom bars clear the home indicator', () => {
     }
   )
 })
+
+// §FF — the same defect, one surface later. `PaneHistoryOverlay` is an `absoluteFillObject` that
+// covers the pane header, so it is pinned to the window edge exactly as that header is, and it
+// padded by a flat 16. On Android its `Refresh` and `Close` landed at y≈53-86, under the status
+// bar: taps at six y values did nothing, and the only way out was the back key, which pops the
+// whole terminal screen rather than the overlay (2026-08-23 QA).
+//
+// Reached through the button rather than by rendering the overlay directly, because what has to
+// clear the inset is the *mounted* chain — the screen, the overlay, the header — which is the same
+// argument `edgePadding`'s doc block makes about the original bug.
+describe('the history overlay clears the system chrome', () => {
+  async function openHistory(): Promise<ReactTestRenderer> {
+    const target = await mount(
+      createElement(PaneViewerScreen, { remoteId: 'remote-1', paneId: 'ws-1-p1' })
+    )
+    await act(async () => {
+      ;(byLabel(target, 'Open pane history').props['onPress'] as () => void)()
+    })
+    return target
+  }
+
+  it.each([['Re-read pane history'], ['Close pane history']])(
+    '%s sits below the Dynamic Island',
+    async (label) => {
+      safeArea.insets = IPHONE_PORTRAIT
+      const target = await openHistory()
+      expect(edgePadding(byLabel(target, label), 'Top')).toBeGreaterThanOrEqual(IPHONE_PORTRAIT.top)
+    }
+  )
+
+  it.each([['Re-read pane history'], ['Close pane history']])(
+    '%s sits below the Android status bar',
+    async (label) => {
+      // The platform the defect was actually measured on: edge-to-edge reports the ~24dp status bar
+      // as the inset, and 16 < 24 is the whole of the failure.
+      safeArea.insets = ANDROID
+      const target = await openHistory()
+      expect(edgePadding(byLabel(target, label), 'Top')).toBeGreaterThanOrEqual(ANDROID.top)
+    }
+  )
+
+  it('keeps its own spacing in landscape, where there is no bar to clear', async () => {
+    safeArea.insets = IPHONE_LANDSCAPE
+    const target = await openHistory()
+    expect(edgePadding(byLabel(target, 'Close pane history'), 'Top')).toBeGreaterThanOrEqual(16)
+  })
+})

@@ -389,6 +389,9 @@ export function PaneViewerScreen({
       <PaneHistoryOverlay
         history={history}
         paneLabel={activePane ? paneTitle(activePane) : (active?.handle ?? paneId ?? 'Pane')}
+        // The identical expression the header above is padded by, and deliberately not a second
+        // call: the overlay covers that header, so the two bars are one bar in two states.
+        topPadding={safeChromePadding(insets.top, HEADER_TOP_PADDING)}
       />
     </View>
   )

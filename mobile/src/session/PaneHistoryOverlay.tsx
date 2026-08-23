@@ -35,10 +35,26 @@ import type { PaneHistoryView } from './use-pane-history'
  */
 export function PaneHistoryOverlay({
   history,
-  paneLabel
+  paneLabel,
+  topPadding
 }: {
   history: PaneHistoryView
   paneLabel: string
+  /**
+   * What the header pads by so its buttons clear the system chrome — the *same* number the live
+   * pane header uses, passed in rather than read here.
+   *
+   * A prop and not `useSafeAreaInsets()` for two reasons. It keeps the promise in this function's
+   * doc block ("reads no context"), so the mount suite renders it without a `SafeAreaProvider`;
+   * and it makes the two bars provably one number instead of two computations that can drift —
+   * this overlay sits exactly where the header it covers sits.
+   *
+   * Absent, the header padded by a flat 16 and this surface reproduced §D1 one screen later:
+   * `Refresh` and `Close` landed at y≈53-86 under the Android status bar, where taps at six
+   * different y values did nothing (2026-08-23 QA, §FF). The only exit left was the back key,
+   * which pops the whole terminal screen rather than the overlay.
+   */
+  topPadding: number
 }) {
   const bodyRef = useRef<ScrollView | null>(null)
   // The interesting end of a fixed-size read is the bottom — the rows that just scrolled off the
@@ -56,7 +72,7 @@ export function PaneHistoryOverlay({
   }
   return (
     <View style={styles.overlay}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: topPadding }]}>
         <Text style={styles.title}>History</Text>
         <Text style={styles.subtitle} numberOfLines={1}>
           {paneLabel}
@@ -129,7 +145,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 16,
-    paddingTop: 16,
+    // No `paddingTop` here on purpose: it is the one value this surface must not decide for
+    // itself. The route supplies it (`topPadding`), so a flat constant cannot creep back in.
     paddingBottom: 8
   },
   title: { color: mono.fg, fontSize: 15, fontWeight: '700' },
