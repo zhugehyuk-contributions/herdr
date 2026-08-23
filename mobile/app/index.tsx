@@ -25,7 +25,6 @@ import { BottomNav } from '../src/components/BottomNav'
 import { useHerdrSnapshot } from '../src/api/snapshot-context'
 import { useHerdrDataSource } from '../src/api/herdr-data-provider'
 import { snapshotStalenessLabel } from '../src/api/snapshot-staleness'
-import { agentPaneHandle } from '../src/agents/agent-display'
 import {
   buildFleetAgentRows,
   countByStatus,
@@ -109,7 +108,7 @@ export default function AgentsHomeScreen() {
                 key={row.key}
                 agent={row.agent}
                 meta={`${row.remote.name} / ${row.workspaceLabel}`}
-                trailing={agentPaneHandle(row.agent)}
+                trailing={row.handle}
                 emphasis={row.agent.agent_status === 'blocked'}
                 onPress={() => router.push(row.href)}
               />

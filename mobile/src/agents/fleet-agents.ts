@@ -23,7 +23,8 @@
 //     me"; answering that with a bare agent name means the user cannot go there. So the row model
 //     carries the remote and the workspace label, resolved here (the workspace label lives in
 //     `workspace.list`, not in `agent.list`) rather than looked up per render.
-import type { AgentInfo, AgentStatus, RemoteDefinition } from '../api/herdr-api-types'
+import type { AgentInfo, AgentStatus, PaneInfo, RemoteDefinition } from '../api/herdr-api-types'
+import { groupPanesByTab, positionalPaneHandle } from '../panes/pane-tree'
 import type { HerdrSnapshot } from '../api/snapshot-context'
 
 /**
@@ -53,6 +54,16 @@ export type FleetAgentRow = {
   workspaceLabel: string
   /** Where a tap goes. The pane viewer route is stage 7; the href is its address either way. */
   href: string
+  /**
+   * `1-2` — tab 1, pane 2 *within its workspace*, the short handle herdr shows in its own UI and
+   * the one the mockup's agent rows carry (`assets/mockup.html:610`).
+   *
+   * Computed here rather than read off the agent because the wire has no such field: `manual_label`
+   * is a rename, not a position, and using it made this screen print pane *names* (`build`,
+   * `nextest`) where the mockup prints positions. The 3차 device QA caught that the pane list and
+   * the chip strip had both been repaired and this one screen had not.
+   */
+  handle: string
 }
 
 export type FleetAgentGroup = {
@@ -66,14 +77,47 @@ export function buildFleetAgentRows(snapshot: HerdrSnapshot): FleetAgentRow[] {
     const labels = new Map(
       entry.workspaces.map((workspace) => [workspace.workspace_id, workspace.label])
     )
+    const handles = positionalHandles(entry.panes)
     return entry.agents.map((agent) => ({
       key: `${entry.remote.id}:${agent.pane_id}`,
       remote: entry.remote,
       agent,
       workspaceLabel: labels.get(agent.workspace_id) ?? agent.workspace_id,
-      href: paneHref(entry.remote.id, agent.pane_id)
+      href: paneHref(entry.remote.id, agent.pane_id),
+      // Falls back to the id when the pane is not in `pane.list` — an agent whose pane vanished
+      // between the two calls is a real state, and a handle invented for it would be a lie about
+      // where it sits.
+      handle: handles.get(agent.pane_id) ?? agent.pane_id
     }))
   })
+}
+
+/**
+ * `pane_id -> "1-2"`, for one remote.
+ *
+ * Numbering is per workspace and then per tab, in list order — the same walk
+ * `app/h/[remoteId]/index.tsx` does through `groupPanesByTab`, so a pane carries one handle
+ * wherever it is shown. Doing it twice with two walks is how the two screens would drift.
+ */
+function positionalHandles(panes: readonly PaneInfo[]): Map<string, string> {
+  const byWorkspace = new Map<string, PaneInfo[]>()
+  for (const pane of panes) {
+    const list = byWorkspace.get(pane.workspace_id)
+    if (list) {
+      list.push(pane)
+    } else {
+      byWorkspace.set(pane.workspace_id, [pane])
+    }
+  }
+  const handles = new Map<string, string>()
+  for (const workspacePanes of byWorkspace.values()) {
+    for (const [tabIndex, group] of groupPanesByTab(workspacePanes).entries()) {
+      for (const [paneIndex, pane] of group.panes.entries()) {
+        handles.set(pane.pane_id, positionalPaneHandle(tabIndex, paneIndex))
+      }
+    }
+  }
+  return handles
 }
 
 /** The address of one pane on one remote. One definition, so the list and the router cannot drift. */

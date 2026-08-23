@@ -195,8 +195,14 @@ QA 사이에 랩이 죽어 있다(sshd·tmux 종료, `app.json` 원복). 매번 
 1. throwaway ed25519 키 2쌍 생성 (호스트키 + 유저키). **유저의 실제 키 금지.**
 2. `/usr/sbin/sshd -f /tmp/<lab>/sshd_config` — 에뮬레이터에서 `10.0.2.2:<port>`로 보인다
 3. `tmux -L <lab> new-session -x 240 -y 52` 안에서 herdr 클라이언트 기동
-   > ⚠️ **`HERDR_ENV`·`HERDR_SESSION`·**`HERDR_SOCKET_PATH`** 등 herdr env를 반드시 unset하라.** 안 하면
+   > ⚠️ **`HERDR_ENV`·`HERDR_SESSION`은 반드시 unset하라.** 안 하면
    > *"nested herdr is disabled"*로 즉사한다. (같은 계열 함정이 Rust 게이트에도 있다 — `.prd/01`)
+   > ⛔ **`HERDR_SOCKET_PATH`는 unset이 아니라 `/tmp/<lab>/…`으로 명시 오버라이드다** (2026-08-24, 3차
+   > QA 판정자가 브리프의 "전부 unset"을 그대로 따랐다면 발동할 뻔한 사고). unset하면 herdr가
+   > **유저 프로덕션 소켓(`~/.config/herdr/herdr.sock`)으로 폴백**한다 — 격리하려던 변수를 지우는 것이
+   > 정확히 격리를 깨는 동작이다. 확인 방법: `lsof`로 랩 프로세스가 `~/.config/herdr`를 참조하지 않음을
+   > 실측(3차가 참조 0건으로 확인).
+
 4. `app.json`의 `extra.herdrRemotes`에 랩 원격 주입. **Metro 재시작 불필요** — 매니페스트를 요청 시
    재읽는다(실측 확인).
 
