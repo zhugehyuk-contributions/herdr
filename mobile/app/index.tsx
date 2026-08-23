@@ -25,6 +25,7 @@ import { BottomNav } from '../src/components/BottomNav'
 import { useHerdrSnapshot } from '../src/api/snapshot-context'
 import { useHerdrDataSource } from '../src/api/herdr-data-provider'
 import { snapshotStalenessLabel } from '../src/api/snapshot-staleness'
+import { fleetSummary } from '../src/nodes/node-list-model'
 import {
   buildFleetAgentRows,
   countByStatus,
@@ -66,8 +67,12 @@ export default function AgentsHomeScreen() {
         <Text style={styles.logo}>herdr</Text>
         <Text style={styles.crumb}>/ agents</Text>
         <View style={styles.spacer} />
-        {/* Which remotes this list is the union of — the mockup's "all nodes" (mockup.html:637). */}
-        <Text style={styles.meta}>{`${snapshot.perRemote.length} nodes`}</Text>
+        {/* Which remotes this list is the union of — the mockup's "all nodes" (mockup.html:637).
+            The count is the *fleet*, not the remotes that answered: see `fleetSummary`, and the 5차
+            device round that measured this header saying `1 nodes` over a two-row node list. */}
+        <Text style={styles.meta}>
+          {fleetSummary({ remotes: snapshot.remotes, answered: snapshot.perRemote.length })}
+        </Text>
         {/* The residual §G left: without this, a link that has been failing for ten minutes renders
             exactly like a healthy one and the screen just quietly ages. Healthy renders *nothing*
             here — there is no "up to date" badge to invent (`ConnectionStatusLine.tsx` property 1). */}

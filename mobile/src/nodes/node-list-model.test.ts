@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { PaneInfo, RemoteDefinition, RemoteSnapshot } from '../api/herdr-api-types'
 import {
   NODE_DOT_AGENT_STATUS,
+  fleetSummary,
   lastSeenClause,
   mergeLastSeen,
   nodeDetail,
@@ -141,5 +142,35 @@ describe('mergeLastSeen', () => {
     expect(first.get('r1')).toBe(100)
     const second = mergeLastSeen(first, [], 200)
     expect(second.get('r1')).toBe(100)
+  })
+})
+
+describe('fleetSummary — 5차가 잡은 자기모순 헤더', () => {
+  const remote = (id: string, over: Partial<RemoteDefinition> = {}): RemoteDefinition => ({
+    id,
+    name: id,
+    target: { type: 'ssh', target: `z@${id}` },
+    ...over
+  })
+
+  it('답한 수가 아니라 함대를 센다 — 그게 "노드가 몇 개냐"의 뜻이다', () => {
+    // 5차 실측: 살아있는 1 + 죽은 1인데 헤더가 `1 nodes`, 그 아래 목록은 2행, settings는 `app.json · 2`.
+    expect(fleetSummary({ remotes: [remote('a'), remote('b')], answered: 1 })).toBe(
+      '2 nodes · 1 unreachable'
+    )
+  })
+
+  it('전부 답하면 두 번째 절은 없다 — 발명하지 않는다', () => {
+    expect(fleetSummary({ remotes: [remote('a'), remote('b')], answered: 2 })).toBe('2 nodes')
+  })
+
+  it('disabled는 함대에 세되 unreachable로는 세지 않는다 — 아무도 안 걸었으니까', () => {
+    expect(
+      fleetSummary({ remotes: [remote('a'), remote('b', { disabled: true })], answered: 1 })
+    ).toBe('2 nodes')
+  })
+
+  it('빈 함대', () => {
+    expect(fleetSummary({ remotes: [], answered: 0 })).toBe('0 nodes')
   })
 })

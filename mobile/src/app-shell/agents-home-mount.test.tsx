@@ -212,8 +212,15 @@ afterEach(() => {
 describe('Agents home', () => {
   it('is the union over every dialled remote, not one box', async () => {
     const texts = textNodes(await mountShell())
-    // remote.list declares 5; `jump` is disabled, so 4 were dialled.
-    expect(texts).toContain('4 nodes')
+    // `remote.list` declares 5 and `jump` is disabled, so 4 were dialled — and the header counts
+    // **5**, deliberately. It used to count the dialled ones, and the 5차 device round measured
+    // what that costs: a fleet of two with one host down rendered a two-row node list under a
+    // header reading `1 nodes`. A disabled remote is still a node the user has; what it is not is
+    // *unreachable*, and `fleetSummary` keeps those two readings apart rather than folding one into
+    // the other (`../nodes/node-list-model.ts`).
+    expect(texts).toContain('5 nodes')
+    // …and no second clause, because every remote that was dialled answered in this fixture.
+    expect(texts.some((text) => text.includes('unreachable'))).toBe(false)
     // Agents from at least three different remotes are on screen at once. In a per-box list this is
     // structurally impossible, which is what makes it worth asserting.
     for (const remoteName of ['fable-m5max', 'iq-64', 'work-m16', 'blade-4090']) {

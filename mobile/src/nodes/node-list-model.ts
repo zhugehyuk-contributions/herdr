@@ -140,3 +140,29 @@ export function mergeLastSeen(
   }
   return next
 }
+
+/**
+ * The agents screen's fleet reading — `2 nodes`, or `2 nodes · 1 unreachable`.
+ *
+ * It used to be `perRemote.length`, which counts the remotes that *answered*. The 5차 device round
+ * caught what that costs: with one live remote and one dead one the node list showed two rows and
+ * the header above it said `1 nodes`, on the same screen, while settings said `app.json · 2`.
+ * Counting the fleet is what a person means by "how many nodes do I have".
+ *
+ * The second clause exists so the first one cannot over-claim in the other direction: a fleet of two
+ * where one is down is not the same thing as a healthy two, and this is the only place that
+ * difference reaches the Agents home at all — its list is built from the remotes that answered, so
+ * a dead one contributes nothing and would otherwise be invisible here.
+ *
+ * Disabled remotes are counted in the fleet and never in `unreachable`: nobody dialled them, so
+ * nothing is wrong with them (the same rule `nodeDotState` uses for the dot).
+ */
+export function fleetSummary(args: {
+  remotes: readonly RemoteDefinition[]
+  answered: number
+}): string {
+  const total = args.remotes.length
+  const dialled = args.remotes.filter((remote) => remote.disabled !== true).length
+  const unreachable = Math.max(0, dialled - args.answered)
+  return unreachable === 0 ? `${total} nodes` : `${total} nodes · ${unreachable} unreachable`
+}
