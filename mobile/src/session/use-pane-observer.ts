@@ -116,7 +116,34 @@ export function usePaneObserver({
       events: {
         onStatus: (status) => {
           if (live) {
-            setView((current) => ({ ...current, status }))
+            // `observing` also *clears* the error, and that is the whole of §Q's second half. The
+            // string set below is the only thing `streamSummary` shows once it is non-null
+            // (`app/h/[remoteId]/pane/[paneId].tsx`), so before this line a stream that healed on
+            // L3's ladder went on reporting the failure that started the ladder — measured on a
+            // device as `transport is closed` surviving ~20 minutes past the re-attach, and as
+            // `Not connected` printed over frames that were arriving as the user read it. A header
+            // that lies about a live screen is the surface that makes a user force-quit, which is
+            // the state M4 exists to abolish.
+            //
+            // Why here and not a new `PaneObserver` event: the observer already publishes this
+            // exact edge. `setStatus('observing')` is emitted one line after `ladder.noteAttached()`
+            // in `./pane-observer.ts` `onWelcome` — the single place a handshake is known to have
+            // landed — so an added event would be a second name for one edge, and a second thing to
+            // keep in step with the ladder. The string being cleared lives only in this state,
+            // beside the `setView` that sets it.
+            //
+            // Only `observing`, never `connecting`: an armed rung *trying* is not a stream that came
+            // back, and clearing there would lie in the other direction — a pane failing every 90
+            // seconds would look healthy. `failed` keeps its error for the same reason: a dead
+            // stream's diagnosis is the one thing the header still has to say.
+            //
+            // Generation-safe by construction, not by a second check here: `observing` is reached
+            // only from `onWelcome`, which runs inside the `generation === this.attachSeq` gate on
+            // `onMessage` (`./pane-observer.ts`), so a superseded stream's late `Welcome` cannot
+            // clear the live generation's error.
+            setView((current) =>
+              status === 'observing' ? { ...current, status, error: null } : { ...current, status }
+            )
           }
         },
         onGeometry: (geometry) => {
