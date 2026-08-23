@@ -261,6 +261,16 @@ QA 사이에 랩이 죽어 있다(sshd·tmux 종료, `app.json` 원복). 매번 
 - 통한 방법: `recentlyopenedapps` plist의 타임스탬프를 원하는 포트가 최신이 되도록 재작성 후 재기동.
 - Android의 `adb reverse`는 포트를 **묶어주므로** 이 실패 모드가 없다. iOS만의 함정이다.
 
+### ⛔ iOS에서 "탭은 갔는데 반응 없음"은 최소 세 가지다 — 증상으로 구분되지 않는다
+
+| 원인 | 판별자 |
+|---|---|
+| **safe-area 매몰** (§D1/§FF) | 버튼의 **실측 y**를 재라. top inset(17 Pro 59pt / Pro Max 62pt)보다 작으면 이것 |
+| **dev-client 기어 FAB 가로채기** (§II) | 탭 후 **무엇이 열렸나**. 개발자 메뉴가 뜨면 이것. XCUITest는 `isHittable=true`로 보고하므로 hittable은 무신호. 개발자 메뉴에서 Tools button 스위치를 꺼라(라벨 아닌 **스위치 프레임 좌표**로). 릴리즈 빌드엔 없다 |
+| **제스처 recognizer 경합** (§HH) | **대조 실험**. 같은 파라미터의 드래그를 같은 화면의 다른 RN 표면(가로 ScrollView 등)에 줘라. 거기선 먹고 대상에서만 안 먹으면 이것 |
+
+셋을 안 가르고 "안 눌린다"로 보고하면 판정이 무효다.
+
 ### 환경
 
 ```bash
