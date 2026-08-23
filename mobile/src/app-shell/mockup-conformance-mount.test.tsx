@@ -99,6 +99,9 @@ vi.mock('react-native', () => {
   }
 })
 
+const { mono } = await import('../theme/monotone')
+const { rollupText } = await import('../panes/pane-tree')
+const { agentStateLabel } = await import('../agents/agent-display')
 const { HerdrClientsProvider } = await import('../transport/herdr-clients-context')
 const { HerdrSnapshotProvider } = await import('../api/snapshot-context')
 const { loadMockSnapshot } = await import('../api/mock/mock-snapshot-loader')
@@ -190,6 +193,55 @@ describe('.prd/11 누락 #4 — the node list can add a remote', () => {
     // open); what changed is that the affordance is where an empty node list is looked at.
     const target = await mount(createElement(NodeListScreen))
     expect(byLabel(target, 'add remote')).toBeTruthy()
+  })
+})
+
+describe('.prd/11 누락 #14 — a blocked pane row is inverted', () => {
+  it('renders the blocked state as ink-on-foreground, and nothing else that way', async () => {
+    // `assets/mockup.html:538`. In a grayscale ramp inversion is the top emphasis level, and the
+    // mockup spends it on one word — so the assertion is two-sided: the blocked row has it, and no
+    // other row borrowed it. A row that merely *brightened* would pass a "does blocked stand out"
+    // reading while putting the loudest treatment in the palette on nothing at all.
+    const target = await mount(createElement(RemoteScreen, { remoteId: 'remote-1' }))
+    // Pane rows exist only under an expanded workspace (`app/h/[remoteId]/index.tsx`, `isOpen`), so
+    // the collapsed default renders zero of them — asserting on the initial tree would pass for the
+    // wrong reason forever.
+    const snapshot = await loadMockSnapshot()
+    const remote = snapshot.perRemote.find((each) => each.remote.id === 'remote-1')
+    if (!remote) {
+      throw new Error('fixture has no remote-1')
+    }
+    const workspace = remote.workspaces[0]!
+    await act(async () => {
+      byLabel(
+        target,
+        `${workspace.label} — ${rollupText(remote.panes.filter((pane) => pane.workspace_id === workspace.workspace_id))}`
+      ).props['onPress']()
+    })
+    const blockedPanes = remote.panes.filter(
+      (pane) => pane.workspace_id === workspace.workspace_id && pane.agent_status === 'blocked'
+    )
+    expect(blockedPanes.length).toBeGreaterThan(0)
+    const inverted = target.root.findAllByType(host('Text')).filter((node) => {
+      const style = ([node.props['style']].flat(4) as unknown[]).filter(
+        (layer): layer is Record<string, unknown> => typeof layer === 'object' && layer !== null
+      )
+      const merged = Object.assign({}, ...style) as Record<string, unknown>
+      return merged['backgroundColor'] === mono.fg && merged['color'] === mono.ink
+    })
+    // One per blocked pane and not one more, *and* carrying those panes' own words. Counting alone
+    // was not enough: pointing the treatment at a different status still produced one badge in this
+    // fixture, so the count matched while the wrong row was inverted. The fixture's blocked rows
+    // carry a custom state label ("waiting for approval", `../api/mock/mock-fixture.ts:95`), which
+    // is why the expected text comes from the data rather than from the word `blocked`.
+    expect(inverted.length).toBe(blockedPanes.length)
+    expect(inverted.map((node) => String(node.props['children'])).sort()).toEqual(
+      blockedPanes
+        .map((pane) =>
+          agentStateLabel({ agent_status: pane.agent_status, state_labels: pane.state_labels })
+        )
+        .sort()
+    )
   })
 })
 

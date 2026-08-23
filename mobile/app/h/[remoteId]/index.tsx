@@ -23,6 +23,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AgentStateDot } from '../../../src/components/AgentStateDot'
+import { StateBadge } from '../../../src/components/StateBadge'
 import { WorkspaceListRow } from '../../../src/components/WorkspaceListRow'
 import { useRemote, useRemoteSnapshot, remoteSubtitle } from '../../../src/api/snapshot-context'
 import {
@@ -150,7 +151,13 @@ export function RemoteScreen({
                           accessibilityRole="button"
                           accessibilityLabel={`${positionalPaneHandle(tabIndex, paneIndex)} ${paneTitle(pane)}`}
                           onPress={() => router.push(paneHref(remoteId ?? '', pane.pane_id))}
-                          style={styles.paneRowOuter}
+                          style={[
+                            styles.paneRowOuter,
+                            // `.rowcard.alert` (:148): the blocked row is the only one the mockup
+                            // lifts off the background. A band rather than a border because these
+                            // rows have no card chrome to thicken.
+                            pane.agent_status === 'blocked' && styles.paneRowAlert
+                          ]}
                         >
                           <View style={styles.paneRow}>
                             <Text style={styles.paneHandle}>
@@ -161,12 +168,26 @@ export function RemoteScreen({
                               {paneTitle(pane)}
                             </Text>
                             <View style={styles.spacer} />
-                            <Text style={styles.paneState}>
-                              {agentStateLabel({
-                                agent_status: pane.agent_status,
-                                state_labels: pane.state_labels
-                              })}
-                            </Text>
+                            {/* .prd/11 누락 #14 — the mockup inverts exactly this one word
+                                (`assets/mockup.html:538`). Every other state keeps the dim text it
+                                had: the state word is not deleted for them, because `state_labels`
+                                lets a server say something more specific than the bare status and
+                                dropping it to match the mockup's quieter rows would lose that. */}
+                            {pane.agent_status === 'blocked' ? (
+                              <StateBadge
+                                label={agentStateLabel({
+                                  agent_status: pane.agent_status,
+                                  state_labels: pane.state_labels
+                                })}
+                              />
+                            ) : (
+                              <Text style={styles.paneState}>
+                                {agentStateLabel({
+                                  agent_status: pane.agent_status,
+                                  state_labels: pane.state_labels
+                                })}
+                              </Text>
+                            )}
                             <Text style={styles.chevron}>›</Text>
                           </View>
                           {/* .prd/11 누락 #13 — the mockup's `└ …` line. Without it this list is
@@ -225,6 +246,7 @@ const styles = StyleSheet.create({
   paneHandle: { color: mono.dim, fontSize: 11, minWidth: 24, fontFamily: typography.monoFamily },
   paneTitle: { color: mono.fgSoft, fontSize: 13, flexShrink: 1, fontFamily: typography.monoFamily },
   paneRowOuter: { paddingVertical: 2 },
+  paneRowAlert: { backgroundColor: mono.ink2 },
   // Hangs *inside* the row, just right of the handle column, the way the mockup's `└` does.
   //
   // `.prd/11` N4 twice: the first attempt read the 1차 measurement ("x≈48, outside the row") and
