@@ -72,6 +72,12 @@
       "expo-router",
       "./plugins/android-respect-rotation-lock.js",
       "./plugins/with-herdr-ssh-spm.js",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "herdr scans a pairing QR shown by herdr on your desktop. The camera is used for that and nothing else."
+        }
+      ],
       "expo-splash-screen",
       [
         "expo-notifications",

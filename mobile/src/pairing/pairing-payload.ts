@@ -110,6 +110,19 @@ export function pairingCodeStaleness(
 }
 
 /**
+ * The keystore id for a scanned remote.
+ *
+ * `z@10.0.2.2:2222` reads better and is **not storable**: `modules/herdr-ssh/src/remote-store.ts`
+ * concatenates the id into a keystore key and bounds it to `[A-Za-z0-9._-]{1,64}`, so an `@` or a
+ * `:` makes `saveStoredRemote` throw — a scan that parsed perfectly and then failed on write. The
+ * id is an internal handle; `name` is what a person reads.
+ */
+export function pairingRemoteId(payload: Pick<PairingPayload, 'user' | 'host' | 'port'>): string {
+  const raw = `${payload.user}-${payload.host}-${payload.port}`
+  return raw.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 64)
+}
+
+/**
  * The remote a scanned code describes, in the shape the rest of the app already stores.
  *
  * `privateKey` is empty when the code carried none: the caller lands the user on the form with
@@ -118,7 +131,7 @@ export function pairingCodeStaleness(
  */
 export function remoteConfigFromPairing(payload: PairingPayload): HerdrSshRemoteConfig {
   return {
-    id: `${payload.user}@${payload.host}:${payload.port}`,
+    id: pairingRemoteId(payload),
     name: payload.name ?? payload.host,
     host: payload.host,
     port: payload.port,

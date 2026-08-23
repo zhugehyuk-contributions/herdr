@@ -30,9 +30,11 @@ import {
   type StoredRemoteSummary
 } from '../modules/herdr-ssh'
 import { RemoteEditor } from '../src/settings/RemoteEditor'
+import { pendingPairing } from '../src/pairing/pairing-handoff'
 import { describeProbe, probeSshRemote } from '../modules/herdr-ssh/src/probe'
 import {
   draftFromRemote,
+  draftFromPairing,
   emptyDraft,
   parseRemoteDraft,
   type RemoteDraft,
@@ -147,6 +149,20 @@ export default function SettingsScreen() {
       setProbing(false)
     }
   }, [editing])
+  // Goal condition 5. A scan hands its payload over in memory rather than through the URL
+  // (`src/pairing/pairing-handoff.ts` says why), and this is the only place that consumes it. It
+  // runs once: `take()` clears as it reads, so a re-render — or a second screen — finds nothing,
+  // and a private key does not sit in a module slot for the rest of the session.
+  //
+  // It opens the *form*, not a saved remote: the code supplies fields, the user supplies the press,
+  // and the existing validation, host-key advisories and probe all still run on that press.
+  useEffect(() => {
+    const payload = pendingPairing.take()
+    if (payload !== null) {
+      setEditing({ mode: 'create', draft: draftFromPairing(payload) })
+    }
+  }, [])
+
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
 
   const reload = useCallback(async () => {

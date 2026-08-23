@@ -98,7 +98,10 @@ export default function NodeListScreen() {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="add remote"
-        onPress={() => router.push('/settings')}
+        // Goal condition 5: the destination is the scan screen now, which is what the mockup's flow
+        // has always been (① scan → ③ add remote). `app/pair.tsx` carries `add by hand` for the
+        // cases a camera cannot serve — no permission, no camera, no desktop herdr new enough.
+        onPress={() => router.push('/pair')}
         style={styles.fab}
       >
         <Text style={styles.fabLabel}>+ add remote</Text>

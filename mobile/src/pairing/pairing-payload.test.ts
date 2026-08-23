@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   PAIRING_PAYLOAD_VERSION,
   pairingCodeStaleness,
+  pairingRemoteId,
   parsePairingCode,
   remoteConfigFromPairing
 } from './pairing-payload'
@@ -90,6 +91,28 @@ describe('pairingCodeStaleness', () => {
   })
 })
 
+describe('pairingRemoteId', () => {
+  it('stays inside the keystore charset — the store throws on anything else', () => {
+    // `remote-store.ts` bounds the id to `[A-Za-z0-9._-]{1,64}` because it concatenates it into a
+    // keystore key. `z@host:22` parses fine and then fails on write, which is the worst place for
+    // this to surface.
+    const id = pairingRemoteId({ user: 'z', host: '10.0.2.2', port: 2222 })
+    expect(id).toMatch(/^[A-Za-z0-9._-]{1,64}$/)
+  })
+
+  it('sanitises a host that carries characters the store refuses', () => {
+    const id = pairingRemoteId({ user: 'ops/deploy', host: 'box.local:alias', port: 22 })
+    expect(id).toMatch(/^[A-Za-z0-9._-]{1,64}$/)
+    expect(id).toBe('ops-deploy-box.local-alias-22')
+  })
+
+  it('truncates rather than producing an id the store rejects for length', () => {
+    const id = pairingRemoteId({ user: 'u'.repeat(40), host: 'h'.repeat(40), port: 22 })
+    expect(id.length).toBe(64)
+    expect(id).toMatch(/^[A-Za-z0-9._-]{1,64}$/)
+  })
+})
+
 describe('remoteConfigFromPairing', () => {
   it('produces a config the store already understands', () => {
     const parsed = parsePairingCode(JSON.stringify(GOOD))
@@ -98,7 +121,7 @@ describe('remoteConfigFromPairing', () => {
     }
     const config = remoteConfigFromPairing(parsed.payload)
     expect(config).toMatchObject({
-      id: 'z@10.0.2.2:2222',
+      id: 'z-10.0.2.2-2222',
       name: 'iq-64',
       host: '10.0.2.2',
       port: 2222,

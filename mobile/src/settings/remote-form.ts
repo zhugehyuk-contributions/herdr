@@ -13,6 +13,7 @@ import {
   type StoredRemoteEdit,
   type StoredRemoteSummary
 } from '../../modules/herdr-ssh'
+import { pairingRemoteId } from '../pairing/pairing-payload'
 
 /** Every field as the user types it — all strings, because that is what a `TextInput` produces. */
 export interface RemoteDraft {
@@ -198,4 +199,36 @@ const FIELDS = new Set<string>(Object.keys(emptyDraft()))
 function fieldOf(reason: string): RemoteDraftField {
   const path = reason.split(':')[0]?.trim() ?? ''
   return FIELDS.has(path) ? (path as RemoteDraftField) : 'id'
+}
+
+/**
+ * The form a scanned pairing code lands on (`.prd/12-qr-pairing.md`, goal condition 5).
+ *
+ * A draft rather than a saved remote on purpose: nothing reaches the keystore because a camera saw
+ * a shape. The user sees the filled form and presses save, which is also the only path on which the
+ * existing validation, the host-key advisories and the reachability probe (`.prd/11` #9) run.
+ *
+ * `allowUnknownHostKey` is left **false**. A code can carry a key and a target; it cannot carry the
+ * user's decision to dial a host whose identity nothing has pinned, and defaulting that to true
+ * because the transport arrived over a QR would be the app deciding a security question on the
+ * strength of a photograph.
+ */
+export function draftFromPairing(payload: {
+  name?: string | undefined
+  host: string
+  port: number
+  user: string
+  session?: string | undefined
+  key?: string | undefined
+}): RemoteDraft {
+  return {
+    ...emptyDraft(),
+    id: pairingRemoteId({ user: payload.user, host: payload.host, port: payload.port }),
+    name: payload.name ?? payload.host,
+    host: payload.host,
+    port: String(payload.port),
+    username: payload.user,
+    privateKey: payload.key ?? '',
+    session: payload.session ?? ''
+  }
 }

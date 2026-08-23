@@ -39,6 +39,14 @@ vi.mock('expo-router', () => ({
   useLocalSearchParams: () => routerState.params
 }))
 
+vi.mock('expo-camera', () => ({
+  // The scan screen is goal condition 5 and mockup ①. The permission hook reports "not granted" so
+  // this suite exercises the path a first-run user actually lands on — the one that has to offer a
+  // way forward without a camera.
+  CameraView: 'CameraView',
+  useCameraPermissions: () => [{ granted: false, canAskAgain: true }, () => Promise.resolve()]
+}))
+
 vi.mock('lucide-react-native', () => ({
   ChevronDown: 'ChevronDown',
   ChevronRight: 'ChevronRight',
@@ -109,6 +117,7 @@ const { default: NodeListScreen } = await import('../../app/nodes')
 const { RemoteScreen } = await import('../../app/h/[remoteId]/index')
 const { PaneViewerScreen } = await import('../../app/h/[remoteId]/pane/[paneId]')
 const { default: SettingsScreen } = await import('../../app/settings')
+const { default: PairScreen } = await import('../../app/pair')
 
 const NO_CONNECTIONS: readonly HerdrRemoteConnection[] = []
 
@@ -193,6 +202,24 @@ describe('.prd/11 누락 #4 — the node list can add a remote', () => {
     // open); what changed is that the affordance is where an empty node list is looked at.
     const target = await mount(createElement(NodeListScreen))
     expect(byLabel(target, 'add remote')).toBeTruthy()
+  })
+})
+
+describe('.prd/11 누락 #1·#2 — the scan screen exists, and has a way past the camera', () => {
+  it('renders the frame, the desktop instruction, and the manual escape', async () => {
+    // Screen ① was missing entirely (`assets/mockup.html:288-327`) until the goal gained condition
+    // 5 — "qr 코드 로그인 기능 꼭 추가 (생각해보니 이거 필수임 ssh 접속 키 때문에)". Asserted with
+    // permission *denied*, because that is where a first-run user starts and the screen is only
+    // useful if it still offers both doors from there.
+    const target = await mount(createElement(PairScreen))
+    expect(byLabel(target, 'allow camera')).toBeTruthy()
+    // 누락 #2, the mockup's `수동으로 추가`: the only route through when there is no camera, no
+    // permission, or no desktop herdr new enough to emit a code.
+    expect(byLabel(target, 'add by hand')).toBeTruthy()
+    const texts = target.root
+      .findAllByType(host('Text'))
+      .map((node) => String(node.props['children']))
+    expect(texts.join(' ')).toContain('show qr')
   })
 })
 
