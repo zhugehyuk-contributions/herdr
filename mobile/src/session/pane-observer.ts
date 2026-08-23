@@ -265,12 +265,12 @@ export class PaneObserver {
           // must not book a second failure, or the attempt counter L3's cap keys off doubles.
           onMessage: (message) => {
             if (generation === this.attachSeq) {
-              this.onMessage(message)
+              this.onMessage(message, generation)
             }
           },
           onError: (error) => {
             if (generation === this.attachSeq) {
-              this.fail(error)
+              this.fail(generation, error)
             }
           },
           onClose: (close) => {
@@ -308,7 +308,13 @@ export class PaneObserver {
         })
       )
     } catch (error: unknown) {
-      this.fail(error instanceof Error ? error : new Error(String(error)))
+      // `generation`, not the live one: everything above this line is awaited — `pane.layout`, the
+      // exec channel, the `Hello` write — so a rejection can land after this observer was replaced
+      // (a retarget, a re-attach; both run `streamDown`, which bumps `attachSeq`). Since
+      // `b411ef04` that is not a rare race but a clock: `openChannel` rejects every channel that
+      // has not been approved within `connectTimeoutMs` (20s), so any retarget or re-attach inside
+      // that window produces exactly this late rejection.
+      this.fail(generation, error instanceof Error ? error : new Error(String(error)))
     }
   }
 
@@ -358,6 +364,10 @@ export class PaneObserver {
       return
     }
     const channel = this.channel
+    // Captured before the first await for the same reason `attach` captures one: `grids.resolve`
+    // and the two `channel.send`s below can all reject after this stream was retired, and a
+    // retarget that lost its race is not a failure of the stream that replaced it.
+    const generation = this.attachSeq
     const geometry = await this.grids.resolve(paneId)
     if (this.disposed || this.channel !== channel) {
       return
@@ -375,7 +385,7 @@ export class PaneObserver {
       }
       await channel.send(encodeRetargetTerminalFrame(paneId, OBSERVE_MODE))
     } catch (error: unknown) {
-      this.fail(error instanceof Error ? error : new Error(String(error)))
+      this.fail(generation, error instanceof Error ? error : new Error(String(error)))
     }
   }
 
@@ -417,12 +427,12 @@ export class PaneObserver {
     this.ladder.arm()
   }
 
-  private onMessage(message: ServerMessage): void {
+  private onMessage(message: ServerMessage, generation: number): void {
     if (this.disposed) {
       return
     }
     if (message.type === 'welcome') {
-      this.onWelcome(message)
+      this.onWelcome(message, generation)
       return
     }
     if (message.type === 'terminal') {
@@ -434,7 +444,7 @@ export class PaneObserver {
     // already counts the ones that did not decode (`undecodableCount`).
   }
 
-  private onWelcome(welcome: WelcomeMessage): void {
+  private onWelcome(welcome: WelcomeMessage, generation: number): void {
     this.options.events?.onWelcome?.(welcome)
     try {
       // Not a formality: the server answers with the encoding it *actually* chose, and a client
@@ -445,7 +455,7 @@ export class PaneObserver {
       // Latched, not retried: the peer will answer the next `Hello` with the same `Welcome`, so a
       // ladder here would be an ssh exec every 90s forever against a verdict that cannot move.
       this.ladder.latch()
-      this.fail(error instanceof Error ? error : new Error(String(error)))
+      this.fail(generation, error instanceof Error ? error : new Error(String(error)))
       return
     }
     if (this.observing || this.channel === null) {
@@ -458,8 +468,10 @@ export class PaneObserver {
     this.setStatus('observing')
     const written = this.channel.send(encodeObserveTerminalFrame(this.target))
     if (written !== undefined) {
+      // Reached from inside `onMessage`'s gate, but resolved outside it — the write can reject
+      // after this generation is gone, so it hands `fail` the generation it was armed for.
       void written.catch((error: unknown) =>
-        this.fail(error instanceof Error ? error : new Error(String(error)))
+        this.fail(generation, error instanceof Error ? error : new Error(String(error)))
       )
     }
   }
@@ -476,7 +488,30 @@ export class PaneObserver {
     }
   }
 
-  private fail(error: Error): void {
+  /**
+   * Books a failure against the generation that suffered it.
+   *
+   * The generation is a parameter rather than a re-read of `attachSeq` because three of the five
+   * ways into this method resolve *after* the gate that let them start: `attach`'s catch (an
+   * awaited dial and an awaited `Hello`), `retarget`'s catch (an awaited `pane.layout` and two
+   * awaited sends) and the `ObserveTerminal` write's `catch` in `onWelcome`. The other two —
+   * `openTerminalStream`'s `onError` and the refused-`Welcome` latch — are synchronous inside
+   * `generation === this.attachSeq`, so for them this check is the one they already pass, restated
+   * where it cannot be forgotten.
+   *
+   * The gate lives here rather than at each catch because what it protects is not the reporting but
+   * `streamDown` below: a dead generation reaching it bumps `attachSeq`, closes the *live*
+   * channel and arms the ladder — a working stream torn down by a corpse. One place that can do
+   * that is one place to guard, and the signature makes a future caller name its generation instead
+   * of inheriting the bug. This is the same expression `attach` uses at its two await boundaries;
+   * `disposed` rides along because `close()` does not move the sequence, and a closed screen must
+   * not be told anything at all (`streamDown` already checks it, but `setStatus`/`onError` fire
+   * first).
+   */
+  private fail(generation: number, error: Error): void {
+    if (this.disposed || generation !== this.attachSeq) {
+      return
+    }
     if (this.state === 'failed') {
       return
     }
