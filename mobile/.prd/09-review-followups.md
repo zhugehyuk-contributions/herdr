@@ -1856,3 +1856,60 @@ Android M6a·M6c는 **PASS 상태**이고 둘 다 이 터치 경로 위에 있�
    fromIndex + `expect(len).toBeGreaterThan(0)` 가드를 넣었고, 그래도 마커가 **다른 모듈의**
    리스너를 잡아서, 결국 주장의 대상 모듈(`TERMINAL_TOUCH_PAN_JS`)에 직접 검사하도록 바꿨다.
    **문서에서 잘라내지 말고 주장하는 모듈을 읽어라** — 그게 교훈이다.
+
+---
+
+## MM. iOS M6a 5차 — 수리는 옳았는데 **한 모듈에만** 적용됐다 (2026-08-23, 별도 에이전트, `qa-ios-m6a5` @ `0f2fc4bc`)
+
+`dx=0`이 14/14로 유지됐다. 판정자가 이유를 정확히 짚었다.
+
+### 내가 절반만 고쳤다
+
+§LL은 `TERMINAL_TOUCH_PAN_JS`만 수동으로 돌렸다. 그런데 같은 문서가
+`terminal-webview-tap-dispatch-injected.ts:113`에서 **`document`에** touchmove를
+`{capture:true, passive:false}`로 **계속 등록**하고 있었다(`:57`의 touchstart도 같다).
+
+**`document` 레벨 capture 리스너는 `targetSurface` 것보다 먼저 발화한다.** 그러니 §LL이 확정한
+기제 그대로 WebKit은 여전히 모든 터치를 붙잡았고, 표면 모듈만 바꾼 것은 **아무것도 바꾸지 않았다.**
+
+### 그리고 내 테스트가 그걸 green으로 통과시켰다
+
+`expect(TERMINAL_TOUCH_PAN_JS).not.toContain('passive: false')` — **한 모듈에 스코프**돼 있어서,
+같은 문서에 비수동 등록 2개가 살아 있는데도 통과했다. 판정자의 표현이 정확하다:
+**"assert the wrong scope 함정의 뒤집힌 형태"**. §LL 커밋 메시지가 경고한 바로 그 실수를,
+경고를 쓰면서 저질렀다.
+
+### 이번 수리
+
+- `terminal-webview-tap-dispatch-injected.ts`의 **document 레벨 touchstart·touchmove 둘 다 passive**로.
+  거기 있던 `preventDefault` 2건은 **select-drag(선택 핸들 드래그) 모드에서만** 쓰였고,
+  그건 `touch-action: none`이 이미 덮는다.
+- `terminal-webview-wheel-scroll-injected.ts:54`의 `passive:false`는 **그대로 둔다** —
+  `wheel`은 터치 이벤트가 아니라 터치를 붙잡을 수 없다.
+- **테스트를 문서 전체 스캔으로 교체**: 서빙된 문서의 모든 `addEventListener('touch…')` 등록을
+  찾아 옵션에 `passive: false`가 있으면 실패. 게다가 **스캔이 아무것도 안 찾는 것 자체를 실패**로
+  만드는 두 번째 테스트를 붙였다(등록 철자가 바뀌면 스캔이 조용히 빈 결과를 내고 통과한다).
+  RED 확증: 하나를 되돌리면 스캔이 잡는다.
+
+### 회귀 3항목은 이 라운드에서 통과했다 (귀중하다)
+
+| 항목 | 결과 |
+|---|---|
+| 핀치 줌 | **된다** — 3.5× 확대 확증(스크린샷 해시 상이, 화면에 거대 글자) |
+| 줌 상태 가로 팬 | **된다** — 화면 이동, 헤더는 `w1:p1` 유지 |
+| 텍스트선택 콜아웃 | **안 뜬다** — 1.6s 롱프레스 후 menuItems 0개. `-webkit-touch-callout: none` 유효 |
+
+즉 `preventDefault` 제거의 대가는 지금까지 **0**이다. 남은 두 모듈을 마저 돌리는 비용이 낮은 이유다.
+
+### 수직 스크롤백은 회귀가 아니라 **판정 불가**다 — 판정자의 정직함
+
+페이지가 63~88개 move를 받았는데 화면이 안 움직였다. 그런데 판정자가 그걸 회귀로 부르지 않았다:
+`panY`는 **2-touch 핀치 분기에서만** 갱신되고 단일 손가락 수직은 `term.scrollLines`에 위임되는데,
+**앱의 로컬 xterm은 원격의 24행 뷰포트만 보유한다**(그게 M6c 히스토리가 존재하는 이유다).
+즉 이 픽스처엔 `scrollLines`가 움직일 로컬 스크롤백이 애초에 없다.
+"이 커밋이 깼다"와 "원래 no-op이었다"를 가르려면 수리 전 대조 빌드나 alt-screen 픽스처가 필요하다.
+
+### 남은 위험은 그대로다
+
+Android M6a·M6c가 **PASS 상태**이고 둘 다 이 터치 경로 위다. iOS가 통과하면 **Android 2항목 재QA 필수**.
+iOS가 또 FAIL이면 이 변경은 이득 없이 위험만 남으므로 되돌리고 네이티브 작업으로 넘긴다.

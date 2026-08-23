@@ -83,7 +83,8 @@ export const TERMINAL_TAP_DISPATCH_JS = `
       sel.activeHandle = handleName;
       dispatch.mode = 'select-drag';
       dispatch.touchId = t.identifier;
-      e.preventDefault();
+      // No preventDefault: passive listener (§MM). Dragging a selection handle is already
+      // insulated by touch-action: none, and calling it here would log per touch.
       return;
     }
 
@@ -108,13 +109,18 @@ export const TERMINAL_TAP_DISPATCH_JS = `
       tapCandidate = { x: t.clientX, y: t.clientY, t: Date.now(), identifier: t.identifier };
       armLongPress(t);
     }
-  }, { capture: true, passive: false });
+    // Passive since .prd/09 §MM. A *document*-level capture listener fires before the surface
+    // one, so leaving this non-passive kept WebKit holding every touch and the ancestor
+    // pane-swipe recognizer still received zero touchesMoved — the §LL repair was real but
+    // incomplete, and converting only the surface module changed nothing (measured: 14/14
+    // gestures still dx=0). What the two preventDefault calls below used to suppress is now
+    // declined up front by touch-action: none on html, body.
+  }, { capture: true, passive: true });
 
   document.addEventListener('touchmove', function(e) {
     if (dispatch.mode === 'select-drag') {
       var t = touchById(e.touches, dispatch.touchId);
       if (!t || !sel || !sel.activeHandle) return;
-      e.preventDefault();
       handleDragMove(sel.activeHandle, t.clientX, t.clientY);
       return;
     }
@@ -138,7 +144,13 @@ export const TERMINAL_TAP_DISPATCH_JS = `
       }
       // existing surface handler will run from its own listener
     }
-  }, { capture: true, passive: false });
+    // Passive since .prd/09 §MM. A *document*-level capture listener fires before the surface
+    // one, so leaving this non-passive kept WebKit holding every touch and the ancestor
+    // pane-swipe recognizer still received zero touchesMoved — the §LL repair was real but
+    // incomplete, and converting only the surface module changed nothing (measured: 14/14
+    // gestures still dx=0). What the two preventDefault calls below used to suppress is now
+    // declined up front by touch-action: none on html, body.
+  }, { capture: true, passive: true });
 
   document.addEventListener('touchend', function(e) {
     if (dispatch.mode === 'select-drag') {

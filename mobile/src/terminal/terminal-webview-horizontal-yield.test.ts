@@ -13,6 +13,7 @@
 import { describe, expect, it } from 'vitest'
 import { XTERM_HTML } from './terminal-webview-html'
 import { TERMINAL_TOUCH_PAN_JS } from './terminal-webview-touch-pan-injected'
+import { TERMINAL_TAP_DISPATCH_JS } from './terminal-webview-tap-dispatch-injected'
 import { PANE_SWIPE_ACTIVATE_OFFSET_X, PANE_SWIPE_AXIS_RATIO } from '../session/pane-swipe'
 
 /** The two numbers the page compiled in, read back out of the document it will actually serve. */
@@ -152,19 +153,42 @@ describe('the terminal surface declines browser touch behaviour up front', () =>
     expect(XTERM_HTML).toContain('-webkit-touch-callout: none;')
   })
 
-  it('registers the touch listeners passive, and calls no preventDefault in them', () => {
-    // Asserted against the module rather than the assembled document on purpose: the served HTML
-    // contains three other `touchstart` registrations and a dozen `preventDefault` calls that are
-    // none of this claim's business (button clicks, the mouse/click-drag suppressors). Slicing the
-    // document by marker landed on the wrong module's listener twice; the claim is a property of
-    // this file, so this file is what is read.
-    expect(TERMINAL_TOUCH_PAN_JS).not.toContain('passive: false')
-    expect(TERMINAL_TOUCH_PAN_JS).toContain('passive: true')
-    // The *call*, not the word: the comment above the removal says "preventDefault" out loud, and
-    // asserting on the bare identifier fails on the explanation rather than on the behaviour.
-    expect(TERMINAL_TOUCH_PAN_JS).not.toContain('e.preventDefault(')
-    // `stopPropagation` must survive — it is what keeps xterm's own handlers out of the gesture,
-    // and unlike `preventDefault` it works on a passive listener.
+  it('registers every touch listener in the served document passive', () => {
+    // Scope is the point, and getting it wrong is what let §LL ship half a repair: the previous
+    // version of this test asserted on TERMINAL_TOUCH_PAN_JS alone, so it stayed green while
+    // `terminal-webview-tap-dispatch-injected.ts` kept two non-passive capture listeners on
+    // `document` — which fire *before* the surface ones and hold the touch just the same. The
+    // device measured no change at all (14/14 gestures, dx=0). So this reads the whole document.
+    //
+    // `wheel` is deliberately not included: it is not a touch event and cannot hold a touch.
+    const offenders: string[] = []
+    let i = XTERM_HTML.indexOf("addEventListener('touch")
+    while (i !== -1) {
+      const name = XTERM_HTML.slice(i + 18, XTERM_HTML.indexOf("'", i + 18))
+      const close = XTERM_HTML.indexOf('}, {', i)
+      const options = close === -1 ? '' : XTERM_HTML.slice(close, XTERM_HTML.indexOf('});', close))
+      if (options.includes('passive: false')) {
+        offenders.push(name)
+      }
+      i = XTERM_HTML.indexOf("addEventListener('touch", i + 1)
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('found some touch listeners to check — an empty scan is not a pass', () => {
+    // The failure mode of the scan above is silence: a changed registration spelling makes it
+    // examine nothing and report no offenders. Four listeners exist today across three modules.
+    const count = XTERM_HTML.split("addEventListener('touch").length - 1
+    expect(count).toBeGreaterThanOrEqual(4)
+  })
+
+  it('leaves no preventDefault in the touch modules, and keeps stopPropagation', () => {
+    for (const source of [TERMINAL_TOUCH_PAN_JS, TERMINAL_TAP_DISPATCH_JS]) {
+      // The call, not the word: the comments explaining the removal say "preventDefault" out loud.
+      expect(source).not.toContain('e.preventDefault(')
+    }
+    // stopPropagation must survive — unlike preventDefault it works on a passive listener, and it
+    // is what keeps xterm's own handlers out of the gesture.
     expect(TERMINAL_TOUCH_PAN_JS).toContain('e.stopPropagation();')
   })
 })
