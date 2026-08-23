@@ -16,6 +16,12 @@ vi.mock('react-native-safe-area-context', () => ({
 }))
 
 vi.mock('react-native', () => ({
+  // M3+§BB: the bar subscribes to the soft keyboard so its `↵` can climb above it
+  // (`../layout/use-soft-keyboard-height.ts`). A mock that owes only values, not subscriptions,
+  // makes the bar throw on mount; `../app-shell/keyboard-lift-mount.test.tsx` is where the events
+  // are the subject.
+  Keyboard: { addListener: () => ({ remove: () => {} }) },
+  Platform: { OS: 'ios' },
   Pressable: 'Pressable',
   ScrollView: 'ScrollView',
   StyleSheet: { create: (styles: unknown) => styles },

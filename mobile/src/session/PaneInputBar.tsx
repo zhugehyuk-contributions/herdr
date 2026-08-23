@@ -23,6 +23,8 @@ import {
 } from '../terminal/terminal-accessory-herdr-keys'
 import { PANE_QUICK_COMMANDS, quickCommandChunk } from './pane-quick-commands'
 import { inputStatusLabel } from './pane-input'
+import { keyboardBarLift } from '../layout/keyboard-clearance'
+import { useSoftKeyboardHeight } from '../layout/use-soft-keyboard-height'
 import { mono } from '../theme/monotone'
 import type { PaneInputView } from './use-pane-input'
 
@@ -31,10 +33,18 @@ export function PaneInputBar({ input }: { input: PaneInputView }) {
   const { send, sendKeys, enabled, state } = input
   // .prd/09-review-followups.md §D1's bottom edge. This bar is the last thing in the viewer's
   // column, so its `↵` sat under the home indicator (and under Android's navigation bar, the
-  // window being edge-to-edge) — the one control M3 exists for. The keyboard covers the bar
-  // whether or not this padding is here (`keyboardLift` is 0, see the route file), so it costs
-  // nothing when the field is focused.
+  // window being edge-to-edge) — the one control M3 exists for.
   const insets = useSafeAreaInsets()
+  // §BB's edge, one obstruction further out: on iOS the keyboard is drawn *over* the window, so
+  // the same `↵` measured `{{352, 796}, {38, 38}}` in an 874pt window and came back
+  // `isHittable = false` with the field focused. The two clearances do not stack —
+  // `../layout/keyboard-clearance.ts` is why this is `max`, not `+` — and the shift is a
+  // `transform`, deliberately, not a margin or a change of this bar's height: layout here is the
+  // terminal's geometry (the frame above is `flex: 1`), and a re-laid-out pane is a re-fit and a
+  // `resize`, which M3's PTY-invariance contract forbids. A transform moves pixels and touch
+  // targets and nothing else, which is exactly what a covered button needs.
+  const keyboardHeight = useSoftKeyboardHeight()
+  const keyboardLift = keyboardBarLift(keyboardHeight, insets.bottom)
 
   // Text, not keys: what the soft keyboard/IME produces is prose, and prose is exactly what
   // `encode_api_text` (`src/app/api_helpers.rs:24-33`) is for — including its bracketed-paste
@@ -58,7 +68,13 @@ export function PaneInputBar({ input }: { input: PaneInputView }) {
   const status = inputStatusLabel(state)
 
   return (
-    <View style={[styles.bar, { paddingBottom: insets.bottom }]}>
+    <View
+      style={[
+        styles.bar,
+        { paddingBottom: insets.bottom },
+        keyboardLift > 0 && { transform: [{ translateY: -keyboardLift }] }
+      ]}
+    >
       <View style={styles.quickRow}>
         {PANE_QUICK_COMMANDS.map((command) => (
           <Pressable

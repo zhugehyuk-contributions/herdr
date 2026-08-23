@@ -27,9 +27,12 @@
 //   · the native chat overlay, dictation, paste, and the reorderable/configurable form of the
 //     accessory row — see the header of `src/session/PaneInputBar.tsx`.
 //   · the keyboard-avoidance machinery (`:4205-4211` and `computeActiveTerminalKeyboardLift`) —
-//     it exists to keep a caret above a soft keyboard, and the lift needs the metrics stream plus a
-//     measured layout this screen does not have. `keyboardLift` stays 0; the input bar is below the
-//     terminal frame in normal flow, so it is the bar, not the caret, the keyboard meets first.
+//     it exists to keep a *caret* above a soft keyboard, and that lift needs the metrics stream plus
+//     a measured layout this screen does not have. `keyboardLift` stays 0. What the keyboard meets
+//     first here is not the caret but the input bar below the terminal frame, and .prd/09 §BB is
+//     that bar going under it on iOS — fixed where the bar lives (`src/session/PaneInputBar.tsx` +
+//     `src/layout/keyboard-clearance.ts`), by moving the bar and nothing else, so the pane's
+//     geometry — and therefore the PTY — stays exactly where M3 measured it.
 //   · files / source-control / PR / diff / tasks / browser panels — no `git.*` or `files.*` in
 //     herdr's JSON API (§2.2).
 //   · `mobile-terminal-viewport-resubscribe` — the fit loop that resizes the *desktop* PTY to the
@@ -241,8 +244,12 @@ export function PaneViewerScreen({
         <TerminalPaneView
           handle={active?.id ?? 'pane'}
           active
-          // Zero, and it stays zero for M2: the lift exists to keep a caret above a soft keyboard,
-          // and a read-only viewer never opens one (orca `:4205-4211`). M3 fills it in.
+          // Still zero after M3, and now on purpose rather than for want of a keyboard: this lift
+          // slides the *terminal* to keep a caret above the keyboard (orca `:4205-4211`), and M3's
+          // keyboard problem was the input bar, which now clears the keyboard by itself
+          // (`src/session/PaneInputBar.tsx`). Sliding the pane as well would hide its top rows
+          // behind the header and needs `onKeyboardAvoidanceMetrics` — the caret row — which is
+          // still dropped below. Left as a caret-visibility residual, not a hittability one.
           keyboardLift={0}
           textScale={1}
           onRef={(_handle, ref) => {
