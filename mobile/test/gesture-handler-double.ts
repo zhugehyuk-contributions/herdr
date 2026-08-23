@@ -15,6 +15,18 @@ export type PanGestureDouble = {
   runOnJS: boolean
   /** The `onEnd` handler, invoked by tests with a translation the native recognizer would report. */
   end: ((event: { translationX: number; translationY: number }) => void) | null
+  /**
+   * The lifecycle callbacks .prd/09 §HH added as an instrument.
+   *
+   * Recorded rather than dropped for the same reason `activeOffsetX` is: they are the only
+   * evidence a future reader has that the instrument is still wired, and a double that silently
+   * swallows a builder call turns "the screen stopped logging" into a green test run.
+   */
+  begin: (() => void) | null
+  start: (() => void) | null
+  finalize:
+    | ((event: { translationX: number; translationY: number }, success: boolean) => void)
+    | null
 }
 
 export type GestureHandlerRegistry = {
@@ -45,6 +57,9 @@ export function createGestureHandlerDouble(registry: GestureHandlerRegistry): {
           activeOffsetX: null,
           failOffsetY: null,
           runOnJS: false,
+          begin: null,
+          start: null,
+          finalize: null,
           end: null
         }
         registry.pans.push(pan)
@@ -59,6 +74,18 @@ export function createGestureHandlerDouble(registry: GestureHandlerRegistry): {
           },
           failOffsetY(range) {
             pan.failOffsetY = range
+            return builder
+          },
+          onBegin(handler) {
+            pan.begin = handler
+            return builder
+          },
+          onStart(handler) {
+            pan.start = handler
+            return builder
+          },
+          onFinalize(handler) {
+            pan.finalize = handler
             return builder
           },
           onEnd(handler) {
@@ -78,6 +105,11 @@ type PanGestureBuilder = {
   runOnJS: (value: boolean) => PanGestureBuilder
   activeOffsetX: (range: readonly [number, number]) => PanGestureBuilder
   failOffsetY: (range: readonly [number, number]) => PanGestureBuilder
+  onBegin: (handler: () => void) => PanGestureBuilder
+  onStart: (handler: () => void) => PanGestureBuilder
+  onFinalize: (
+    handler: (event: { translationX: number; translationY: number }, success: boolean) => void
+  ) => PanGestureBuilder
   onEnd: (
     handler: (event: { translationX: number; translationY: number }) => void
   ) => PanGestureBuilder

@@ -7,6 +7,7 @@ import { colors } from '../theme/mobile-theme'
 import { TERMINAL_TEXT_SCALES } from '../storage/terminal-text-scales'
 import { TERMINAL_PATH_TAP_JS } from './terminal-path-tap-injected'
 import { TERMINAL_KEYBOARD_AVOIDANCE_METRICS_JS } from './terminal-keyboard-avoidance-metrics-injected'
+import { TERMINAL_TOUCH_PAN_JS } from './terminal-webview-touch-pan-injected'
 import { XTERM_ENGINE_CSS, XTERM_ENGINE_JS } from './terminal-webview-engine.generated'
 import { TERMINAL_PAINTED_CELL_JS } from './terminal-webview-painted-cell-injected'
 import { TERMINAL_REFLOW_JS } from './terminal-webview-reflow-injected'
@@ -1694,7 +1695,11 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
   var ts = {
     lastX: 0, lastY: 0, lastTime: 0, velY: 0,
     accumDelta: 0, momentumId: null, isPinching: false,
-    pinchDist: 0, pinchScale: 0, pinchSurfX: 0, pinchSurfY: 0
+    pinchDist: 0, pinchScale: 0, pinchSurfX: 0, pinchSurfY: 0,
+    // Gesture origin + the yield latch read by shouldYieldHorizontal. Declared here rather than
+    // sprung into existence on the first touchstart so the shape of this object is its own
+    // documentation — every other field already reads that way.
+    startX: 0, startY: 0, yieldedH: false
   };
 
   function updateTouchVelocity(deltaY, dt) {
@@ -1722,92 +1727,7 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
     attachSurfaceWheelHandler(targetSurface);
     attachSurfaceMouseClickDragHandler(targetSurface);
 
-    targetSurface.addEventListener('touchstart', function(e) {
-      if (dispatcherShouldBlockSurface()) return;
-      if (ts.momentumId) {
-        cancelAnimationFrame(ts.momentumId);
-        ts.momentumId = null;
-      }
-      if (e.touches.length === 2) {
-        ts.isPinching = true;
-        smoothScrollOffsetY = 0;
-        ts.pinchDist = getDistance(e.touches[0], e.touches[1]);
-        ts.pinchScale = userScale;
-        var mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        var my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        var total = getTotalScale();
-        ts.pinchSurfX = (mx - panX) / total;
-        ts.pinchSurfY = (my - panY) / total;
-      } else if (e.touches.length === 1) {
-        ts.isPinching = false;
-        ts.lastX = e.touches[0].clientX;
-        ts.lastY = e.touches[0].clientY;
-        ts.lastTime = Date.now();
-        ts.velY = 0;
-        ts.accumDelta = 0;
-      }
-    }, { capture: true, passive: true });
-
-    targetSurface.addEventListener('touchmove', function(e) {
-      if (dispatcherShouldBlockSurface()) return;
-      if (!term) return;
-      e.preventDefault();
-      e.stopPropagation();
-
-      if (e.touches.length === 2) {
-        ts.isPinching = true;
-        var dist = getDistance(e.touches[0], e.touches[1]);
-        var mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        var my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-
-        var ratio = dist / ts.pinchDist;
-        userScale = clampUserScale(ts.pinchScale * ratio);
-
-        var total = getTotalScale();
-        panX = mx - ts.pinchSurfX * total;
-        panY = my - ts.pinchSurfY * total;
-        clampPan();
-        updateTransform();
-
-      } else if (e.touches.length === 1 && !ts.isPinching) {
-        var x = e.touches[0].clientX, y = e.touches[0].clientY;
-        var now = Date.now(), dt = now - ts.lastTime;
-
-        // Why: pan horizontally only when content overflows the viewport (larger
-        // than fit) — same check clampPan() uses. Vertical always drives buffer
-        // scroll so scrollback stays reachable at any text size; calling the
-        // never-defined contentWiderThanViewport() here threw and killed all
-        // single-finger scrolling, scrollback included.
-        if (getContentWidth() * getTotalScale() > window.innerWidth + 1) {
-          panX += x - ts.lastX;
-          clampPan();
-          updateTransform();
-        }
-
-        var deltaY = ts.lastY - y;
-        ts.lastTime = now;
-        if (shouldRouteScrollToTerminalInput()) {
-          updateTouchVelocity(deltaY, dt);
-          resetSmoothScrollOffset();
-          var effectiveCellH = getCellHeight() * getTotalScale();
-          ts.accumDelta += deltaY;
-          var lines = Math.trunc(ts.accumDelta / effectiveCellH);
-          if (lines !== 0) {
-            ts.accumDelta -= lines * effectiveCellH;
-            routeScrollLines(lines, x, y);
-          }
-        } else {
-          if (enqueueNormalBufferScrollDelta(deltaY)) {
-            updateTouchVelocity(deltaY, dt);
-          } else {
-            ts.velY = 0;
-          }
-        }
-        ts.lastX = x;
-        ts.lastY = y;
-      }
-    }, { capture: true, passive: false });
-
+${TERMINAL_TOUCH_PAN_JS}
     targetSurface.addEventListener('touchend', function(e) {
       if (dispatcherShouldBlockSurface()) return;
       if (!term) return;

@@ -266,6 +266,25 @@ export function PaneViewerScreen({
         // touchcancel. `touchcancel` is 0 in both states and discriminates nothing.
         .activeOffsetX([-PANE_SWIPE_ACTIVATE_OFFSET_X, PANE_SWIPE_ACTIVATE_OFFSET_X])
         .failOffsetY([-PANE_SWIPE_FAIL_OFFSET_Y, PANE_SWIPE_FAIL_OFFSET_Y])
+        // §HH's instrument, and it is here because no other signal can tell the two iOS failures
+        // apart. On iOS the recognizer produced no pane switch while the *same* synthetic drag
+        // scrolled an RN ScrollView 425pt away on the same screen — which leaves two stories:
+        // the recognizer never activated (something upstream holds the touches), or it activated
+        // and `paneSwipeDirection` rejected. Those need opposite fixes, and the only place the
+        // difference is visible is whether these callbacks run at all.
+        //
+        // `console.log` rather than the connection log: this has to survive the case where React
+        // state never updates, and Metro's stream is the one channel that does not depend on the
+        // app re-rendering. Cheap enough to keep — a pan emits at most three lines per gesture,
+        // and only while a finger is on the terminal.
+        .onBegin(() => console.log('[paneSwipe] begin'))
+        .onStart(() => console.log('[paneSwipe] start'))
+        .onFinalize((event, success) =>
+          console.log(
+            `[paneSwipe] finalize success=${String(success)} ` +
+              `dx=${Math.round(event.translationX)} dy=${Math.round(event.translationY)}`
+          )
+        )
         .onEnd(onPaneSwipe),
     [onPaneSwipe]
   )
