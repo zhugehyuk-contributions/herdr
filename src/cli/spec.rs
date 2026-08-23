@@ -38,6 +38,7 @@ pub(super) fn command() -> Command {
         .subcommand(worktree_command())
         .subcommand(tab_command())
         .subcommand(notification_command())
+        .subcommand(pair_command())
         .subcommand(agent_command())
         .subcommand(pane_command())
         .subcommand(terminal_command())
@@ -744,6 +745,24 @@ fn terminal_command() -> Command {
                 )
                 .subcommand(Command::new("clear").about("Clear the outer terminal title")),
         )
+}
+
+fn pair_command() -> Command {
+    Command::new("pair")
+        .about("Show a QR code that pairs a phone with this Herdr over SSH")
+        .arg(
+            Arg::new("remote")
+                .value_name("REMOTE")
+                .help("Remote id or name to pair with; defaults to this machine"),
+        )
+        .arg(json_flag().help("Print the pairing payload as JSON instead of a QR code"))
+        .arg(
+            flag("authorize")
+                .help("Append the minted public key to this machine's authorized_keys"),
+        )
+        .arg(option("device", "NAME").help("Device name recorded in the key comment"))
+        .arg(option("host", "HOST").help("Address the phone should dial"))
+        .arg(option("user", "USER").help("SSH user the phone should log in as"))
 }
 
 fn session_command() -> Command {

@@ -138,8 +138,9 @@ export default function PairScreen() {
           </Text>
         ) : (
           <Text style={styles.hint}>
-            {'On the desktop: herdr sidebar → right-click the node → '}
-            <Text style={styles.hintCode}>show qr</Text>. Scanning fills in the remote.
+            {'On the desktop, run '}
+            <Text style={styles.hintCode}>herdr pair</Text>. Scanning fills in the remote — key
+            included.
           </Text>
         )}
 

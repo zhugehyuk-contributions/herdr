@@ -225,7 +225,10 @@ describe('.prd/11 누락 #1·#2 — the scan screen exists, and has a way past t
     const texts = target.root
       .findAllByType(host('Text'))
       .map((node) => String(node.props['children']))
-    expect(texts.join(' ')).toContain('show qr')
+    // The mockup writes this instruction as a sidebar context menu item (`show qr`); what shipped
+    // is the CLI `herdr pair` (`src/cli/pair.rs`). The screen names the thing a person can actually
+    // run today — an instruction that names a menu item nobody has is worse than no instruction.
+    expect(texts.join(' ')).toContain('herdr pair')
   })
 
   it('offers the one control that still works once the refusal is permanent', async () => {

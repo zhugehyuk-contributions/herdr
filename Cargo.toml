@@ -34,6 +34,9 @@ libc = "0.2"
 miniz_oxide = "0.8"
 portable-pty = "=0.9.0"
 png = "0.17"
+# `herdr pair` renders a pairing payload as a terminal QR code; pure Rust, no image/svg
+# backends needed (default features pull those in).
+qrcode = { version = "0.14.1", default-features = false }
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
