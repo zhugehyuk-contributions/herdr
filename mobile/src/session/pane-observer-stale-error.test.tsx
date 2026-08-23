@@ -65,6 +65,17 @@ const appState = vi.hoisted(() => ({
   listeners: new Set<(next: string) => void>()
 }))
 
+// M6a: the pane viewer now imports react-native-gesture-handler, which reaches into RN internals
+// this environment does not have. `test/gesture-handler-double.ts` stands in and renders the same
+// tree (its `GestureDetector` passes the child through, its root view is the host `View`), so every
+// assertion below still sees what it saw. Driving the gesture is
+// `src/app-shell/pane-swipe-mount.test.tsx`'s job, not this suite's.
+vi.mock('react-native-gesture-handler', async () => {
+  const { createGestureHandlerDouble, createGestureHandlerRegistry } =
+    await import('../../test/gesture-handler-double')
+  return createGestureHandlerDouble(createGestureHandlerRegistry())
+})
+
 vi.mock('react-native', () => ({
   AppState: {
     get currentState() {

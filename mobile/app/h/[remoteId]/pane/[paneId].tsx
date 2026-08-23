@@ -54,11 +54,23 @@
 // One structural divergence from orca, deliberate: orca mounts **every** terminal and hides the
 // inactive ones (`:4667` `terminals.map(...)`) so a tab switch is instant. Here exactly one pane is
 // mounted, because a mounted pane is a resident ssh channel plus an uncompressed ANSI stream
-// (blockers B8, B13) — N of those on LTE is not a background cost, it is the connection. The price
-// is that switching re-handshakes, which is the <200ms target of milestone M6 (B6: herdr has no
-// message to move an observe target, so even a warm channel could not retarget today).
+// (blockers B8, B13) — N of those on LTE is not a background cost, it is the connection.
+//
+// That used to cost a re-handshake per switch, and this comment used to say so — "the price is that
+// switching re-handshakes … herdr has no message to move an observe target, so even a warm channel
+// could not retarget today" (B6). **That was wrong, and .prd/04-milestones.md M6 carries the same
+// correction.** `RetargetTerminal` exists and the server handles it end to end
+// (`src/server/client_transport.rs:988` → `src/server/headless.rs:3368`); the TS codec emits it
+// (`packages/herdr-client-ts/src/messages.ts:232`); and `PaneObserver.retarget`
+// (`src/session/pane-observer.ts`) sends it **on the channel that is already open** — `pane.layout`,
+// a `Resize` only when the geometry demands one, then `RetargetTerminal{Observe}`. So a switch
+// moves the observe target on a warm channel: no dial, no `Hello`/`Welcome`, no second ssh channel,
+// and the observer is not even remounted (it is keyed to the connection, not to the pane).
+// `src/session/use-pane-observer.ts:80-89` is the caller and it fires on a changed pane id — which
+// is why both switch affordances here, the chip and the M6a swipe, do nothing but route.
 import { useCallback, useMemo, useRef } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { AgentStateDot } from '../../../../src/components/AgentStateDot'
@@ -72,6 +84,12 @@ import {
 import { useConnectionStatus } from '../../../../src/transport/use-connection-status'
 import { TerminalPaneView } from '../../../../src/session/TerminalPaneView'
 import { buildPaneChips, resolveActivePaneChip } from '../../../../src/session/pane-chips'
+import {
+  PANE_SWIPE_ACTIVATE_OFFSET_X,
+  PANE_SWIPE_FAIL_OFFSET_Y,
+  resolvePaneSwipeTarget,
+  type PaneSwipeTranslation
+} from '../../../../src/session/pane-swipe'
 import { paneHref } from '../../../../src/agents/fleet-agents'
 import { usePaneObserver } from '../../../../src/session/use-pane-observer'
 import { usePaneInput } from '../../../../src/session/use-pane-input'
@@ -189,6 +207,39 @@ export function PaneViewerScreen({
     [sendInput]
   )
 
+  // M6a. A swipe lands on the same callback a chip tap does — `onSelectPane`, i.e.
+  // `router.replace(paneHref(...))` and back in as a route param. It deliberately does **not** call
+  // `observer.retarget()`: that would move the stream under a URL still naming the old pane, and the
+  // URL is what Back, a deep link and a notification tap
+  // (`src/notifications/pane-deep-link.ts`) all restore from. The retarget happens anyway, one hop
+  // later, in `use-pane-observer.ts:80-89`.
+  const onPaneSwipe = useCallback(
+    (event: PaneSwipeTranslation) => {
+      const target = resolvePaneSwipeTarget(chips, active?.id ?? null, event)
+      if (target !== null) {
+        onSelectPane?.(target)
+      }
+    },
+    [active?.id, chips, onSelectPane]
+  )
+  const paneSwipe = useMemo(
+    () =>
+      Gesture.Pan()
+        // The callback routes and sets React state, so it belongs on the JS thread; RNGH would
+        // otherwise require it to be a worklet.
+        .runOnJS(true)
+        // This pair *is* "do not steal the terminal's gestures", as numbers rather than as a
+        // promise (`src/session/pane-swipe.ts` explains each): the recognizer stays asleep until the
+        // finger has travelled ±32 horizontally — more than the WebView's own 24px tap slop — and
+        // fails outright the moment it travels ±12 vertically, which is where scrollback,
+        // alt-screen scroll and selection edge-scroll live. Until it activates the WebView receives
+        // every touch unchanged; only on activation does it get a cancel.
+        .activeOffsetX([-PANE_SWIPE_ACTIVATE_OFFSET_X, PANE_SWIPE_ACTIVATE_OFFSET_X])
+        .failOffsetY([-PANE_SWIPE_FAIL_OFFSET_Y, PANE_SWIPE_FAIL_OFFSET_Y])
+        .onEnd(onPaneSwipe),
+    [onPaneSwipe]
+  )
+
   return (
     <View style={styles.screen}>
       <View
@@ -240,39 +291,50 @@ export function PaneViewerScreen({
         </View>
       ) : null}
 
-      <View style={styles.terminalFrame}>
-        <TerminalPaneView
-          handle={active?.id ?? 'pane'}
-          active
-          // Still zero after M3, and now on purpose rather than for want of a keyboard: this lift
-          // slides the *terminal* to keep a caret above the keyboard (orca `:4205-4211`), and M3's
-          // keyboard problem was the input bar, which now clears the keyboard by itself
-          // (`src/session/PaneInputBar.tsx`). Sliding the pane as well would hide its top rows
-          // behind the header and needs `onKeyboardAvoidanceMetrics` — the caret row — which is
-          // still dropped below. Left as a caret-visibility residual, not a hittability one.
-          keyboardLift={0}
-          textScale={1}
-          onRef={(_handle, ref) => {
-            handleRef.current = ref
-          }}
-          // Everything below is a write path or a gesture this milestone does not consume. They are
-          // wired to no-ops rather than removed so `TerminalPaneView` stays byte-identical to orca
-          // and M3 has only to fill them in.
-          onWebReady={NOOP}
-          onSelectionMode={NOOP}
-          onSelectionCopy={NOOP}
-          onSelectionEvicted={NOOP}
-          onModesChanged={NOOP}
-          onKeyboardAvoidanceMetrics={NOOP}
-          onHaptic={NOOP}
-          onTerminalInput={onTerminalInput}
-          onTerminalQueryReply={NOOP}
-          onTerminalTap={NOOP}
-          onFileTap={NOOP}
-          onOpenUrl={NOOP}
-          onTextScaleChange={NOOP}
-        />
-      </View>
+      {/* The gesture root is scoped to this screen rather than installed in `app/_layout.tsx`:
+          RNGH needs one above every handler on Android, and this is the app's only gesture surface,
+          so keeping it here leaves the root layout — and the five suites that mount it — untouched.
+          Move it up the day a second screen grows a handler. It replaces the frame `View`, and the
+          extra `flex: 1` child below is `GestureDetector`'s single-child requirement; both measure
+          exactly what the old frame measured, so the pane's geometry — and therefore the PTY —
+          is unchanged (M3). */}
+      <GestureHandlerRootView style={styles.terminalFrame}>
+        <GestureDetector gesture={paneSwipe}>
+          <View style={styles.terminalSurface}>
+            <TerminalPaneView
+              handle={active?.id ?? 'pane'}
+              active
+              // Still zero after M3, and now on purpose rather than for want of a keyboard: this lift
+              // slides the *terminal* to keep a caret above the keyboard (orca `:4205-4211`), and M3's
+              // keyboard problem was the input bar, which now clears the keyboard by itself
+              // (`src/session/PaneInputBar.tsx`). Sliding the pane as well would hide its top rows
+              // behind the header and needs `onKeyboardAvoidanceMetrics` — the caret row — which is
+              // still dropped below. Left as a caret-visibility residual, not a hittability one.
+              keyboardLift={0}
+              textScale={1}
+              onRef={(_handle, ref) => {
+                handleRef.current = ref
+              }}
+              // Everything below is a write path or a gesture this milestone does not consume. They are
+              // wired to no-ops rather than removed so `TerminalPaneView` stays byte-identical to orca
+              // and M3 has only to fill them in.
+              onWebReady={NOOP}
+              onSelectionMode={NOOP}
+              onSelectionCopy={NOOP}
+              onSelectionEvicted={NOOP}
+              onModesChanged={NOOP}
+              onKeyboardAvoidanceMetrics={NOOP}
+              onHaptic={NOOP}
+              onTerminalInput={onTerminalInput}
+              onTerminalQueryReply={NOOP}
+              onTerminalTap={NOOP}
+              onFileTap={NOOP}
+              onOpenUrl={NOOP}
+              onTextScaleChange={NOOP}
+            />
+          </View>
+        </GestureDetector>
+      </GestureHandlerRootView>
 
       <PaneInputBar input={input} />
     </View>
@@ -327,5 +389,6 @@ const styles = StyleSheet.create({
   chipActive: { borderColor: mono.fgSoft, backgroundColor: mono.ink3 },
   chipLabel: { color: mono.fg, fontSize: 12, fontWeight: '600' },
   chipTab: { color: mono.dim2, fontSize: 10 },
-  terminalFrame: { flex: 1, backgroundColor: mono.ink }
+  terminalFrame: { flex: 1, backgroundColor: mono.ink },
+  terminalSurface: { flex: 1 }
 })

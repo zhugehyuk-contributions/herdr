@@ -85,6 +85,16 @@ vi.mock('react-native-webview', async () => {
   return { WebView, default: WebView }
 })
 
+// M6a: the pane viewer imports react-native-gesture-handler, which reaches into RN internals this
+// environment does not have. Same stand-in the mocked-mount suites use
+// (`test/gesture-handler-double.ts`); it renders the child through, so what this live suite reads on
+// screen is unchanged. The swipe itself is covered by `src/app-shell/pane-swipe-mount.test.tsx`.
+vi.mock('react-native-gesture-handler', async () => {
+  const { createGestureHandlerDouble, createGestureHandlerRegistry } =
+    await import('../gesture-handler-double')
+  return createGestureHandlerDouble(createGestureHandlerRegistry())
+})
+
 vi.mock('react-native', () => {
   class AnimatedValue {
     setValue() {}
