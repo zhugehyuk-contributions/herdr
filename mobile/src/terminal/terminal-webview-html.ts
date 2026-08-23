@@ -1729,6 +1729,10 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
 
 ${TERMINAL_TOUCH_PAN_JS}
     targetSurface.addEventListener('touchend', function(e) {
+      // §JJ: the totals, and the one place the *absence* of this message is itself a reading —
+      // §DD measured on Android that an activated recognizer stops forwarding, so a gesture the
+      // recognizer took ends with no touchend at all.
+      notify({ type: 'touch-probe', phase: 'end', moves: ts.moveCount || 0 });
       if (dispatcherShouldBlockSurface()) return;
       if (!term) return;
 

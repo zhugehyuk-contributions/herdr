@@ -19,6 +19,17 @@ import { TERMINAL_HORIZONTAL_YIELD_JS } from './terminal-webview-horizontal-yiel
 
 export const TERMINAL_TOUCH_PAN_JS = `
     targetSurface.addEventListener('touchstart', function(e) {
+      // .prd/09 §JJ's discriminator. The RN-side instrument reported begin 7/7, start 0/7 and
+      // finalize dx=0 dy=0 — the pan recognizer never received a touchesMoved. That leaves two
+      // stories with opposite consequences, and only this document can tell them apart:
+      //   · this fires and the recognizer still sees dx=0 → touches reach the WebView but do not
+      //     propagate to the ancestor recognizer. A product defect in the UIKit gesture chain.
+      //   · this does not fire either → XCUITest is not producing moves over this surface at all.
+      //     A harness limit, and iOS M6a is then unjudgeable on a simulator (real-device gate).
+      // Android answered the same question with CDP (§DD); iOS has no CDP, so the page counts.
+      // One message per gesture start, one on the first move, one at the end — not per move.
+      ts.moveCount = 0;
+      notify({ type: 'touch-probe', phase: 'start', blocked: dispatcherShouldBlockSurface() });
       if (dispatcherShouldBlockSurface()) return;
       if (ts.momentumId) {
         cancelAnimationFrame(ts.momentumId);
@@ -51,6 +62,13 @@ export const TERMINAL_TOUCH_PAN_JS = `
 
 ${TERMINAL_HORIZONTAL_YIELD_JS}
     targetSurface.addEventListener('touchmove', function(e) {
+      // Counted before every early return below, including the yield guard: "did a touchmove reach
+      // this document at all" is the whole question, and a guard that returns first would answer
+      // it with silence indistinguishable from never being called.
+      ts.moveCount = (ts.moveCount || 0) + 1;
+      if (ts.moveCount === 1) {
+        notify({ type: 'touch-probe', phase: 'first-move', touches: e.touches.length });
+      }
       if (dispatcherShouldBlockSurface()) return;
       if (!term) return;
       if (e.touches.length === 1 && !ts.isPinching && shouldYieldHorizontal(e.touches[0])) {

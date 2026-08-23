@@ -160,7 +160,12 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
       }
       routeTerminalQueryReply(msg, onTerminalQueryReply)
 
-      if (msg.type === 'web-ready') {
+      if (msg.type === 'touch-probe') {
+        // §JJ's discriminator, logged rather than handled: it exists to sit next to `[paneSwipe]`
+        // in the same Metro stream so one run answers "did the document see the touches the
+        // recognizer did not". Removed once iOS M6a closes either way.
+        console.log(`[touchProbe] ${JSON.stringify(msg)}`)
+      } else if (msg.type === 'web-ready') {
         confirmWebReady(true)
       } else if (
         msg.type === 'pong' &&

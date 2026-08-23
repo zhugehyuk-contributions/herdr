@@ -105,3 +105,31 @@ describe('the served document survived the extraction intact', () => {
     )
   })
 })
+
+// §JJ's discriminator is an instrument whose *absence* is a reading: if the document posts no
+// `touch-probe`, the QA run concludes "the page never saw the touches either" and iOS M6a moves to
+// a real-device gate. A probe that silently stopped being emitted produces exactly that reading
+// while being a wiring bug — the one failure mode that would send the investigation the wrong way.
+describe('the touch probe stays wired', () => {
+  const at = (needle: string): number => XTERM_HTML.indexOf(needle)
+
+  it('reports the start, the first move and the totals', () => {
+    expect(XTERM_HTML).toContain("type: 'touch-probe', phase: 'start'")
+    expect(XTERM_HTML).toContain("type: 'touch-probe', phase: 'first-move'")
+    expect(XTERM_HTML).toContain("type: 'touch-probe', phase: 'end'")
+  })
+
+  it('counts the move before any early return can swallow it', () => {
+    // The whole question is "did a touchmove reach this document at all". A guard that returns
+    // first — the dispatcher block, or the horizontal yield — would answer it with a silence
+    // indistinguishable from never being called.
+    const handler = XTERM_HTML.slice(
+      at("targetSurface.addEventListener('touchmove'"),
+      at("targetSurface.addEventListener('touchend'")
+    )
+    const counted = handler.indexOf('ts.moveCount = (ts.moveCount || 0) + 1;')
+    expect(counted).toBeGreaterThan(-1)
+    expect(counted).toBeLessThan(handler.indexOf('dispatcherShouldBlockSurface()'))
+    expect(counted).toBeLessThan(handler.indexOf('shouldYieldHorizontal'))
+  })
+})
