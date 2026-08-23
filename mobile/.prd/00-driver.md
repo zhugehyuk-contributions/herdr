@@ -99,7 +99,7 @@ orca의 나머지 절반(PTY 리사이즈)이 부재한다는 것도 증명됐�
 
 | 게이트 | 무엇이 막히나 | 실측 근거 |
 |---|---|---|
-| **코드사이닝 아이덴티티** (0개) | **iOS M2b 판정 불가 + 앱이 실제로 망가진다.** 2026-08-23 M3 QA 실측: `Keychain access failed: A required entitlement isn't present` 배너가 **입력 필드를 완전히 덮어**(배너 `{{10,786.7},{382,67.3}}` ⊃ 필드 `{{13,798.7},{330,32.3}}`) 배너를 닫기 전엔 타이핑이 불가능하다. **판정 문제가 아니라 제품 결함이다.** 그리고: 엔타이틀먼트가 비어 키체인이 안 돌고 `expo-secure-store`가 아예 실행되지 않는다. iOS는 그 코드가 *실제로 필요한 유일한 플랫폼*인데(Android는 앱 삭제 시 secure-store가 원래 사라진다) 그 시험을 못 한다 | `.prd/09` §R. 재서명 우회 2회 실패(`containerization was prevented`) — 3회째 금지 |
+| **코드사이닝 아이덴티티** (0개) | **iOS M2b 판정 불가.** (한때 "제품 결함"으로 승격했다가 **정정함** — 입력을 덮던 배너는 앱 UI가 아니라 개발 모드 LogBox였다, `.prd/09` §BB. 릴리즈에선 조용히 토큰이 안 나온다.) 엔타이틀먼트가 비어 키체인이 안 돌고 `expo-secure-store`가 아예 실행되지 않는다. iOS는 그 코드가 *실제로 필요한 유일한 플랫폼*인데(Android는 앱 삭제 시 secure-store가 원래 사라진다) 그 시험을 못 한다 | `.prd/09` §R. 재서명 우회 2회 실패(`containerization was prevented`) — 3회째 금지 |
 | **Expo 계정 + EAS projectId** | **M5 푸시의 동작 경로 전체.** `getExpoPushTokenAsync`가 projectId 없이는 `ERR_NOTIFICATIONS_NO_EXPERIENCE_ID`로 던진다 | `npx expo whoami` = `Not logged in` · `eas.json` 부재 · `~/.expo/state.json`의 `auth` 없음 · 코드 경로 `use-blocked-push.ts:210-233` |
 
 **M5의 절반은 이 게이트 없이도 닫힌다** — 푸시가 안 오는 것이 *보이게* 만드는 쪽(`app/settings.tsx`의

@@ -1167,7 +1167,17 @@ M3에서 **합성 탭이 RN 네이티브 층(Pressable → onPress → ssh 호�
 1. **`Send input`(↵) 버튼이 소프트 키보드에 덮인다.** frame `{{352,796},{38,38}}`, 창 높이 874pt →
    키보드가 올라오면 `isHittable=false`, 탭 실패 실측. 인간 경로는 키보드 자체의 Return
    (`returnKeyType="send"` + `onSubmitEditing`)이고 그건 통과했다. **§R D1과 같은 계열의 하단 기하 문제.**
-2. **⛔ expo-notifications 에러 배너가 입력 필드를 정확히 덮는다.**
+2. **expo-notifications 에러 배너가 입력 필드를 덮는다 — 다만 이건 개발 빌드 산출물이다.**
+
+   > **⚠️ 디스패처 정정 (2026-08-23).** 나는 이걸 처음에 "제품 결함"으로 드라이버 게이트 표에 승격시켰다.
+   > **틀렸다.** 출처를 추적하니 앱이 그리는 배너가 아니다 —
+   > `node_modules/expo-notifications/build/DevicePushTokenAutoRegistration.fx.js:103`의 **`console.error`**이고,
+   > RN 개발 모드가 그걸 **LogBox** 알림으로 화면 하단에 띄운 것이다. **릴리즈 빌드엔 LogBox가 없다.**
+   > 앱 소스에 그 문자열을 렌더하는 컴포넌트가 **0개**임을 grep으로 확인했다.
+   > → **유저가 부딪히는 결함이 아니다. QA 하네스가 부딪히는 장애물이다.**
+   > 남는 진짜 문제는 그 아래의 키체인 실패 자체(= M2b 서명 게이트)이고, 릴리즈에서는 **조용히**
+   > 토큰이 안 나오는 형태로 나타난다. 확정 시험은 **릴리즈 빌드에서 이 배너가 없는지** 보는 것이다.
+
    배너 `{{10,786.7},{382,67.3}}` ⊃ 필드 `{{13,798.7},{330,32.3}}` — **완전 포함.**
    배너를 닫기 전엔 `Neither element nor any descendant has keyboard focus`로 **타이핑 자체가 불가**했다.
    원인은 배너 문구가 말한다: `Keychain access failed: A required entitlement isn't present`
