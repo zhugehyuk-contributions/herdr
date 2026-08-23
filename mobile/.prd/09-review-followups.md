@@ -798,7 +798,15 @@ XCUITest와 `simctl io screenshot` **두 독립 경로**가 같은 결론. **And
 
 WebGL 가설도 기각이다 — "붙었는데 안 그린다"는 어느 조건에서도 관측되지 않았다.
 
-### V-3. §U의 판정 지표가 blank와 tiny를 구분하지 못한다
+### ⛔ V-3은 틀렸다 — 2026-08-23 80컬럼 재QA가 반증했다 (§X 참조)
+
+> **아래 V-3의 결론("§U가 tiny를 blank로 오독했다")은 폐기됐다.** §U가 근거로 쓴 30,803 비지배 픽셀의
+> 정체가 **설정 기어 FAB**(RN 요소)임이 실측됐다 — 재QA가 같은 모양을 31,723px, 기어 박스
+> `(960,264)-(1206,460)` 안으로 국소화했다. **§U의 "한 픽셀도 안 그린다"가 터미널에 대해 정확했다.**
+> V-3이 남긴 유효한 부분은 방법론뿐이다: **지배색 비율이 아니라 비배경 픽셀 수로 재라.**
+> 그 방법으로 재니 53컬럼에서 **비배경 0px, 색 1종**이 나왔다.
+
+### V-3. (폐기됨) §U의 판정 지표가 blank와 tiny를 구분하지 못한다
 
 §U는 `(0,270)-(1206,2050)`에서 `단일색 (26,27,38) 2,115,877px`을 근거로 삼았다. 그 사각형은 2,146,680px이므로
 **30,803px은 그 색이 아니었다** — "한 픽셀도" 와 모순된다. 그리고 **정상 렌더 중인** 240x52 화면을 같은
@@ -903,3 +911,70 @@ sshd 로그 대조로 "서버가 막은 것"이 배제됐다 — dead window의 
    **유저를 강제종료로 모는 바로 그 표면이다** — 위 FAIL 사유와 같은 방향을 가리킨다.
 2. **outage마다 서버측 누수**: 사이클 종료 시 `sshd-session` 22개 + `remote-client-bridge` 7개 잔존
    (5개는 client가 사라진 지 15분 넘음, 2개는 launchd re-parent 고아). 폰 1대가 pane 1개 보는 비용.
+
+
+## X. iOS M2 (b) 재QA — 80컬럼에서도 FAIL, 그리고 `init()`이 완주하지 않는다 (2026-08-23, 별도 에이전트, `qa-ios-m2` @ `3032ae3a`)
+
+```
+M2 (b) VERDICT: FAIL        폭=80컬럼 → pane 53컬럼
+M2 (c) VERDICT: 판정 불가    14분 1초 관측 (30분 미달), 부분결과는 기하 불변 15/15
+M2 (e) VERDICT: 판정 불가    ≥200컬럼 랩 미기동
+```
+
+### "너무 작아서 안 보인다"가 배제됐다
+
+| | 폭 | 글자당 |
+|---|---|---|
+| 1차 iOS QA (§T) | 240컬럼 | 약 1.7 CSS px |
+| Android PASS | 80컬럼 | 약 5 CSS px (추정) |
+| **이번 재QA** | **80컬럼 → pane 53컬럼** | **약 7.6 CSS px** |
+
+Android가 통과한 것과 **같은 `tmux -x 80 -y 40`** 을 썼고, herdr TUI 사이드바가 27열을 먹어 pane은 53열이다.
+즉 Android보다도 글자가 크다. 그런데 **터미널 밴드 2,033,316px 중 비배경 0px, 색 1종** — 4회 런치·5장
+스크린샷 동일, 그중 2회는 디버거 미부착.
+
+### 결정적 음성: `[fit]renderer`가 발화하지 않는다
+
+`3032ae3a`가 넣은 계측이 **0건**이다. 그리고 그 침묵이 파이프 유실이 아님이 증명됐다 — QA가 RN CDP
+inspector(`Runtime.consoleAPICalled`)에 붙어 15초 간격 liveness 마커를 주입했고 **7건이 도착**했다.
+
+`reportRendererIdentity()`는 `commitFitScale(reason === 'init-replay')`에서만 돌고, 그건
+`applyFitScale('init-replay')` (`terminal-webview-html.ts:806`) — **WebView `init()` rAF 체인의 마지막 문장**이다.
+⇒ **`init()`이 거기까지 못 갔다.**
+
+그리고 **ready 워치독은 안 울렸다** (`terminal-webview-ready-watchdog.ts:11,38-41`이 15초 뒤 치명 에러를
+올려 오버레이를 그린다 — 어느 스크린샷에도 없다). 즉 **`web-ready`는 도달했고 `init()`이 완주하지 않았다.**
+
+> **이 상태를 보고하는 것이 아무것도 없다.** 워치독은 `web-ready` 이전만 보고, 새 계측은 init 성공
+> *이후*만 본다. 그 사이가 통째로 사각지대이고, 이 결함이 두 라운드를 산 이유다.
+
+### 와이어는 도착했다
+
+tee 프로브 실측, 2회 재현:
+```
+client→server   53B  HRDRherdr-mx 핸드셰이크 + w1:p1 구독
+server→client 3507B  ESC[2J@69 · ZQ9M2-PANE-PROOF-4417@89 · "COLS=53 ROWS=39"@193 · ZQ9M2-LINE-01..08
+```
+
+### 디스패처가 죽인 가설
+
+**`TerminalPaneView`의 `opacity: 0`** (`:68`, `:102-104`) — **기각.** pane 라우트가 `active`를 **리터럴
+`true`로** 넘긴다 (`app/h/[remoteId]/pane/[paneId].tsx:243`). 이 화면에서 hidden 스타일은 붙지 않는다.
+
+### 1순위 용의자 (미확증)
+
+`terminal-frame-sink.ts:148-160`이 `opened = true`를 **`target.init(...)` 호출 전에** 세운다. 그리고
+`target.init`의 실체는 `use-pane-observer.ts:112`의 **`handleRef.current?.init(...)` — 옵셔널 체이닝**이다.
+ref가 그 순간 null이면 init이 조용히 버려지고 `opened`는 영원히 true로 남아 이후 프레임이 전부 diff 경로로 간다.
+같은 파일 `:109-111` 주석이 *"TerminalWebView queues anything posted before web-ready"* 라고 적었는데,
+**그 큐잉은 handle 안에 있다 — handle 자체가 null이면 큐잉할 곳이 없다.** 주석이 커버한다고 믿는 창과
+실제로 열린 창이 다르다.
+
+### 하네스 사실 (다음 에이전트용, 각각 런 1회씩 태웠다)
+
+- `-scheme herdr`로는 UI 테스트가 안 돈다 → **`-scheme herdrUITests`**
+- `QA_SCRIPT_PATH`/`QA_OUT_DIR` env가 테스트 프로세스에 **안 닿는다** → QaDriver의 하드코딩
+  `/tmp/qam2lab/{script.json,shots}`가 유일 채널
+- 런치 직후 a11y 트리가 **비었다가 채워진다.** 좌표 탭 불안정(행 Pressable 프레임 y=133.7–182pt인데
+  라벨은 ~114pt에 그려진다) → `tapText`로 요소를 탭하라
+- **Metro는 앱 `console.log`를 로그파일에 안 흘린다.** CDP inspector(`http://127.0.0.1:8081/json/list`)를 쓰라
