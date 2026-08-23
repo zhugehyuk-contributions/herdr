@@ -116,31 +116,63 @@ orca의 나머지 절반(PTY 리사이즈)이 부재한다는 것도 증명됐�
 
 **이 목록은 아직 안 한 것만 담는다.** 닫힌 것의 근거·잔여는 아래 §닫힌 것으로 내렸다 —
 취소선 항목이 쌓이면 이 절이 "다음 행동"이기를 그만두기 때문이다.
+(2026-08-23 재작성: 구 1·1b·2는 전부 닫혔다 — iOS M3 PASS §BB, `init()` 근인 수리 §Y, M4 Android PASS §Z.)
 
-1. **iOS M3 (입력) QA** — M2가 닫혀 처음으로 가능해졌다. 코드는 Android와 같고 거기서 4/4 PASS다.
-   Android 판정 기준이 정본: 액세서리 키를 **바이트 단위**로 (`1b 09 0d 20 1b5b43 03 04 0c 1a 1b5b44 1b5b41`),
-   Ctrl-C가 `sleep 300`을 실제로 죽이는 것까지, PTY 불변 + `resize` 이벤트 0건.
-2. **`[fit]renderer`의 `cols` 수리** — 서버 그리드가 아니라 xterm 기본값을 읽는다(80 vs 실측 53, 214 vs 213).
-   **다음 QA가 이걸 그리드 근거로 쓰면 한 라운드를 태운다** (§AA).
+### N1. iOS M6a — 네이티브 recognizer 중재 (**유일하게 남은 구현 작업**)
 
-1b. (닫힘, 근거만) **`init()` 미완주의 근인**
-   원장 = `.prd/09` §X. 확정된 것: ①80컬럼(pane 53열, 글자 7.6px)에서도 비배경 **0px** —
-   "너무 작아서"가 배제됐다 ②`[fit]renderer` **0건**인데 CDP 라이브니스 마커 7건으로 채널 생존 증명
-   ③ready 워치독은 **안 울렸다** ⇒ `web-ready`는 왔고 `init()`이 완주 안 했다 ④와이어엔 3,507B 풀프레임 도착.
-   **그 사이 상태를 보고하는 계측이 없다** — 워치독은 그 앞만, 새 계측은 그 뒤만 본다.
-   1순위 용의자 = `terminal-frame-sink.ts:148-160`이 `opened=true`를 `target.init()` **전에** 세우는데
-   `target.init`이 `handleRef.current?.init(...)` 옵셔널 체이닝이다.
-   → 수리 후 **iOS M2 (b)(c)(e) 재QA**. **(c)는 30분을, (e)는 ≥200컬럼을 실제로 채워야 한다** — 지난 회차는 둘 다 미실시.
-2. **M4 Android 재QA** — FAIL 사유(강제종료 1건)는 `8f794748`이 수리했고 sticky 배너(`ce61f10e`)와
-   세대 가드(`10d36265`)도 같은 방향으로 닫혔다. **셋 다 미검증** — 재QA 1회로 함께 판정한다.
-   iOS M4는 **시뮬레이터로 닫히지 않는다**(기내모드·셀룰러 재현 불가) — 실기기 필요.
-3. **M5 센더 데몬** — 앱·서버 양쪽은 있다(`158e36f3`까지). 현재 어댑터는 `file`/`command`/`null`뿐이고
-   푸시 서비스가 미배선. **동작 경로는 Expo 계정 게이트에 걸린다**(위 §유저 게이트) — 게이트 전에 닫을 수
-   있는 것은 degraded 경로(설정 화면이 `no-token`을 읽히는 문장으로 표시)의 QA다.
-4. **M6 제어·스크롤·리타겟** — 마지막. 서버 변경을 동반한다.
+**JS는 소진됐다** (§OO). 7라운드가 남긴 확정 사실만 옮긴다:
 
-**병렬 금지 아님**: 1·2·3은 서로 독립이다. per-unit dispatch(rules/DEV.md §3) 유지 —
-**단, QA는 각자 고정 워크트리를 받는다**(§QA 게이트). 두 QA가 `app.json` 하나를 공유하면 고정이 무의미해진다.
+- 글자 위 드래그: WebView 문서가 `touchmove` **40개를 전부 받고**, RN pan은 **0개** → `dx=0`.
+- 마지막 도색 행 **아래 공백**에서 시작한 같은 드래그: WebView 이벤트 **0건**, RN이 `dx=−295`,
+  **전환·양 끝 no-op·재연결 0까지 전부 정상 동작**.
+- 경계는 `#terminal-surface`(`display: inline-block`)의 끝. 즉 **WKWebView가 경합에 참여하는 영역**과 같다.
+- `passive: true`·`touch-action: none`·`preventDefault` 제거는 **전부 적용됐고 이 결과를 안 바꿨다**
+  — `passive`는 `preventDefault`만 없앨 뿐 **UIKit 제스처 중재의 승패를 바꾸지 않는다.**
+
+**따라서 수리 지점은 네이티브다.** 후보 2종:
+
+1. **RNGH 쪽** — `Gesture.Pan().blocksExternalGesture(ref)` / `.simultaneousWithExternalGesture(ref)`.
+   막히는 지점: `react-native-webview`의 `ref`는 `useImperativeHandle`(postMessage/reload)이라
+   **네이티브 뷰 ref가 아니다.** 네이티브 뷰에 닿는 경로를 먼저 찾아야 한다.
+2. **WKWebView 쪽** — `webView.scrollView.panGestureRecognizer`에 대해 RNGH의 pan을
+   `require(toFail:)` 시키거나 `shouldRecognizeSimultaneouslyWith`를 열어준다.
+   `scrollEnabled={false}`여도 recognizer 객체는 살아 있다(`TerminalWebView.tsx:428`).
+
+**수용 기준**: 글자 위 y=200/300/400에서 `[paneSwipe] finalize`의 `dx ≠ 0`.
+계측은 이미 앱에 있다(`[paneSwipe]` + `[touchProbe]`, §JJ/§LL) — **판별표까지 §OO에 있으니 재발명 금지.**
+회귀 확인 필수: 선택 진입·핸들 드래그 / 핀치 / 줌 상태 팬 (7차에 전부 PASS로 실측된 기준선).
+
+### N2. pane 전환 문서 재빌드 — **양 플랫폼 공통, M6a보다 크다**
+
+pane을 바꿀 때마다 **730KB xterm 문서가 통째로 재생성된다**(§CC에서 CDP 타깃 id로 확증, 칩 탭도 동일).
+
+| 플랫폼 | 스와이프/탭분 | 문서 재빌드분 |
+|---|---|---|
+| Android (§FF) | **184ms** | 나머지 ~530ms, 278줄 버퍼 pane 복귀 시 **+3s 백지 / +15s 내용** |
+| iOS (§OO) | **≈ 0** | **523~731ms** (중앙값 715), 읽을 수 있는 새 pane까지 총 ~0.9–1.0s |
+
+iOS 한 케이스에서 `[fit]renderer`가 관측 헤더 커밋보다 **먼저** 왔다 = 가시 지연 전체가 재빌드 지배.
+**M6a의 `<200ms` 예산은 제스처가 아니라 여기서 깨진다.** 수리 방향은 pane별 문서를 **재사용**하는 것
+(리타겟은 이미 §2.3대로 같은 채널에서 일어난다 — 문서만 버려지고 있다).
+
+### N3. 유저 게이트 3건 — 내가 못 넘는다
+
+| 항목 | 필요한 것 |
+|---|---|
+| iOS M2b | 코드 서명 identity (계정 액션) |
+| iOS M4 | **실기기** — 기내모드·Wi-Fi↔셀룰러는 시뮬레이터로 재현 불가 |
+| M5 센더 데몬 | Expo 계정 로그인 (`npx expo whoami` = Not logged in) |
+
+게이트 전에 닫을 수 있는 것은 M5의 degraded 경로 QA뿐이다(설정 화면이 `no-token`을 읽히는 문장으로 표시).
+
+### N4. 서버 위생 1건
+
+`pane.read`의 `strip_ansi`가 **죽은 파라미터**다 — `src/api/schema/panes.rs:283`에 기본값 `true`로
+선언돼 있는데 `handle_pane_read`(`src/app/api/panes.rs:1189-1228`)가 한 번도 읽지 않는다(참조 0건, 직접 확인).
+
+**병렬 금지 아님**: N1·N2·N4는 서로 독립이다. per-unit dispatch(rules/DEV.md §3) 유지 —
+**단, QA는 각자 고정 워크트리 + 각자 Metro 포트를 받는다**(§QA 게이트). 두 QA가 `app.json` 하나를
+공유하면 고정이 무의미해지고, iOS는 **포트 결속을 앱에서 확증**해야 한다(§HH — 6회 연속 깨졌다).
 
 ---
 
