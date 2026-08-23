@@ -90,6 +90,27 @@ describe('TerminalWebView pane-swipe reports from the page', () => {
     expect(onPaneSwipe).toHaveBeenCalledWith({ translationX: -160, translationY: 6 })
   })
 
+  it('logs both outcomes, so a dropped report is distinguishable from one never sent', () => {
+    // The 9차 device round could confirm this path only through the *page's* `[touchProbe]`
+    // counters — nothing on the RN side said a word — and asked for this line by name. Two states
+    // look identical from outside without it: the page never sent, and the page sent something
+    // malformed that was dropped here. Asserted rather than left as a comment because a log line
+    // is exactly the kind of thing a later edit deletes as noise.
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const renderer = mountTerminalWebView(vi.fn())
+      postFromDocument(renderer, { type: 'pane-swipe', translationX: -160, translationY: 6 })
+      postFromDocument(renderer, { type: 'pane-swipe', translationX: '120', translationY: 6 })
+      const lines = log.mock.calls.map((call) => String(call[0]))
+      expect(lines.filter((line) => line.startsWith('[paneSwipeMsg]'))).toEqual([
+        '[paneSwipeMsg] ok=true dx=-160 dy=6',
+        '[paneSwipeMsg] ok=false dx=120 dy=6'
+      ])
+    } finally {
+      log.mockRestore()
+    }
+  })
+
   it('refuses every malformed pair rather than passing it on to be dropped silently', () => {
     const onPaneSwipe = vi.fn()
     const renderer = mountTerminalWebView(onPaneSwipe)
