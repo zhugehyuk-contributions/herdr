@@ -36,6 +36,19 @@ export type RemoteDialOutcome = {
   failures: readonly string[]
   /** This build has no native ssh module at all — a different cause from a rejected key. */
   nativeModuleMissing: boolean
+  /**
+   * At least one of those remotes still has a rung armed (`modules/herdr-ssh/src/dial-loop.ts`).
+   *
+   * Read by the message and by nothing else. It deliberately does **not** enter {@link dataSourceOf}:
+   * a remote being retried is a configured remote that has not answered, which is `'failed'` — the
+   * same state it was in a millisecond earlier. Letting it reach the source decision is how a retry
+   * ends up rendering the fixture, and 4 invented nodes with 40 invented agents is worse than any
+   * error this app can print.
+   *
+   * Optional because the Node harness and the provider suites build this object by hand and have no
+   * ladder; absent reads as "nothing is retrying", which for them is true.
+   */
+  retrying?: boolean
 }
 
 /**
@@ -50,6 +63,16 @@ export type RemoteDialOutcome = {
  */
 const loadWhileDialling: SnapshotLoader = () => new Promise<never>(() => {})
 
+/**
+ * What a screen says while a remote is being retried, appended to the failure.
+ *
+ * Its absence is what the M4 QA phone was actually stuck on: `No configured remote could be reached
+ * — ECONNREFUSED`, unchanged for six minutes, said the app had *finished* — so the user force-quit,
+ * which recovered in ten seconds and taught them that force-quitting is the fix. A line that says
+ * the app is still trying is the difference between waiting and quitting.
+ */
+export const RETRYING_SUFFIX = ' Retrying…'
+
 /** The error the screens show when the user asked for real hosts and got none of them. */
 function dialFailureMessage(dial: RemoteDialOutcome): string {
   if (dial.nativeModuleMissing) {
@@ -61,7 +84,12 @@ function dialFailureMessage(dial: RemoteDialOutcome): string {
   }
   // Every id, not just the first: with three remotes configured, which ones died is the whole
   // content of the message. They are already formatted `${id}: ${message}` upstream.
-  return `No configured remote could be reached — ${dial.failures.join(' · ')}`
+  //
+  // The suffix ends the list with a full stop rather than another `·`, which is the separator
+  // *between remotes* — "lab: Connection refused · retrying" reads as a second remote named
+  // `retrying`.
+  const reached = `No configured remote could be reached — ${dial.failures.join(' · ')}`
+  return dial.retrying === true ? `${reached}.${RETRYING_SUFFIX}` : reached
 }
 
 /**

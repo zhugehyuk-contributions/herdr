@@ -51,6 +51,16 @@ vi.mock('expo-modules-core', () => ({
   requireOptionalNativeModule: () => environment.native
 }))
 
+// The retryable failures below arm `../../modules/herdr-ssh/src/dial-loop.ts`'s ladder, and its
+// first armed rung is what makes it load `../transport/app-foreground.ts` — which reaches
+// `expo-network` through `../transport/connection-revival-triggers.ts`. Stubbed so the OS half is
+// inert rather than half-real: the ladder's own behaviour is `./failed-dial-redial-mount.test.tsx`'s
+// subject, and this file is about what the *screen* says.
+vi.mock('expo-network', () => ({
+  addNetworkStateListener: () => ({ remove: () => {} }),
+  getNetworkStateAsync: async () => ({ isConnected: true, type: 'WIFI' })
+}))
+
 vi.mock('expo-splash-screen', () => ({
   preventAutoHideAsync: vi.fn(async () => true),
   hideAsync: vi.fn(async () => true)
@@ -213,6 +223,12 @@ describe('a configured remote that cannot be dialled', () => {
     // The load-bearing assertion. `claude` is a name only `../api/mock/mock-fixture.ts` produces.
     expect(mockLeakedInto(texts)).toEqual([])
     // ...and the screen is not silently empty either: it says which remote failed, and why.
+    //
+    // No `Retrying…` here, and that is the point of using a refused key for this case:
+    // `../transport/channel-failure.ts` calls it fatal, so `../../modules/herdr-ssh/src/dial-loop.ts`
+    // latches instead of arming a rung, and a message promising a retry that is not coming would be
+    // the same class of lie as the fixture. `./failed-dial-redial-mount.test.tsx` is the retryable
+    // half.
     const failure = texts.find((text) => text.startsWith('No configured remote could be reached'))
     expect(failure).toBe(
       'No configured remote could be reached — lab: Permission denied (publickey)'
@@ -228,8 +244,10 @@ describe('a configured remote that cannot be dialled', () => {
     const texts = textNodes(await mountShell(createElement(AgentsHomeScreen), 'index'))
 
     expect(mockLeakedInto(texts)).toEqual([])
+    // A refused TCP connection *is* retryable, so the sentence ends with the ladder's promise —
+    // `·` stays the separator between remotes and the suffix is a sentence of its own.
     expect(texts).toContain(
-      'No configured remote could be reached — lab: Connection refused · iq-64: Connection refused'
+      'No configured remote could be reached — lab: Connection refused · iq-64: Connection refused. Retrying…'
     )
   })
 
@@ -255,7 +273,9 @@ describe('a configured remote that cannot be dialled', () => {
     environment.native = { connect: () => Promise.reject(new Error('Host is down')) }
     const target = await mountShell(createElement(NodeListScreen), 'nodes')
 
-    expect(textNodes(target)).toContain('No configured remote could be reached — lab: Host is down')
+    expect(textNodes(target)).toContain(
+      'No configured remote could be reached — lab: Host is down. Retrying…'
+    )
     const style = target.root
       .findAllByType(host('Text'))
       .find((node) => String(node.props.children).startsWith('No configured remote'))!.props

@@ -1,10 +1,14 @@
 // Not from orca. The junction: `app/_layout.tsx` had `const APP_CONNECTIONS = []` with a comment
 // saying the array was empty because React Native has no ssh stack. This is the code that fills it.
 //
-// Deliberately *only* the injection point. No settings screen, no connection state, no reconnect —
-// those are `src/transport/` and port-map stage 8 (`05-orca-transport.md` L1-L7). What this owns is
-// the one step nothing else can do: turn configured hosts into `HerdrRemoteConnection`s by dialling
-// the native module, and hand them to the provider that already existed.
+// Deliberately *only* the injection point. No settings screen, no connection state — those are
+// `src/transport/` and port-map stage 8 (`05-orca-transport.md` L1-L7). What this owns is the one
+// step nothing else can do: turn configured hosts into `HerdrRemoteConnection`s by dialling the
+// native module, and hand them to the provider that already existed.
+//
+// The *when* of a second attempt is not here either, and used to be nowhere: `./dial-loop.ts` holds
+// it, over L3's ladder, because a remote whose first dial failed never reached the layer that
+// retries everything else (its header has the measurement).
 //
 // ⚠️ Both expo imports below are dynamic, for the reason `native-module.ts` explains: a static
 // import would make `app/_layout.tsx` unloadable in the test environment and break two existing
@@ -14,8 +18,13 @@ import {
   createRedialableConnection,
   type RedialableTransport
 } from '../../../src/transport/redialable-transport'
+import {
+  classifyChannelFailure,
+  closeOfDialRejection
+} from '../../../src/transport/channel-failure'
 import type { HerdrRemoteConnection } from '../../../src/transport/herdr-connection'
 import type { RemoteDefinition } from '../../../src/api/herdr-api-types'
+import { startSshDialLoop, type SshDialLoopOptions } from './dial-loop'
 import { loadNativeHerdrSsh } from './native-module'
 import { createPushTokenRegistrar, type PushTokenRegistrar } from './push-token-registrar'
 import type { HerdrSshRemoteConfig } from './remote-config'
@@ -44,6 +53,20 @@ export interface DialedRemotes {
   transports: readonly { close(): void | Promise<void> }[]
   /** `id: reason` for every host that was configured but could not be reached. */
   failures: string[]
+  /**
+   * The subset of those hosts worth dialling again, by id. `./dial-loop.ts` is the only reader.
+   *
+   * The verdict is `src/transport/channel-failure.ts`'s and nothing here re-decides it: a refused
+   * public key, a missing remote `herdr` and a wire-layout mismatch all answer the next dial
+   * identically, so a ladder that kept trying them would be an ssh authentication attempt every 90
+   * seconds for a state only the user can change. Everything else — refused TCP, timeout, a dead
+   * radio — is exactly what a ladder is for, and is the default for the same reason that file
+   * states: guessing "fatal" on an unknown message reintroduces the parked loop L3 abolishes.
+   *
+   * Empty when this build has no native ssh module: every remote then fails with the same
+   * build-level reason, and no number of dials produces a module the bundle does not contain.
+   */
+  retryableIds: string[]
   /** True when this build has no `HerdrSsh` native module — the state before the module ships. */
   nativeModuleMissing: boolean
   /** Which channel supplied the list (`./remote-source.ts`) — `'none'` when nothing was configured. */
@@ -158,14 +181,24 @@ async function dialRemote(
  *
  * Exported so it can be driven without React — the Node live harness mounts the same app tree with
  * `SshHerdrTransport` instead, and a caller that wants the phone's path without a component has it.
+ *
+ * `only` restricts the pass to those remote ids, which is what a retry round is (`./dial-loop.ts`):
+ * a host that is already connected keeps its ssh connection, its exec channel and its remote
+ * `herdr` process (03-blockers.md B8) instead of being torn down and re-opened because a *different*
+ * host is down. An id that is no longer in the configuration is simply not dialled — the remote was
+ * deleted, and there is nothing left to retry.
  */
-export async function openConfiguredSshConnections(): Promise<DialedRemotes> {
-  const { remotes: configs, source } = await readSelectedRemotes()
+export async function openConfiguredSshConnections(
+  only?: readonly string[]
+): Promise<DialedRemotes> {
+  const { remotes: all, source } = await readSelectedRemotes()
+  const configs = only === undefined ? all : all.filter((config) => only.includes(config.id))
   if (configs.length === 0) {
     return {
       connections: NO_CONNECTIONS,
       transports: [],
       failures: [],
+      retryableIds: [],
       nativeModuleMissing: false,
       source,
       pushTokenRegistrars: NO_REGISTRARS
@@ -177,6 +210,7 @@ export async function openConfiguredSshConnections(): Promise<DialedRemotes> {
   const transports: RedialableTransport[] = []
   const registrars: PushTokenRegistrar[] = []
   const failures: string[] = []
+  const retryableIds: string[] = []
   for (const [index, result] of settled.entries()) {
     if (result.status === 'fulfilled') {
       connections.push(result.value.connection)
@@ -185,12 +219,19 @@ export async function openConfiguredSshConnections(): Promise<DialedRemotes> {
     } else {
       const id = configs[index]?.id ?? String(index)
       failures.push(`${id}: ${errorMessage(result.reason)}`)
+      // `native === null` is checked here rather than folded into the classifier because the reason
+      // string `dialRemote` throws for it reads as an ordinary transport error, and the classifier
+      // would correctly — and uselessly — call it retryable.
+      if (native !== null && !classifyChannelFailure(closeOfDialRejection(result.reason)).fatal) {
+        retryableIds.push(id)
+      }
     }
   }
   return {
     connections,
     transports,
     failures,
+    retryableIds,
     nativeModuleMissing: native === null,
     source,
     pushTokenRegistrars: registrars
@@ -225,6 +266,22 @@ export interface SshDialState {
   source: RemoteSource
   /** M5. One per connected remote; see {@link DialedRemotes.pushTokenRegistrars}. */
   pushTokenRegistrars: readonly PushTokenRegistrar[]
+  /**
+   * A fourth field rather than a fourth meaning for the other three, on purpose.
+   *
+   * True while `./dial-loop.ts` still has a rung armed for a remote that did not answer. It says
+   * nothing about *which* of the states above the app is in — `settled` still means the first dial
+   * resolved, `failures` still names every remote that did not answer, `nativeModuleMissing` is
+   * still a build fact — because `src/api/herdr-data-provider.tsx` splits "nothing configured" from
+   * "nothing answered" on exactly those three, and a remote that is being retried must never be
+   * mistaken for one that was never configured: that mistake renders the fixture, which is this
+   * app's signature lie.
+   *
+   * What it is for is the screen's honesty. The QA phone showed `No configured remote could be
+   * reached — ECONNREFUSED` unchanged for six minutes with nothing behind it, and the user's only
+   * remaining move was the app switcher.
+   */
+  retrying: boolean
 }
 
 /** The state before the first dial resolves. Frozen: it is shared by every mount. */
@@ -234,18 +291,30 @@ const DIALLING: SshDialState = Object.freeze({
   nativeModuleMissing: false,
   settled: false,
   source: 'none',
-  pushTokenRegistrars: NO_REGISTRARS
+  pushTokenRegistrars: NO_REGISTRARS,
+  retrying: false
 })
 
+/** What a receipt injects to drive the retry deterministically. Undefined everywhere else. */
+export type SshDialRetryOptions = Pick<
+  SshDialLoopOptions,
+  'timer' | 'isForeground' | 'subscribeRevival'
+>
+
 /**
- * The dial `app/_layout.tsx` runs once at mount and hands to the providers below it.
+ * The dial `app/_layout.tsx` starts at mount and hands to the providers below it.
  *
- * `settled: false` until it resolves, and settled-with-everything-failed afterwards — the two
- * states the caller needs to keep apart.
+ * `settled: false` until the first pass resolves, and settled-with-everything-failed afterwards —
+ * the two states the caller needs to keep apart.
+ *
+ * ⚠️ It is a **loop**, not a dial, and `./dial-loop.ts` is where the reason lives: the effect below
+ * used to run exactly once per keystore revision, so a remote that was unreachable at mount stayed
+ * unreachable until the user force-quit the app. Everything this hook still owns is the React half
+ * — when the loop starts, when it stops, and how its state reaches the tree.
  */
-export function useHerdrSshConnections(): SshDialState {
+export function useHerdrSshConnections(retry: SshDialRetryOptions = {}): SshDialState {
   // M2b: a remote added or deleted on the settings screen has to take effect without a restart, and
-  // the dial below is a mount-time effect. The keystore's revision counter is the dependency that
+  // the loop below is a mount-time effect. The keystore's revision counter is the dependency that
   // makes "the user saved a remote" a re-dial (`./remote-store.ts`); it never changes in a build
   // where nothing writes to the store, so every existing mount path is unaffected.
   const revision = useSyncExternalStore(
@@ -254,6 +323,7 @@ export function useHerdrSshConnections(): SshDialState {
     storedRemotesRevision
   )
   const [dial, setDial] = useState<SshDialState>(DIALLING)
+  const { timer, isForeground, subscribeRevival } = retry
 
   useEffect(() => {
     let live = true
@@ -261,38 +331,25 @@ export function useHerdrSshConnections(): SshDialState {
     // reporting it while the new one is in flight is the same lie as the fixture-during-dial one
     // (`src/api/herdr-data-provider.tsx`). Identity-stable, so the first mount does not re-render.
     setDial(DIALLING)
-    let opened: readonly { close(): void | Promise<void> }[] = []
-    void openConfiguredSshConnections().then((dialed) => {
-      opened = dialed.transports
-      if (!live) {
-        closeAll(opened)
-        return
-      }
-      // This now updates state in *every* case, the no-remotes one included. It used to update only
-      // when a connection existed, to keep the suites that mount `app/_layout.tsx` free of an
-      // out-of-`act` render — and that silence is exactly what collapsed "nothing configured" into
-      // "nothing answered". The suites flush the dial inside `act` instead
-      // (`src/app-shell/route-shell-mount.test.tsx`, `agents-home-mount.test.tsx`: `mountShell`).
-      setDial({
-        connections: dialed.connections,
-        failures: dialed.failures,
-        nativeModuleMissing: dialed.nativeModuleMissing,
-        settled: true,
-        source: dialed.source,
-        pushTokenRegistrars: dialed.pushTokenRegistrars
-      })
+    const loop = startSshDialLoop({
+      round: (only) => openConfiguredSshConnections(only),
+      // The loop publishes only on an observable change, so this is not a per-rung render — see
+      // `SshDialLoopOptions.onState`, and `src/transport/use-supervised-remotes.ts` for what a
+      // churned `connections` identity would cost.
+      onState: (state) => {
+        if (live) {
+          setDial(state)
+        }
+      },
+      ...(timer === undefined ? {} : { timer }),
+      ...(isForeground === undefined ? {} : { isForeground }),
+      ...(subscribeRevival === undefined ? {} : { subscribeRevival })
     })
     return () => {
       live = false
-      closeAll(opened)
+      loop.stop()
     }
-  }, [revision])
+  }, [revision, timer, isForeground, subscribeRevival])
 
   return dial
-}
-
-function closeAll(transports: readonly { close(): void | Promise<void> }[]): void {
-  for (const transport of transports) {
-    void transport.close()
-  }
 }
