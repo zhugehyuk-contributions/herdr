@@ -34,6 +34,7 @@ import { NativeSshHerdrTransport } from './ssh-transport'
 
 const NO_CONNECTIONS: readonly HerdrRemoteConnection[] = Object.freeze([])
 const NO_REGISTRARS: readonly PushTokenRegistrar[] = Object.freeze([])
+const NO_REMOTES: readonly RemoteDefinition[] = Object.freeze([])
 
 /** What a dial attempt produced, including the parts that failed. Nothing is swallowed silently. */
 export interface DialedRemotes {
@@ -53,6 +54,25 @@ export interface DialedRemotes {
   transports: readonly { close(): void | Promise<void> }[]
   /** `id: reason` for every host that was configured but could not be reached. */
   failures: string[]
+  /**
+   * Every configured remote as a `RemoteDefinition`, dialled or not. The registry, not the outcome.
+   *
+   * Without it a host that never answered had **no row at all**:
+   * `src/api/live/live-snapshot-loader.ts` builds its fleet from the live connections plus the
+   * `remote.list` of the box it reached, and a remote that failed to dial is in neither — so the
+   * node list showed `1 nodes` and said nothing about the second one. `src/nodes/node-list-model.ts`
+   * has drawn that row since stage 4 (`blocked` dot, `reconnecting… · last seen …`, the mockup's
+   * `blade-4090` at `assets/mockup.html:409-412`); what was missing was an input for it.
+   *
+   * *Every* remote rather than only the failed ones on purpose: the reader subtracts what it
+   * dialled, so this side never has to be right about which dial failed.
+   *
+   * Built from the whole inventory even on a retry round, which dials only `only`: a remote whose
+   * failure was fatal (a refused key) is deliberately absent from every later round's `only`
+   * ({@link DialedRemotes.retryableIds}), and a list narrowed to the round's subset would delete
+   * exactly the rows this field exists to keep.
+   */
+  configured: readonly RemoteDefinition[]
   /**
    * The subset of those hosts worth dialling again, by id. `./dial-loop.ts` is the only reader.
    *
@@ -192,12 +212,14 @@ export async function openConfiguredSshConnections(
   only?: readonly string[]
 ): Promise<DialedRemotes> {
   const { remotes: all, source } = await readSelectedRemotes()
+  const configured = Object.freeze(all.map(remoteDefinition))
   const configs = only === undefined ? all : all.filter((config) => only.includes(config.id))
   if (configs.length === 0) {
     return {
       connections: NO_CONNECTIONS,
       transports: [],
       failures: [],
+      configured,
       retryableIds: [],
       nativeModuleMissing: false,
       source,
@@ -231,6 +253,7 @@ export async function openConfiguredSshConnections(
     connections,
     transports,
     failures,
+    configured,
     retryableIds,
     nativeModuleMissing: native === null,
     source,
@@ -258,6 +281,8 @@ export interface SshDialState {
   connections: readonly HerdrRemoteConnection[]
   /** `id: reason` per configured remote that did not answer. Empty when none was configured. */
   failures: readonly string[]
+  /** Every configured remote, dialled or not; see {@link DialedRemotes.configured}. */
+  configured: readonly RemoteDefinition[]
   /** No `HerdrSsh` in this build (Expo Go, or a bundle predating the module) — not an auth failure. */
   nativeModuleMissing: boolean
   /** False until the dial settles, because "still dialling" is not "nothing was configured". */
@@ -288,6 +313,7 @@ export interface SshDialState {
 const DIALLING: SshDialState = Object.freeze({
   connections: NO_CONNECTIONS,
   failures: Object.freeze([]) as readonly string[],
+  configured: NO_REMOTES,
   nativeModuleMissing: false,
   settled: false,
   source: 'none',

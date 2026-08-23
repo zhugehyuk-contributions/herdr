@@ -184,9 +184,28 @@ describe('herdr data provider — what the dial said', () => {
     const target = await mount([liveConnection()], settled({ failures: ['dead-1: timed out'] }))
     expect(texts(target)[0]).toBe('ready:')
     expect(texts(target)[1]).toBe('a-real-box')
-    // The remote that failed is simply absent from the fleet; making it an error would throw away
-    // the box that did answer. That residual is `./live/live-snapshot-loader.ts`'s partial-failure
-    // rule one level up, and is called out in the review notes rather than papered over here.
+    // Making the partial failure an error would throw away the box that did answer, so it stays
+    // live. The failed remote is absent *here* only because this outcome names no configuration —
+    // the next test is the same dial with `configured` filled in, which is what the phone sends.
     expect(texts(target)[1]).not.toContain('dead-1')
+  })
+
+  it('gives the live loader the whole configuration, so a failed remote still has a row', async () => {
+    // The seam the QA phone was missing: `dataSourceOf` says `'live'` on a partial dial (above),
+    // and until `configured` was threaded through, the remote that failed appeared nowhere at all —
+    // no row, no error, header `1 nodes`. `dataSourceOf` is unchanged; what changed is that the
+    // loader is now told what was configured (`./live/live-snapshot-loader.ts`).
+    const target = await mount(
+      [liveConnection()],
+      settled({
+        failures: ['dead-1: timed out'],
+        configured: [
+          { id: 'live-1', name: 'a-real-box', target: { type: 'ssh', target: 'z@live' } },
+          { id: 'dead-1', name: 'blade-4090', target: { type: 'ssh', target: 'z@blade' } }
+        ]
+      })
+    )
+    expect(texts(target)[0]).toBe('ready:')
+    expect(texts(target)[1]).toBe('a-real-box,blade-4090')
   })
 })

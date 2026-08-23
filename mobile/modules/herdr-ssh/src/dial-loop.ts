@@ -34,6 +34,7 @@
 import { ForegroundRedialLadder } from '../../../src/transport/foreground-redial-ladder'
 import type { HerdrRemoteConnection } from '../../../src/transport/herdr-connection'
 import type { DialedRemotes, SshDialState } from './app-connections'
+import type { RemoteDefinition } from '../../../src/api/herdr-api-types'
 import type { PushTokenRegistrar } from './push-token-registrar'
 import type { RemoteSource } from './remote-source'
 import type { TransportTimer } from '@herdr/client-ts'
@@ -41,6 +42,7 @@ import type { TransportTimer } from '@herdr/client-ts'
 const NO_CONNECTIONS: readonly HerdrRemoteConnection[] = Object.freeze([])
 const NO_REGISTRARS: readonly PushTokenRegistrar[] = Object.freeze([])
 const NO_FAILURES: readonly string[] = Object.freeze([])
+const NO_REMOTES: readonly RemoteDefinition[] = Object.freeze([])
 
 /** One dial pass. `only` restricts it to the remote ids that still owe an answer. */
 export type DialRound = (only?: readonly string[]) => Promise<DialedRemotes>
@@ -80,6 +82,14 @@ export function startSshDialLoop(options: SshDialLoopOptions): SshDialLoop {
   let nativeModuleMissing = false
   let source: RemoteSource = 'none'
   let failures: readonly string[] = NO_FAILURES
+  /**
+   * The configured fleet, passed straight through from the round that read it.
+   *
+   * Accumulated like `failures` rather than like `connected`: a round reports the whole registry
+   * (`./app-connections.ts`, {@link DialedRemotes.configured}), not the slice it dialled, so the
+   * last round's answer is the current one.
+   */
+  let configured: readonly RemoteDefinition[] = NO_REMOTES
   /**
    * The ids the next round dials. `null` means "everything", which is the first round and the round
    * after a dial that failed before it could name a single remote.
@@ -159,6 +169,7 @@ export function startSshDialLoop(options: SshDialLoopOptions): SshDialLoop {
     const next: SshDialState = {
       connections: connectionsView,
       failures,
+      configured,
       nativeModuleMissing,
       settled,
       source,
@@ -183,6 +194,7 @@ export function startSshDialLoop(options: SshDialLoopOptions): SshDialLoop {
     }
     opened.push(...dialed.transports)
     failures = dialed.failures
+    configured = dialed.configured
     source = dialed.source
     nativeModuleMissing = dialed.nativeModuleMissing
     settled = true
@@ -260,8 +272,37 @@ function unchanged(a: SshDialState, b: SshDialState): boolean {
     a.source === b.source &&
     a.retrying === b.retrying &&
     a.failures.length === b.failures.length &&
-    a.failures.every((entry, index) => entry === b.failures[index])
+    a.failures.every((entry, index) => entry === b.failures[index]) &&
+    sameFleet(a.configured, b.configured)
   )
+}
+
+/**
+ * Value-equality over the configured fleet.
+ *
+ * By value and not by identity because every round rebuilds the array from the same keystore, and
+ * an identity check would report a change on each rung — which `src/api/herdr-data-provider.tsx`
+ * turns into a fresh `SnapshotLoader` and therefore a full snapshot reload per retry, on a phone
+ * that is retrying precisely because the network is bad. The fields compared are the ones a node row
+ * renders: id, name, and the ssh target `src/api/snapshot-context.tsx`'s `remoteSubtitle` prints.
+ */
+function sameFleet(a: readonly RemoteDefinition[], b: readonly RemoteDefinition[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((remote, index) => {
+      const other = b[index]
+      return (
+        other !== undefined &&
+        remote.id === other.id &&
+        remote.name === other.name &&
+        targetText(remote) === targetText(other)
+      )
+    })
+  )
+}
+
+function targetText(remote: RemoteDefinition): string {
+  return remote.target.type === 'ssh' ? `ssh:${remote.target.target}` : remote.target.type
 }
 
 function errorText(reason: unknown): string {

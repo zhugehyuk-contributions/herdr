@@ -363,3 +363,69 @@ back 크럼 · 핸들 · pane 제목 · History뿐. **클리핑과 목업 불일
 브리프가 `HERDR_SOCKET_PATH`를 "unset하라"고 했는데, **unset하면 herdr가 유저 프로덕션 소켓으로
 폴백한다.** 판정자가 의도(격리)를 살려 `/tmp` 경로로 명시 오버라이드했다. → `.prd/10` §라이브 랩
 재구축을 정정(⛔ 블록). 격리 변수를 지우는 것이 격리를 깨는 동작이었다.
+
+## UI 대조 QA 4차 — 기기 (2026-08-24, 별도 에이전트, `qa-ui4` @ `ef9c7008`)
+
+픽스처 **80×52**, pane 4 개명(`orchestrator`/`build`/`review`/`deploy` — 위치 핸들과 다르게),
+agent 4상태, ANSI 6색, 깊은 버퍼 pane **836행**. live 확증 = 난수 토큰 `ZQ4-LIVE-20529DF1`.
+격리는 `HERDR_SOCKET_PATH=/tmp/labui4/herdr.sock` **명시 오버라이드**(3차의 절차 정정 적용),
+per-PID `lsof`로 `~/.config/herdr` 참조 0건, 유저 프로덕션 herdr 76개 생존.
+
+### ② 헤더 클리핑 — **PASS** (3라운드 만에)
+
+| 화면 | max ink x | 엣지 접촉(=1079) |
+|---|---|---|
+| pane 화면 4종 전부 | **1012** | **0줄** |
+| agents / nodes / pane list / settings | 992 / 1034 / 1035 / 439 | 0줄 |
+
+3차 = 1079 / 엣지 **9줄** / `Connec` 글리프 중간절단. 이번 = 1012 / 0줄 / 절단 0.
+pane 화면 4종이 모두 1012인 이유: 이제 `History` 우변이 max를 정하고 **상태 체인이 그 자리를 다투지 않는다.**
+새 줄(`↻ working observing ● Connected`)은 터미널 아래에 max ink x=**599**로 렌더, back 크럼 생존.
+
+### N2 전환 지연 — **PASS**, 문서 동일성까지 직접 증명
+
+판정자가 CDP 타깃 id(`60BC57B0…`, 4회 전환 전후 불변)에 더해 **JS 전역 마커**
+`window.__qaDocId`(문서 재생성 시 소멸)를 심어 4회 전부 생존을 보였다. `.xterm` 610×777 불변.
+60fps 녹화 실측:
+
+| 전환 | 백지 | 내용 도달 |
+|---|---|---|
+| → 깊은 버퍼(836행) | **0ms** | 50ms |
+| 깊은 버퍼 복귀 | **0ms** | ≤17ms |
+| 스와이프 | **0ms** | 233ms(180ms 제스처 포함) |
+
+전 상태 = 스와이프 184ms + ~530ms, 깊은 버퍼 복귀 시 **백지 3s / 내용 15s**.
+
+### 회귀 — 전수 통과
+
+칩 위치 핸들 · 칩 잘림 0(스크롤 스트립) · ANSI 6색 · settings 모노 · 전역 모노 · 핀치 후 기하 불변 ·
+blocked 반전 뱃지+밴드 · **agents 행 우측 = pane id**(3차 지적 수리 확증) · `REMOTES` 섹션 · FAB 반전.
+
+`HUB` 헤더 부재는 **설계대로**(원격 2개가 다 ssh — 빈 그룹은 헤더를 안 그린다).
+`└` 활동줄은 **판정불가**: `paneActivityLabel`은 터미널 타이틀이 identity와 다를 때만 줄을 낸다
+(bash 프롬프트 pane은 null). 재현하려면 장시간 명령으로 타이틀을 세운 픽스처가 필요하다 — 픽스처 요건에 추가.
+
+### 신규 FAIL → 수리 — 다이얼 실패 원격이 행째로 증발했다
+
+일부러 심은 죽은 원격(`10.0.2.2:2399`)이 **행도 에러도 없이** 안 나왔다. 헤더는 `1 nodes`.
+
+사슬: `fleetOf(connections)`가 **살아있는 connection에서만** `remotes`를 만들고
+(`live-snapshot-loader.ts:100`), 실패한 다이얼은 connection이 아니라 문자열이 되며
+(`app-connections.ts:213-228`), 부분 실패면 `dataSourceOf`가 `'live'`라 실패 원격을 이름 대는
+`dialFailureMessage`가 도달 불가(`herdr-data-provider.tsx:107-132`).
+**결과적으로 #6 `reconnecting…` 분기는 구현도 유닛테스트도 있는데 라이브 경로가 입력을 영영 안 줬다** —
+로더 자신의 docstring(`:87-89`)과도 모순이었다(그 보장은 "다이얼은 뚫렸다가 JSON이 실패한" 경우에만 성립).
+
+**수리**: 설정된 레지스트리를 로더까지 흘린다. `DialedRemotes.configured`(전량) →
+`RemoteDialOutcome.configured?` → `fleetOf(connections, configured)`가
+**dialled → listed 미지 → configured 미지** 순으로 병합(id dedup, 순서가 계약).
+
+구현자가 스펙에서 의도적으로 벗어난 지점 1개, 그리고 그게 옳다: 레지스트리를 `configs`(리트라이
+`only` 필터 결과)가 아니라 `all`에서 만들었다 — 키 거부처럼 **치명적 실패는 `retryableIds`에서 빠지므로
+다음 라운드 `only`에 영영 없고**, `configs` 기반이면 그 원격의 행이 라운드 2에서 다시 사라진다.
+`unchanged()`엔 identity가 아니라 값 비교(`sameFleet`)를 넣었다 — 매 라운드 새 배열이라 identity면
+rung마다 재발행되고 슈퍼바이저가 전면 재생성된다.
+
+**남은 경계**: **전부 실패**면 여전히 행이 아니라 에러 화면이다(`dataSourceOf`가 `'failed'` → 로더 미선택).
+이번 수리는 **부분 실패**에 행을 만든다. `dataSourceOf` 판정 규칙 변경은 별개 결정으로 미룬다.
+**기기 미검증** — 다음 라운드 픽스처에 죽은 원격 1개를 상시 포함할 것.

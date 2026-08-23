@@ -57,47 +57,77 @@ async function snapshotOf(connection: HerdrRemoteConnection): Promise<RemoteSnap
   return { remote: connection.remote, workspaces, panes, agents }
 }
 
-/** `remote.list` from the box the phone reached, merged behind the remotes it actually dialled. */
-async function fleetOf(connections: readonly HerdrRemoteConnection[]): Promise<RemoteDefinition[]> {
-  const dialled = connections.map((connection) => connection.remote)
-  const first = connections[0]
-  if (!first) {
-    return dialled
-  }
-  let listed: RemoteDefinition[]
+/** `remote.list` from the box the phone reached, or nothing if it cannot answer. */
+async function listedBy(connection: HerdrRemoteConnection): Promise<RemoteDefinition[]> {
   try {
-    listed = arrayField<RemoteDefinition>(
-      await first.api.request('remote.list'),
+    return arrayField<RemoteDefinition>(
+      await connection.api.request('remote.list'),
       'remote.list',
       'remotes'
     )
   } catch {
     // A box that cannot answer `remote.list` still has workspaces worth showing, and the fleet it
-    // knows about is the *least* load-bearing of the four lists: losing it costs rows the phone
-    // could not have dialled anyway.
-    return dialled
+    // knows about is the *least* load-bearing of the four lists: losing it costs rows for boxes
+    // nobody on this phone configured.
+    return []
   }
-  const known = new Set(dialled.map((remote) => remote.id))
-  return [...dialled, ...listed.filter((remote) => !known.has(remote.id))]
 }
 
 /**
- * A {@link SnapshotLoader} over live connections.
+ * The fleet: **dialled**, then what the box it reached listed, then the rest of the configuration.
  *
- * Partial failure is a *result*, not an error: a remote whose bridge is down is left out of
+ * The order is the contract, not a detail. Dialled first so the remotes that answered sit at the top
+ * of the node list; `configured` last so a host the app could not reach still gets a row —
+ * `../herdr-data-provider.tsx` hands it every remote in the configuration, dialled or not
+ * (`modules/herdr-ssh/src/app-connections.ts`, `DialedRemotes.configured`), and this function is
+ * what subtracts the ones that are already here. Ids are deduplicated across all three sources: a
+ * remote that was dialled *and* is in the registry is one row, in dialled position.
+ */
+async function fleetOf(
+  connections: readonly HerdrRemoteConnection[],
+  configured: readonly RemoteDefinition[]
+): Promise<RemoteDefinition[]> {
+  const first = connections[0]
+  const listed = first ? await listedBy(first) : []
+  const fleet = connections.map((connection) => connection.remote)
+  const known = new Set(fleet.map((remote) => remote.id))
+  for (const remote of [...listed, ...configured]) {
+    if (!known.has(remote.id)) {
+      known.add(remote.id)
+      fleet.push(remote)
+    }
+  }
+  return fleet
+}
+
+/**
+ * A {@link SnapshotLoader} over live connections, plus the remotes that were configured for it.
+ *
+ * Partial failure is a *result*, not an error: a remote that does not answer is left out of
  * `perRemote` and stays in `remotes`, which is the same shape the snapshot already uses for a
- * remote that was never dialled (`../snapshot-context.tsx`) — so the fleet list keeps its row and
- * the screens keep working for the boxes that answered. Only a total failure throws, because a
- * snapshot with nothing in it is indistinguishable from an empty herdr and the user has to be told.
+ * remote that was never dialled (`../snapshot-context.tsx`) — so the fleet list keeps its row
+ * (`blocked` dot, `reconnecting…`, per `src/nodes/node-list-model.ts`) and the screens keep working
+ * for the boxes that answered. Only a total failure throws, because a snapshot with nothing in it is
+ * indistinguishable from an empty herdr and the user has to be told.
+ *
+ * ⚠️ `configured` is what makes that true for **both** kinds of "does not answer". It used to hold
+ * only for a remote whose ssh dial succeeded and whose JSON request then failed, because `remotes`
+ * was built out of live connections alone: a remote that never dialled was in no connection, in no
+ * `remote.list` (the registry belongs to the box that answered, not to this phone), and therefore in
+ * no row — the QA phone showed `1 nodes` with a deliberately unreachable remote configured and
+ * nothing on screen naming it. Everything configured is passed in, and what was dialled is
+ * subtracted here.
  */
 export function createLiveSnapshotLoader(
-  connections: readonly HerdrRemoteConnection[]
+  connections: readonly HerdrRemoteConnection[],
+  /** Defaults to none for the callers that dial directly and have no configuration to speak of. */
+  configured: readonly RemoteDefinition[] = []
 ): SnapshotLoader {
   return async (): Promise<HerdrSnapshot> => {
     if (connections.length === 0) {
       throw new Error('no herdr connections: nothing to load a snapshot from')
     }
-    const remotes = await fleetOf(connections)
+    const remotes = await fleetOf(connections, configured)
     const settled = await Promise.all(
       connections.map(async (connection) => {
         try {

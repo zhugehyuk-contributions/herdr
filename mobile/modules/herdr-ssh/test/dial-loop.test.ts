@@ -13,12 +13,15 @@ import { startSshDialLoop } from '../src/dial-loop'
 import { RECONNECT_DELAYS } from '../../../src/transport/reconnect-policy'
 import type { DialedRemotes, SshDialState } from '../src/app-connections'
 import type { HerdrRemoteConnection } from '../../../src/transport/herdr-connection'
+import type { RemoteDefinition } from '../../../src/api/herdr-api-types'
+
+function remoteFor(id: string): RemoteDefinition {
+  return { id, name: id, target: { type: 'ssh', target: `z@${id}` } }
+}
 
 /** A connection object with just the field anything downstream reads by name. */
 function connectionFor(id: string): HerdrRemoteConnection {
-  return {
-    remote: { id, name: id, target: { type: 'ssh', target: `z@${id}` } }
-  } as unknown as HerdrRemoteConnection
+  return { remote: remoteFor(id) } as unknown as HerdrRemoteConnection
 }
 
 type Outcome = { ok?: readonly string[]; failed?: readonly string[]; fatal?: readonly string[] }
@@ -30,7 +33,7 @@ type Outcome = { ok?: readonly string[]; failed?: readonly string[]; fatal?: rea
  * round: `retryableIds` is `../../../src/transport/channel-failure.ts`'s verdict, computed one level
  * up in `../src/app-connections.ts`.
  */
-function outcome(result: Outcome, closed: string[]): DialedRemotes {
+function outcome(result: Outcome, closed: string[], fleet?: readonly string[]): DialedRemotes {
   const ok = result.ok ?? []
   const failed = result.failed ?? []
   const fatal = result.fatal ?? []
@@ -42,6 +45,10 @@ function outcome(result: Outcome, closed: string[]): DialedRemotes {
       ...fatal.map((id) => `${id}: Permission denied (publickey)`)
     ],
     retryableIds: [...failed],
+    // The whole configuration, dialled or not — including the remotes *this* round was not asked
+    // to dial. That is what a real round reports (`../src/app-connections.ts` reads the inventory,
+    // not the `only` slice) and it is what keeps an unreachable remote on the node list.
+    configured: (fleet ?? [...ok, ...failed, ...fatal]).map(remoteFor),
     nativeModuleMissing: false,
     source: 'keystore',
     pushTokenRegistrars: []
@@ -57,12 +64,19 @@ function harness(script: readonly Outcome[], options: { foreground?: boolean } =
   const foreground = { on: options.foreground ?? true }
   let nudge: (() => void) | null = null
   let round = 0
+  // Every remote the script ever mentions: the configuration does not shrink because one round
+  // re-dialled a subset of it.
+  const fleet = [
+    ...new Set(
+      script.flatMap((step) => [...(step.ok ?? []), ...(step.failed ?? []), ...(step.fatal ?? [])])
+    )
+  ]
   const loop = startSshDialLoop({
     round: (only) => {
       asked.push(only)
       const step = script[Math.min(round, script.length - 1)] as Outcome
       round += 1
-      return Promise.resolve(outcome(step, closed))
+      return Promise.resolve(outcome(step, closed, fleet))
     },
     onState: (state) => states.push(state),
     timer: clock.timer,

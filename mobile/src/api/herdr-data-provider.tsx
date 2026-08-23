@@ -19,6 +19,7 @@ import { createLiveSnapshotLoader } from './live/live-snapshot-loader'
 import { loadMockSnapshot } from './mock/mock-snapshot-loader'
 import { useHerdrConnections } from '../transport/herdr-clients-context'
 import type { HerdrRemoteConnection } from '../transport/herdr-connection'
+import type { RemoteDefinition } from './herdr-api-types'
 
 /**
  * What dialling the configured remotes produced, as this file needs it.
@@ -36,6 +37,20 @@ export type RemoteDialOutcome = {
   failures: readonly string[]
   /** This build has no native ssh module at all — a different cause from a rejected key. */
   nativeModuleMissing: boolean
+  /**
+   * Every remote in the configuration, dialled or not — the fleet the node list has to draw.
+   *
+   * It exists because a remote that failed to dial is in no connection and in no `remote.list`, so
+   * `./live/live-snapshot-loader.ts` had nothing to build its row from and the screen simply did not
+   * mention it (measured on the QA phone: an unreachable remote configured, header `1 nodes`, no
+   * error). It deliberately does **not** enter {@link dataSourceOf}: partial failure stays `'live'`,
+   * and this is what makes that verdict honest — the remote that failed is on screen as a `blocked`
+   * row rather than absent.
+   *
+   * Optional for the same reason `retrying` is: the Node harness and the provider suites build this
+   * object by hand, and absent reads as "nothing was configured beyond what was dialled".
+   */
+  configured?: readonly RemoteDefinition[]
   /**
    * At least one of those remotes still has a rung armed (`modules/herdr-ssh/src/dial-loop.ts`).
    *
@@ -126,7 +141,7 @@ function selectLoader(
 ): SnapshotLoader {
   switch (dataSourceOf(connections, dial)) {
     case 'live':
-      return createLiveSnapshotLoader(connections)
+      return createLiveSnapshotLoader(connections, dial?.configured ?? [])
     case 'dialling':
       return loadWhileDialling
     case 'failed':

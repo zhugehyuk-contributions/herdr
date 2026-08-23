@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest'
 import { JsonApiClient, type JsonApiConnection } from '@herdr/client-ts'
 import { createLiveSnapshotLoader } from './live-snapshot-loader'
+import { nodeDetail, nodeDotState } from '../../nodes/node-list-model'
 import type { HerdrRemoteConnection } from '../../transport/herdr-connection'
 import type { RemoteDefinition } from '../herdr-api-types'
 
@@ -104,6 +105,38 @@ describe('live snapshot loader', () => {
     expect(snapshot.perRemote.map((entry) => entry.remote.id)).toEqual(['remote-1'])
   })
 
+  it('keeps a remote that never dialled at all — the row the fleet used to lose', async () => {
+    // Measured on the QA phone (2026-08-23): one reachable remote plus a deliberately unreachable
+    // one (`10.0.2.2:2399`, no listener). The header said `1 nodes` and no row, error or message
+    // named the second remote — a failed dial produces no connection, and `remote.list` is the
+    // *reached box's* registry, which knows nothing about what this phone was configured with. So
+    // the fleet was built from two sources that both structurally exclude it.
+    const hub = connection(remote('remote-1', 'fable-m5max'), {
+      ...HUB_LISTS,
+      'remote.list': { type: 'remote_list', remotes: [] }
+    })
+    const configured = [remote('remote-1', 'fable-m5max'), remote('remote-2', 'blade-4090')]
+    const snapshot = await createLiveSnapshotLoader([hub], configured)()
+    // Two rows, and the dialled one first: the remotes that answered belong at the top of the list.
+    expect(snapshot.remotes.map((entry) => entry.id)).toEqual(['remote-1', 'remote-2'])
+    // ...and exactly one of them has data, which is what makes the second row say `reconnecting…`
+    // rather than pretend.
+    expect(snapshot.perRemote.map((entry) => entry.remote.id)).toEqual(['remote-1'])
+  })
+
+  it('orders the fleet dialled, then listed, then merely configured — deduplicated by id', async () => {
+    const hub = connection(remote('remote-1', 'fable-m5max'), HUB_LISTS)
+    // `HUB_LISTS`'s `remote.list` knows `remote-2`; the configuration adds `remote-3` and repeats
+    // the two that are already there.
+    const configured = [
+      remote('remote-2', 'iq-64'),
+      remote('remote-3', 'blade-4090'),
+      remote('remote-1', 'fable-m5max')
+    ]
+    const snapshot = await createLiveSnapshotLoader([hub], configured)()
+    expect(snapshot.remotes.map((entry) => entry.id)).toEqual(['remote-1', 'remote-2', 'remote-3'])
+  })
+
   it('throws when nothing answered, because an empty snapshot reads as an empty herdr', async () => {
     const dead = connection(remote('remote-1', 'fable-m5max'), {})
     await expect(createLiveSnapshotLoader([dead])()).rejects.toThrow(/workspace\.list/)
@@ -118,5 +151,69 @@ describe('live snapshot loader', () => {
     await expect(createLiveSnapshotLoader([broken])()).rejects.toThrow(
       /workspace\.list returned no `workspaces` array/
     )
+  })
+})
+
+/**
+ * The other half of the same defect: the branch existed, its input did not.
+ *
+ * `../../nodes/node-list-model.ts` has drawn the mockup's `blade-4090` row since stage 4 — inverted
+ * ring, `reconnecting… · last seen 2m ago` (`assets/mockup.html:409-412`) — and both branches have
+ * had unit tests since then. What was missing is that nothing on the *live* path could ever produce
+ * a remote that is in `remotes` and not in `perRemote`, so the row was unreachable outside the
+ * fixture. This asserts the join, not either half.
+ */
+describe('live snapshot → node row', () => {
+  it('renders an unreachable configured remote as blocked · reconnecting…', async () => {
+    const hub = connection(remote('remote-1', 'fable-m5max'), {
+      ...HUB_LISTS,
+      'remote.list': { type: 'remote_list', remotes: [] }
+    })
+    const dead = remote('remote-2', 'blade-4090')
+    const snapshot = await createLiveSnapshotLoader(
+      [hub],
+      [remote('remote-1', 'fable-m5max'), dead]
+    )()
+
+    const row = snapshot.remotes.find((entry) => entry.id === 'remote-2')
+    expect(row).toBeDefined()
+    const entry = snapshot.perRemote.find((item) => item.remote.id === 'remote-2')
+    expect(entry).toBeUndefined()
+
+    expect(nodeDotState({ entry })).toBe('blocked')
+    const nowMs = 1_700_000_000_000
+    expect(
+      nodeDetail({
+        remote: row as RemoteDefinition,
+        subtitle: 'z@blade-4090',
+        entry,
+        rollup: '',
+        lastSeenAt: nowMs - 120_000,
+        nowMs
+      })
+    ).toBe('reconnecting… · last seen 2m ago')
+  })
+
+  it('leaves the remote that answered on its ordinary line', async () => {
+    const hub = connection(remote('remote-1', 'fable-m5max'), {
+      ...HUB_LISTS,
+      'remote.list': { type: 'remote_list', remotes: [] }
+    })
+    const snapshot = await createLiveSnapshotLoader(
+      [hub],
+      [remote('remote-1', 'fable-m5max'), remote('remote-2', 'blade-4090')]
+    )()
+    const entry = snapshot.perRemote.find((item) => item.remote.id === 'remote-1')
+    expect(nodeDotState({ entry })).toBe('ok')
+    expect(
+      nodeDetail({
+        remote: snapshot.remotes[0] as RemoteDefinition,
+        subtitle: 'z@fable-m5max',
+        entry,
+        rollup: 'idle',
+        lastSeenAt: null,
+        nowMs: 0
+      })
+    ).toBe('z@fable-m5max · 1 spaces · 1 panes · idle')
   })
 })
