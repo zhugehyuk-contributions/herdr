@@ -28,6 +28,7 @@ import { useRemote, useRemoteSnapshot, remoteSubtitle } from '../../../src/api/s
 import {
   agentPaneHandle,
   agentIdentityLabel,
+  paneActivityLabel,
   agentStateLabel
 } from '../../../src/agents/agent-display'
 import { paneHref } from '../../../src/agents/fleet-agents'
@@ -45,6 +46,17 @@ import type { PaneInfo } from '../../../src/api/herdr-api-types'
 function paneHandle(pane: PaneInfo): string {
   const label = pane.label?.trim()
   return label && label.length > 0 ? label : pane.pane_id
+}
+
+function paneActivity(pane: PaneInfo): string | null {
+  return paneActivityLabel({
+    agent_status: pane.agent_status,
+    state_labels: pane.state_labels,
+    display_agent: pane.display_agent,
+    agent: pane.agent,
+    title: pane.title,
+    terminal_title_stripped: pane.terminal_title_stripped
+  })
 }
 
 function paneTitle(pane: PaneInfo): string {
@@ -138,21 +150,32 @@ export function RemoteScreen({
                           accessibilityRole="button"
                           accessibilityLabel={`${paneHandle(pane)} ${paneTitle(pane)}`}
                           onPress={() => router.push(paneHref(remoteId ?? '', pane.pane_id))}
-                          style={styles.paneRow}
+                          style={styles.paneRowOuter}
                         >
-                          <Text style={styles.paneHandle}>{paneHandle(pane)}</Text>
-                          <AgentStateDot state={pane.agent_status} />
-                          <Text style={styles.paneTitle} numberOfLines={1}>
-                            {paneTitle(pane)}
-                          </Text>
-                          <View style={styles.spacer} />
-                          <Text style={styles.paneState}>
-                            {agentStateLabel({
-                              agent_status: pane.agent_status,
-                              state_labels: pane.state_labels
-                            })}
-                          </Text>
-                          <Text style={styles.chevron}>›</Text>
+                          <View style={styles.paneRow}>
+                            <Text style={styles.paneHandle}>{paneHandle(pane)}</Text>
+                            <AgentStateDot state={pane.agent_status} />
+                            <Text style={styles.paneTitle} numberOfLines={1}>
+                              {paneTitle(pane)}
+                            </Text>
+                            <View style={styles.spacer} />
+                            <Text style={styles.paneState}>
+                              {agentStateLabel({
+                                agent_status: pane.agent_status,
+                                state_labels: pane.state_labels
+                              })}
+                            </Text>
+                            <Text style={styles.chevron}>›</Text>
+                          </View>
+                          {/* .prd/11 누락 #13 — the mockup's `└ …` line. Without it this list is
+                              names and one state word, so choosing which pane to open means
+                              opening them one at a time. Rendered only when it says something the
+                              row above does not (`paneActivityLabel` returns null otherwise). */}
+                          {paneActivity(pane) ? (
+                            <Text style={styles.paneActivity} numberOfLines={1}>
+                              {`└ ${paneActivity(pane)}`}
+                            </Text>
+                          ) : null}
                         </Pressable>
                       ))}
                     </View>
@@ -198,6 +221,9 @@ const styles = StyleSheet.create({
   },
   paneHandle: { color: mono.dim, fontSize: 11, minWidth: 24 },
   paneTitle: { color: mono.fgSoft, fontSize: 13, flexShrink: 1 },
+  paneRowOuter: { paddingVertical: 2 },
+  // Indented to sit under the handle, the way the mockup's `└` hangs off the row above it.
+  paneActivity: { color: mono.dim, fontSize: 12, paddingLeft: 18, paddingBottom: 4 },
   paneState: { color: mono.dim, fontSize: 11 },
   chevron: { color: mono.dim2, fontSize: 13 },
   spacer: { flex: 1 },

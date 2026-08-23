@@ -82,6 +82,36 @@ export function agentIdentityLabel(agent: AgentDisplayFields): string {
 }
 
 /**
+ * What the pane is *doing*, for the second line the mockup draws under every pane row
+ * (`mockup.html:535` — `└ Running cargo nextest… · 2m41s`).
+ *
+ * **This diverges from the mockup's stated source and the divergence is deliberate.** The mockup's
+ * acceptance line (`:555`) says *"요약 줄 = `pane.read` {recent, lines:1}"*, i.e. read the pane's
+ * last output line from the server. On this client that is one JSON call per pane — blocker B8
+ * makes each one an ssh exec and a remote `herdr` process — so a workspace with twelve panes would
+ * spend twelve execs to draw a list. `terminal_title_stripped` carries the running command and is
+ * **already in the `pane.list` payload** (`src/api/herdr-api-types.ts:104`), so the same line costs
+ * nothing. `.prd/11-mockup-conformance.md` records this as an open question rather than a silent
+ * substitution: if the last output line is what the user actually wants, the fix is a server-side
+ * batch field, not twelve execs.
+ *
+ * Returns `null` rather than a placeholder when the only candidate is what
+ * {@link agentIdentityLabel} already rendered — a row that says `claude` twice is worse than a row
+ * with one line, and the identity chain falls through to the terminal title precisely when there is
+ * no agent name to show.
+ */
+export function paneActivityLabel(agent: AgentDisplayFields): string | null {
+  const identity = agentIdentityLabel(agent)
+  for (const candidate of [agent.terminal_title_stripped, agent.title]) {
+    const trimmed = candidate?.trim()
+    if (trimmed && trimmed !== identity) {
+      return trimmed
+    }
+  }
+  return null
+}
+
+/**
  * The short pane handle herdr shows in its own UI (`1-2` = tab 1, pane 2 — mockup.html:472). It is
  * carried on the wire as the pane's manual label; when a pane has never been renamed there is no
  * short form and the id is the only honest answer.
