@@ -1656,3 +1656,70 @@ B8은 Android 판정자가 세운 **양방향 형태**(불변을 본 뒤 Refresh
 
 iPhone **17 Pro**(inset 59pt)는 미측정 — 다른 에이전트가 쓰던 기기라 손대지 않았다. 표현식이 같은
 경로이므로 회귀 위험은 낮으나 **59라는 수치 자체는 판정 불가**. 가로 회전·릴리즈 빌드 거동 미측정.
+
+---
+
+## JJ. iOS M6a 2차 FAIL — 계측이 답했다: 터치가 recognizer에 **한 번도** 안 온다 (2026-08-23, 별도 에이전트, `qa-ios-m6a2` @ `f7547261`)
+
+### 계측 결과 — 이게 이 라운드의 산출물이다
+
+| 신호 | 7회 시도 |
+|---|---|
+| `[paneSwipe] begin` | **7/7** |
+| `[paneSwipe] start` | **0/7** |
+| `[paneSwipe] finalize` | 7/7 — 전부 `success=false` **`dx=0 dy=0`** |
+
+**`dx=0 dy=0`이 결정적이다.** "±32 활성화 임계에 못 미쳤다"가 아니라 **pan recognizer가
+`touchesMoved`를 단 한 번도 못 받았다**는 뜻이다. 브리프의 판별표에서 "`begin`만" 행이고,
+그보다 더 날카롭다.
+
+**따라서 이번 빌드의 수리(페이지 쪽 `preventDefault` 양보)는 아무것도 바꾸지 않았고, 그 사실 자체가
+진단이다** — 파손 지점은 문서의 터치 핸들러보다 **위**, 네이티브 recognizer 사슬에 있다.
+페이지가 무엇을 선언하든 도달하지 않는 이벤트를 양보할 수는 없다.
+
+합성 4종(press+drag 0.15s / 속도 플릭 vel 1200 / 슬로우 롱드래그 1.0s / 네이티브 `app.swipeLeft()`)
+전부 동일. 대조군은 같은 화면 RN 가로 ScrollView를 **−221.7pt** 이동시켰다.
+픽스처 pane 3개(≈40컬럼), 칩 순서 p1·p3·p2, live 확증 = pane별 난수 토큰(`TOKEN-e193f52059` 등).
+
+### ⚠️ 이걸 제품 결함으로 확정하면 안 된다 — 판정자가 스스로 남긴 잔여
+
+> 대조군은 **WKWebView 뒤에 있지 않은** RN ScrollView를 움직였다. XCUITest 드래그가
+> WKWebView 위에서 조상 `UIGestureRecognizer`로 move를 전파하지 않는 것뿐이라면,
+> `dx=0`은 **합성의 성질**이지 제품 결함이 아니다.
+
+독립 리그 2개(1차 `qa-ios-m6` · 2차 `qa-ios-m6a2`)가 동일 결과에 도달했지만 **둘 다 XCUITest**다.
+같은 도구의 같은 한계는 두 번 나타나도 한 번의 증거다.
+
+### 다음 행동 — 제품이냐 하네스냐를 가르는 값싼 실험
+
+**페이지 자신의 `touchmove`가 그 드래그 동안 발화하는가.**
+
+| 관측 | 결론 |
+|---|---|
+| 페이지 `touchmove` 발화 O, recognizer `dx=0` | 터치는 WKWebView에 도달하는데 조상으로 안 올라간다 → **제품 결함**, UIKit 제스처 사슬 |
+| 페이지 `touchmove` 발화 X | XCUITest가 그 표면 위에서 move를 안 만든다 → **하네스 한계**, iOS M6a는 시뮬레이터로 판정 불가 |
+
+Android는 이 질문을 CDP로 답했다(§DD의 touchstart/touchmove/touchend 카운트). **iOS엔 CDP가 없으므로
+페이지가 스스로 세어 RN 브리지로 보고해야 한다.**
+
+두 번째 결과가 나오면 iOS M6a는 FAIL이 아니라 **실기기 대기**로 이동한다 — iOS M4와 같은 게이트다.
+
+### 부수 수확 — dev-launcher 재결속에서 통한 것과 안 통한 것
+
+§HH가 만든 "8089 결속 확증" 요구가 **또 발동했다**: 최초 상태가 **8086**(1차 QA 워크트리)이었다.
+
+| 방법 | 결과 |
+|---|---|
+| `simctl spawn <UDID> defaults write` | **무효** — 앱 컨테이너가 아니라 **디바이스 전역** plist에 쓴다 |
+| 컨테이너 plist의 `expo.devlauncher.recentlyopenedapps` 재작성(binary plistlib + cfprefsd kill) | **무효** — 그 키는 자동 재결속 레버가 아니다 |
+| **`simctl openurl <UDID> "herdr://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8089"`** | **통함.** 앱이 이미 포그라운드면 SpringBoard 확인창도 안 뜬다 |
+
+1차 판정자의 plist 재작성이 통했다는 §HH의 기록은 **이 라운드에서 재현되지 않았다** — `.prd/10`의
+권고를 openurl 우선으로 바꾼다.
+
+### 못 본 것 (FAIL과 구분)
+
+전환이 0이라 **전환 지연·양 끝 no-op은 대상 없음**. **수직축 보존도 판정 불가** — 수평이 안 되는
+상태에서 "수평 되고 수직 안 됨"을 볼 수 없다(수직도 `dx=0 dy=0`이고 스크롤백도 안 움직였으나
+공허한 통과로 쓰지 않았다). **오버플로 팬 회귀도 판정 불가** — 핀치가 WKWebView를 네이티브
+텍스트선택 모드로 넣어 "그리드 > 뷰포트" 상태를 깨끗이 만들지 못했다. 양보 과잉 여부 미확인.

@@ -258,7 +258,13 @@ QA 사이에 랩이 죽어 있다(sshd·tmux 종료, `app.json` 원복). 매번 
 - 셋업의 마지막 단계는 **"앱이 그 포트에 붙었음의 확증"** 이다. dev-launcher의 URL 표시, 또는
   대상 Metro 로그에 그 기기의 번들 요청이 찍히는지로 확인한다.
 - `simctl openurl` 딥링크는 **SpringBoard 확인창에 막힌다** — 무인 경로가 아니다.
-- 통한 방법: `recentlyopenedapps` plist의 타임스탬프를 원하는 포트가 최신이 되도록 재작성 후 재기동.
+- **통하는 방법 (2026-08-23 2차에서 실증)**:
+  `xcrun simctl openurl <UDID> "herdr://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A<PORT>"`.
+  앱이 이미 포그라운드면 SpringBoard 확인창도 안 뜬다.
+- **안 통하는 방법 2종** (둘 다 실측): `simctl spawn <UDID> defaults write`는 앱 컨테이너가 아니라
+  **디바이스 전역** plist에 쓴다. 컨테이너 plist의 `expo.devlauncher.recentlyopenedapps`를 올바르게
+  재작성해도(binary plistlib + cfprefsd kill) 앱은 이전 포트에 남는다 — 그 키는 자동 재결속 레버가 아니다.
+  (1차 QA는 plist 재작성이 통했다고 보고했으나 2차에서 재현되지 않았다.)
 - Android의 `adb reverse`는 포트를 **묶어주므로** 이 실패 모드가 없다. iOS만의 함정이다.
 
 ### ⛔ iOS에서 "탭은 갔는데 반응 없음"은 최소 세 가지다 — 증상으로 구분되지 않는다
