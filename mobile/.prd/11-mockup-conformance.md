@@ -204,3 +204,30 @@ attach는 공유 PTY를 폰 격자로 **리사이즈하고 잠근다**(`direct_a
 
 ⚠️ **미검증**: 모노스페이스는 비례 폰트보다 넓다. 1차 QA가 이미 클리핑 3건(N2 헤더 · N3 칩 · N5 노드 meta)을
 잡았으므로 **이 변경이 그걸 악화시켰을 수 있다.** 2차 UI QA의 1순위다.
+
+
+## P0 #9 프로브 라인 — 구현 (2026-08-23)
+
+목업 `:460`의 `✓ reachable · herdr 0.34.1 · protocol 12 · 41ms`.
+
+`modules/herdr-ssh/src/probe.ts` 신설: **draft를 직접 다이얼**하고(`NativeSshHerdrTransport.connect`),
+`herdr --version`을 한 번 돌리고, 시간을 재고, **끊는다**. 연결 재사용이 아니라 새로 다이얼하는 것이
+요점이다 — 시험 대상은 **앱이 아직 안 붙은 원격**(편집 중인 draft, 또는 답을 멈춘 저장된 원격)이다.
+
+- 자체 데드라인 **8s**. `connectTimeoutMs` 기본이 20s인데, 포트가 틀렸다는 말을 20초 기다리는 것은
+  답이 없는 것과 같다.
+- **모든 실패가 throw가 아니라 `{ok:false}`** — 네이티브 모듈 부재·키 거부·포트 오류·PATH에 herdr 없음이
+  전부 이 버튼의 정상적인 답이다.
+- 실패에도 **경과시간을 싣는다**: "40ms에 거부"와 "8000ms 후 포기"는 잘못된 키와 unreachable 호스트이고,
+  그걸 가르는 사람은 유저다.
+- `parseHerdrVersion`이 빈 stdout에서 `unknown`을 반환한다 — `''.split(/\s+/)[0]`은 `undefined`가 아니라
+  `''`라서 `??`만으로는 구멍 뚫린 줄이 렌더된다(테스트로 고정).
+
+화면: `settings`의 add/edit 폼에 **`test` 버튼**과 결과 줄. 상태는 `app/settings.tsx`가 갖는다 —
+`RemoteEditor`는 순수 폼이고 transport를 모른다. 저장 키를 유지하는 편집(`kind:'keepKey'`)에서는
+**"키를 다시 입력해야 시험할 수 있다"** 고 말한다(그 화면은 키스토어의 키를 의도적으로 안 들고 있다).
+
+**게이트**: 파서·렌더러 유닛 6건 + `mockup-conformance-mount.test.tsx`에 어포던스 존재 어서션.
+110파일/934테스트.
+
+**남은 P0**: #1 QR(데스크톱 herdr의 `show qr` 동반 필요) · #3 add remote가 아직 settings 안(차이-배치).

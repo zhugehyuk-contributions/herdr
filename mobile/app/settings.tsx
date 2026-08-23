@@ -30,6 +30,7 @@ import {
   type StoredRemoteSummary
 } from '../modules/herdr-ssh'
 import { RemoteEditor } from '../src/settings/RemoteEditor'
+import { describeProbe, probeSshRemote } from '../modules/herdr-ssh/src/probe'
 import {
   draftFromRemote,
   emptyDraft,
@@ -116,6 +117,36 @@ export default function SettingsScreen() {
   const [editing, setEditing] = useState<Editing | null>(null)
   const [errors, setErrors] = useState<Partial<Record<RemoteDraftField, string>>>({})
   const [saveError, setSaveError] = useState<string | null>(null)
+  // `.prd/11-mockup-conformance.md` 누락 #9. Lives here rather than in `RemoteEditor` because the
+  // editor is a pure form — it owns no async work and no transport — and because a probe needs the
+  // *parsed* draft, which is the same parse `save()` does.
+  const [probeLine, setProbeLine] = useState<string | null>(null)
+  const [probing, setProbing] = useState(false)
+  const probe = useCallback(async () => {
+    if (editing === null) {
+      return
+    }
+    const parsed = parseRemoteDraft(editing.draft, { mode: editing.mode })
+    if (!parsed.ok) {
+      setErrors(parsed.errors)
+      // Not a probe failure: nothing was dialled. Saying so beats a ✗ that blames the host.
+      setProbeLine('✗ fix the fields above first')
+      return
+    }
+    if (parsed.kind !== 'full') {
+      // An edit that kept its stored key. Dialling would need the key back out of the keystore,
+      // which this screen deliberately never holds (`src/settings/remote-form.ts`).
+      setProbeLine('✗ re-enter the private key to test this remote')
+      return
+    }
+    setProbing(true)
+    setProbeLine(null)
+    try {
+      setProbeLine(describeProbe(await probeSshRemote(parsed.config)))
+    } finally {
+      setProbing(false)
+    }
+  }, [editing])
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
@@ -283,6 +314,9 @@ export default function SettingsScreen() {
             saveError={saveError}
             onChange={change}
             onSave={() => void save()}
+            probeLine={probeLine}
+            probing={probing}
+            onProbe={() => void probe()}
             onCancel={() => {
               setEditing(null)
               setErrors({})

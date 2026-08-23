@@ -51,7 +51,10 @@ export function RemoteEditor({
   saveError,
   onChange,
   onSave,
-  onCancel
+  onCancel,
+  probeLine,
+  probing,
+  onProbe
 }: {
   draft: RemoteDraft
   errors: Partial<Record<RemoteDraftField, string>>
@@ -62,6 +65,13 @@ export function RemoteEditor({
   onChange: (field: RemoteDraftField, value: string) => void
   onSave: () => void
   onCancel: () => void
+  /**
+   * The mockup's reachability line (`assets/mockup.html:460`), already rendered — this component
+   * owns no async work, so the screen that can dial hands it the finished sentence.
+   */
+  probeLine: string | null
+  probing: boolean
+  onProbe: () => void
 }) {
   return (
     <View style={styles.form}>
@@ -112,7 +122,22 @@ export function RemoteEditor({
         </Text>
       ))}
       {saveError ? <Text style={styles.error}>{saveError}</Text> : null}
+      {/* `.prd/11-mockup-conformance.md` 누락 #9 (P0). Adding a remote here means typing a host, a
+          port, a username and a private key body into a phone, and until this line existed the app
+          said nothing afterwards — a wrong port and a wrong key both showed up as a list that
+          stayed empty. Placed above the actions because it is what tells you whether to press
+          save. */}
+      {probeLine ? <Text style={styles.probe}>{probeLine}</Text> : null}
       <View style={styles.actions}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="test connection"
+          disabled={probing}
+          onPress={onProbe}
+          style={[styles.button, probing && styles.buttonBusy]}
+        >
+          <Text style={styles.buttonLabel}>{probing ? 'testing…' : 'test'}</Text>
+        </Pressable>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="save remote"
@@ -203,5 +228,12 @@ const styles = StyleSheet.create({
     fontFamily: typography.monoFamily
   },
   button: { borderWidth: 1, borderColor: mono.line, paddingHorizontal: 14, paddingVertical: 8 },
-  buttonLabel: { color: mono.fg, fontSize: 13, fontFamily: typography.monoFamily }
+  buttonLabel: { color: mono.fg, fontSize: 13, fontFamily: typography.monoFamily },
+  buttonBusy: { opacity: 0.5 },
+  probe: {
+    color: mono.fgSoft,
+    fontSize: 12,
+    paddingBottom: 6,
+    fontFamily: typography.monoFamily
+  }
 })

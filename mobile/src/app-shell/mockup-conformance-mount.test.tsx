@@ -105,6 +105,7 @@ const { loadMockSnapshot } = await import('../api/mock/mock-snapshot-loader')
 const { default: NodeListScreen } = await import('../../app/nodes')
 const { RemoteScreen } = await import('../../app/h/[remoteId]/index')
 const { PaneViewerScreen } = await import('../../app/h/[remoteId]/pane/[paneId]')
+const { default: SettingsScreen } = await import('../../app/settings')
 
 const NO_CONNECTIONS: readonly HerdrRemoteConnection[] = []
 
@@ -214,5 +215,21 @@ describe('.prd/11 타이포그래피 — the chrome is monospaced like the mocku
       })
       .map((node) => String(node.props['children']))
     expect(withoutFamily).toEqual([])
+  })
+})
+
+describe('.prd/11 누락 #9 — the add-remote form can say whether the host answers', () => {
+  it('renders a test affordance beside save', async () => {
+    // P0 in the audit, and the reason is the shape of the alternative: adding a remote here means
+    // typing a host, a port, a username and a **private key body** into a phone, and before this
+    // the app said nothing afterwards — a wrong port and a wrong key both showed up as a list that
+    // stayed empty. The mockup's line is `✓ reachable · herdr 0.34.1 · protocol 12 · 41ms`
+    // (`assets/mockup.html:460`); this asserts the control that produces it exists on the screen.
+    const target = await mount(createElement(SettingsScreen))
+    const addRemote = byLabel(target, 'add remote')
+    await act(async () => {
+      ;(addRemote.props['onPress'] as () => void)()
+    })
+    expect(byLabel(target, 'test connection')).toBeTruthy()
   })
 })
