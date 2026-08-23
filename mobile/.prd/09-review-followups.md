@@ -978,3 +978,70 @@ ref가 그 순간 null이면 init이 조용히 버려지고 `opened`는 영원�
 - 런치 직후 a11y 트리가 **비었다가 채워진다.** 좌표 탭 불안정(행 Pressable 프레임 y=133.7–182pt인데
   라벨은 ~114pt에 그려진다) → `tapText`로 요소를 탭하라
 - **Metro는 앱 `console.log`를 로그파일에 안 흘린다.** CDP inspector(`http://127.0.0.1:8081/json/list`)를 쓰라
+
+## Y. §U/§X 근인 — 콜드 런치에서 `init`이 버려진다 (2026-08-23, 커밋 `7c58c49d`, 기기 A/B 확증)
+
+두 QA 라운드가 같은 것을 쟀다: 헤더 건강(`observing`/`Connected`), 랩 고유 문자열을 담은 풀프레임이
+폰의 ssh 채널에 도착, 그런데 터미널 밴드는 단색. `[fit]renderer`도 ready 워치독도 안 울렸다 —
+**아무도 안 보는 구간에서 멈춘 것**이다.
+
+### 사슬과 멈추는 지점
+
+```
+pane-observer.ts:428-441  onMessage → sink.accept
+terminal-frame-sink.ts:148-160  첫 full 프레임 → opened=true → target.init  (한 번만, 영원히)
+use-pane-observer.ts:112        → handleRef.current?.init
+TerminalWebView.tsx:252-288     → postMessage → pendingMessages.queue  (document 미준비 시 큐)
+                    :199-207    handleLoadStart → pendingMessages.clear()   ← 여기서 버려진다
+                    :105-140    web-ready → flushPendingMessages            ← 이미 빈 큐
+```
+
+시뮬레이터 실측 (콜드 런치, tmux 80x40, pane `w1:p1`):
+```
+t+396ms  pm.queue init 2                                          (webReady=false)
+t+466ms  wv.loadStart
+         pm.clear-dropping ["set-theme","set-font-scale","init"]   ← init 폐기
+t+501ms  wv.web-ready
+         pm.flush []
+```
+그 뒤 세션 내내 `[fit]` 0줄, 밴드 2,033,316px 단색 — **QA 측정과 바이트 단위로 동일.**
+
+### 어긋나는 두 가지
+
+| | |
+|---|---|
+| `terminal-frame-sink.ts:153-159` | `opened = true`를 `target.init(...)` **전에** 세우고 **두 번째 init을 영영 안 낸다** — init은 화면 수명당 1회 |
+| `TerminalWebView.tsx:205` | `onLoadStart`에서 큐를 통째로 버린다 — **리로드 staleness**를 위해 쓰인 정책을, **어떤 document에도 도달한 적 없는** 메시지에 적용 |
+
+### 왜 두 라운드가 걸렸나 — 판별자는 콜드/웜이었다
+
+폭도, 에이전트 종류도, WebGL도 아니다. **실행 중인 앱에서의 웜 리마운트**(`router.replace` → `push`)는
+document가 이미 로딩을 시작한 뒤라 `onLoadStart`가 그 창에 안 들어오고, **같은 코드가 매번 렌더된다.**
+콜드 런치는 `onLoadStart`를 첫 풀프레임보다 **~70ms 뒤**에 놓는다 — 지는 순서이고, QA 스크립트
+(`20초 부팅 대기 → tapText → pane`)가 정확히 그걸 만든다. §V의 조사 랩이 웜이었던 것이 그 라운드가
+아무것도 재현 못 한 이유다.
+
+### 디스패처의 1순위 용의자는 틀렸다
+
+나는 `use-pane-observer.ts:112`의 `handleRef.current?.init(...)` 옵셔널 체이닝을 지목했다.
+수리 에이전트가 **가정하지 않고 계측했고**, 모든 `target.init`이 `handleNull:false`였다.
+ref는 붙어 있었고 손실은 한 홉 뒤였다.
+
+### 기기 A/B (같은 랩·픽스처, 둘 다 콜드 런치)
+
+| | `[fit]` 줄 | 밴드 색 수 | 비배경 px |
+|---|---|---|---|
+| 수리 없이 | 0 | 1 | 0 |
+| 수리 후 | 1 | **909** | **35,153** |
+
+### 잔여 (고치지 않음)
+
+1. **one-shot 계약 자체가 여전히 취약하다.** `terminal-frame-sink.ts:153`이 전달 **전에** `opened`를 세우고,
+   사슬 어디에도 재-init을 요청할 수단이 없다. durable fix는 **전달 ack** 또는 `requestReinit` 이음매다.
+2. **기하 열화** — 수리 에이전트의 프레임이 `w:80`으로 왔는데 pane은 53열이다(`DEFAULT_OBSERVER_COLS`,
+   `observer-geometry.ts:66`). `pane.layout`이 제때 resolve 안 됐다는 뜻. 과다요청은 패딩만 하므로 무해하지만
+   **기하 경로가 조용히 폴백했다**는 신호다. QA 랩은 진짜 53을 받았다.
+3. **content-process 손실 후 중간 구간 stale** — 교체 document는 *마지막* 스냅샷 + 이후 diff를 받으므로,
+   죽은 document로 간 프레임은 herdr이 다음 풀프레임을 낼 때까지 빠진다. blank → 약간-stale의 교환.
+4. **alt-screen 픽스처 미시험** — 수리 에이전트의 픽스처는 정적 53열 셸이었다. 결함이 그것 없이 픽셀 단위로
+   재현됐으므로 load-bearing은 아니지만, `normalizeInitialData`의 alt-screen replay 경로는 미검증이다.
