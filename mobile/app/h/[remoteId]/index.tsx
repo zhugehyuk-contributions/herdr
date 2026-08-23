@@ -81,6 +81,18 @@ export function RemoteScreen({
       style={[styles.screen, { paddingTop: safeChromePadding(insets.top, HEADER_TOP_PADDING) }]}
     >
       <View style={styles.header}>
+        {/* .prd/11 누락 #10 — see the pane screen's copy. Hidden in the embedded master-detail
+            pane, where the node list is already on screen beside it. */}
+        {embedded ? null : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="back to nodes"
+            onPress={() => router.push('/nodes')}
+            style={styles.back}
+          >
+            <Text style={styles.backLabel}>‹ nodes</Text>
+          </Pressable>
+        )}
         <Text style={styles.title}>{remote ? remote.name : (remoteId ?? 'Remote')}</Text>
         <View style={styles.spacer} />
         {remote ? <Text style={styles.meta}>{remoteSubtitle(remote)}</Text> : null}
@@ -188,5 +200,7 @@ const styles = StyleSheet.create({
   paneTitle: { color: mono.fgSoft, fontSize: 13, flexShrink: 1 },
   paneState: { color: mono.dim, fontSize: 11 },
   chevron: { color: mono.dim2, fontSize: 13 },
-  spacer: { flex: 1 }
+  spacer: { flex: 1 },
+  back: { paddingRight: 6 },
+  backLabel: { color: mono.fgSoft, fontSize: 13 }
 })

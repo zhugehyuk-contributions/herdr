@@ -65,6 +65,19 @@ export default function NodeListScreen() {
           <Text style={styles.settingsLabel}>settings</Text>
         </Pressable>
       </View>
+      {/* .prd/11 누락 #4. The mockup puts `+ add remote` on this screen as a FAB, and the reason
+          is the P0 finding: today the only way to add a remote is to notice the `settings` word in
+          the appbar, open it, scroll past push notifications, and find a button. This is the same
+          destination — the form lives in settings and that placement is 차이-배치 #3, still open —
+          but it puts the affordance where someone looking at an empty node list will look. */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="add remote"
+        onPress={() => router.push('/settings')}
+        style={styles.fab}
+      >
+        <Text style={styles.fabLabel}>+ add remote</Text>
+      </Pressable>
       {status === 'loading' ? <Text style={styles.meta}>Loading…</Text> : null}
       {/* The whole screen when a load fails — nothing else renders, since `snapshot` is empty on
           `error` (`../src/api/snapshot-context.tsx`). So it is the top of the ramp and not `meta`'s
@@ -129,5 +142,20 @@ const styles = StyleSheet.create({
   chevron: { color: mono.dim2, fontSize: 13 },
   settings: { paddingLeft: 10 },
   settingsLabel: { color: mono.dim, fontSize: 12 },
+  // Pinned to the list's bottom-right the way the mockup draws it (:419). `bottom` clears the
+  // nav bar rather than the window edge — the nav is what sits under it on this screen.
+  fab: {
+    position: 'absolute',
+    right: 16,
+    bottom: 72,
+    zIndex: 3,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: mono.line,
+    backgroundColor: mono.ink2
+  },
+  fabLabel: { color: mono.fg, fontSize: 13, fontWeight: '600' },
   spacer: { flex: 1 }
 })

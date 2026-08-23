@@ -160,6 +160,9 @@ export function PaneViewerScreen({
   /** Chip taps route in the app; a caller that owns navigation itself passes this instead. */
   onSelectPane?: (paneId: string) => void
 }) {
+  // Navigation this screen owns: the back breadcrumb (.prd/11 누락 #10). Chip taps stay on
+  // `onSelectPane` so a caller that owns navigation can keep owning it.
+  const router = useRouter()
   const remote = useRemote(remoteId)
   const entry = useRemoteSnapshot(remoteId)
   const connection = useHerdrConnection(remoteId)
@@ -294,12 +297,35 @@ export function PaneViewerScreen({
       <View
         style={[styles.header, { paddingTop: safeChromePadding(insets.top, HEADER_TOP_PADDING) }]}
       >
+        {/* .prd/11 누락 #10. The mockup draws a back chevron on screens ④⑤⑥ and it is not
+            decoration: `app/h/_layout.tsx:56` sets `headerShown: false`, so without this the only
+            way up the tree is Android's hardware back or an iOS edge swipe — neither is visible,
+            and neither exists on the master-detail layout. Labelled with the node rather than the
+            workspace the mockup shows (`‹ llmux`) because ④ and ⑤ are one screen here, and that
+            screen's title *is* the node — so this names where the tap actually lands. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="back to workspaces"
+          onPress={() => router.push(`/h/${remoteId ?? ''}`)}
+          style={styles.back}
+        >
+          <Text style={styles.backLabel}>{`‹ ${remote?.name ?? 'nodes'}`}</Text>
+        </Pressable>
         <Text style={styles.title}>{active ? active.handle : (paneId ?? 'Pane')}</Text>
         {activePane ? <AgentStateDot state={activePane.agent_status} /> : null}
         <Text style={styles.subtitle} numberOfLines={1}>
           {activePane ? paneTitle(activePane) : (remote?.name ?? remoteId ?? '')}
         </Text>
         <View style={styles.spacer} />
+        {/* .prd/11 누락 #15. The mockup puts the node on the right of this bar, and it used to be
+            reachable only through the subtitle's ternary — which prefers the pane title, so on the
+            normal path (a pane is attached) the node name vanished exactly when it mattered. An
+            app that shows several boxes at once has to say which box this is. */}
+        {remote ? (
+          <Text style={styles.node} numberOfLines={1}>
+            {remote.name}
+          </Text>
+        ) : null}
         {/* M6c's entry point, and it is a button on purpose — see this file's header and
             `src/session/PaneHistoryOverlay.tsx`. Placed immediately after the spacer so a long
             agent label cannot push it off the row; the two meta readings that follow may be
@@ -448,6 +474,9 @@ const styles = StyleSheet.create({
   subtitle: { color: mono.fgSoft, fontSize: 12, flexShrink: 1 },
   meta: { color: mono.dim, fontSize: 11, marginLeft: 8 },
   spacer: { flex: 1 },
+  back: { paddingRight: 6 },
+  backLabel: { color: mono.fgSoft, fontSize: 13 },
+  node: { color: mono.fgSoft, fontSize: 12 },
   headerAction: {
     paddingHorizontal: 8,
     paddingVertical: 4,
