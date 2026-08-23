@@ -51,6 +51,18 @@
 //     the first says "observing" over a link that died forty seconds ago; one with only the second
 //     says "Connected" over a pane whose stream never got its `Welcome`.
 //
+//   · **M6c, reading what scrolled past** — `src/session/PaneHistoryOverlay.tsx` behind a header
+//     button, fed by `usePaneHistory` / `pane.read`. It is the *only* item in this file with no orca
+//     counterpart at all, and the reason is in `src/session/pane-history.ts`: orca's desktop pushes
+//     a serialized xterm scrollback and then streams raw PTY bytes, so its history is the terminal
+//     buffer; herdr's renderer writes an absolute cursor position before every cell
+//     (`src/protocol/render_ansi.rs:613`), which overwrites the viewport instead of scrolling it, so
+//     nothing ever enters that buffer (QA: `scrollHeight == clientHeight`, `.prd/09` §CC). History
+//     therefore has to be a *server read on a separate surface*, and it must not be appended to the
+//     xterm buffer, which the next frame would overwrite. The affordance is a button and not a drag
+//     because M6a gave the vertical axis to the terminal (`failOffsetY`, below) and taking it back
+//     would kill the swipe routing this same milestone repaired.
+//
 // One structural divergence from orca, deliberate: orca mounts **every** terminal and hides the
 // inactive ones (`:4667` `terminals.map(...)`) so a tab switch is instant. Here exactly one pane is
 // mounted, because a mounted pane is a resident ssh channel plus an uncompressed ANSI stream
@@ -93,6 +105,8 @@ import {
 import { paneHref } from '../../../../src/agents/fleet-agents'
 import { usePaneObserver } from '../../../../src/session/use-pane-observer'
 import { usePaneInput } from '../../../../src/session/use-pane-input'
+import { usePaneHistory } from '../../../../src/session/use-pane-history'
+import { PaneHistoryOverlay } from '../../../../src/session/PaneHistoryOverlay'
 import { PaneInputBar } from '../../../../src/session/PaneInputBar'
 import { safeChromePadding } from '../../../../src/layout/safe-area-chrome'
 import { mono } from '../../../../src/theme/monotone'
@@ -194,6 +208,12 @@ export function PaneViewerScreen({
   // when that id changes and drops anything unsent (`src/session/pane-input.ts`, `close`).
   const input = usePaneInput({ connection, paneId: active?.paneId ?? null })
 
+  // M6c. Same pane id as the observer and the input, for the same reason: the history you read must
+  // be the history of the pane you are looking at. It shares nothing else with them — `pane.read` is
+  // the JSON API (one exec per call, B8), while the screen above it is the framed observe stream, so
+  // opening this cannot disturb the live pane and closing it returns to a stream that never stopped.
+  const history = usePaneHistory({ connection, paneId: active?.paneId ?? null })
+
   // The soft keyboard, when it is opened by tapping the terminal itself: xterm's textarea receives
   // the IME and emits `onData`, the document forwards it, and it arrives here as bytes. They go out
   // as `text` — `encode_api_text` (`src/app/api_helpers.rs:24-33`) sends them raw (bracketed when
@@ -261,6 +281,20 @@ export function PaneViewerScreen({
           {activePane ? paneTitle(activePane) : (remote?.name ?? remoteId ?? '')}
         </Text>
         <View style={styles.spacer} />
+        {/* M6c's entry point, and it is a button on purpose — see this file's header and
+            `src/session/PaneHistoryOverlay.tsx`. Placed immediately after the spacer so a long
+            agent label cannot push it off the row; the two meta readings that follow may be
+            clipped, this may not. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open pane history"
+          accessibilityHint="Reads this pane's scrollback from the remote"
+          disabled={!history.enabled}
+          style={[styles.headerAction, !history.enabled && styles.headerActionDisabled]}
+          onPress={history.open}
+        >
+          <Text style={styles.headerActionLabel}>History</Text>
+        </Pressable>
         {activePane ? (
           <Text style={styles.meta}>
             {agentStateLabel({
@@ -347,6 +381,15 @@ export function PaneViewerScreen({
       </GestureHandlerRootView>
 
       <PaneInputBar input={input} />
+
+      {/* Last child, so it covers the terminal and the input bar without either being unmounted:
+          the observe stream, the ssh channel and the xterm document all stay exactly as they were
+          while history is on screen (§Q's re-attach receipts depend on nothing here changing). It
+          renders `null` while closed. */}
+      <PaneHistoryOverlay
+        history={history}
+        paneLabel={activePane ? paneTitle(activePane) : (active?.handle ?? paneId ?? 'Pane')}
+      />
     </View>
   )
 }
@@ -383,6 +426,17 @@ const styles = StyleSheet.create({
   subtitle: { color: mono.fgSoft, fontSize: 12, flexShrink: 1 },
   meta: { color: mono.dim, fontSize: 11, marginLeft: 8 },
   spacer: { flex: 1 },
+  headerAction: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: mono.line,
+    borderRadius: 4,
+    backgroundColor: mono.ink2
+  },
+  // Monotone has no "disabled" hue, so the affordance dims down the ramp instead.
+  headerActionDisabled: { opacity: 0.4 },
+  headerActionLabel: { color: mono.fg, fontSize: 11, fontWeight: '600' },
   chipBar: { borderBottomWidth: 1, borderBottomColor: mono.line },
   chipContent: { paddingHorizontal: 12, paddingBottom: 8, gap: 8 },
   chip: {
