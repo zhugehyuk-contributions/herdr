@@ -149,8 +149,8 @@ const styles = StyleSheet.create({
     // itself. The route supplies it (`topPadding`), so a flat constant cannot creep back in.
     paddingBottom: 8
   },
-  title: { color: mono.fg, fontSize: 15, fontWeight: '700' },
-  subtitle: { color: mono.fgSoft, fontSize: 12, flexShrink: 1 },
+  title: { color: mono.fg, fontSize: 15, fontWeight: '700', fontFamily: typography.monoFamily },
+  subtitle: { color: mono.fgSoft, fontSize: 12, flexShrink: 1, fontFamily: typography.monoFamily },
   spacer: { flex: 1 },
   action: {
     paddingHorizontal: 8,
@@ -160,8 +160,19 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: mono.ink2
   },
-  actionLabel: { color: mono.fg, fontSize: 11, fontWeight: '600' },
-  meta: { color: mono.dim, fontSize: 11, paddingHorizontal: 16, paddingBottom: 8 },
+  actionLabel: {
+    color: mono.fg,
+    fontSize: 11,
+    fontWeight: '600',
+    fontFamily: typography.monoFamily
+  },
+  meta: {
+    color: mono.dim,
+    fontSize: 11,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    fontFamily: typography.monoFamily
+  },
   body: { flex: 1, borderTopWidth: 1, borderTopColor: mono.line },
   bodyContent: { padding: 12 },
   text: {

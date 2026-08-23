@@ -11,6 +11,7 @@
 //      key authenticates on Android and silently fails on iOS (`../../.prd/06-open-decisions.md`
 //      결정 7), and the advisory line is the only place that gap is visible before a dial fails.
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
+import { typography } from '../theme/mobile-theme'
 import { mono } from '../theme/monotone'
 import { spacing } from '../theme/mobile-theme'
 import type { RemoteDraft, RemoteDraftField } from './remote-form'
@@ -153,9 +154,15 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
     marginTop: spacing.md
   },
-  formTitle: { color: mono.fg, fontSize: 13, fontWeight: '700', paddingBottom: spacing.sm },
+  formTitle: {
+    color: mono.fg,
+    fontSize: 13,
+    fontWeight: '700',
+    paddingBottom: spacing.sm,
+    fontFamily: typography.monoFamily
+  },
   field: { paddingBottom: spacing.sm },
-  label: { color: mono.dim, fontSize: 11, paddingBottom: 2 },
+  label: { color: mono.dim, fontSize: 11, paddingBottom: 2, fontFamily: typography.monoFamily },
   input: {
     color: mono.fg,
     fontSize: 13,
@@ -163,20 +170,38 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: mono.line,
     paddingHorizontal: 8,
-    paddingVertical: 6
+    paddingVertical: 6,
+    fontFamily: typography.monoFamily
   },
   inputMultiline: { minHeight: 84 },
-  error: { color: mono.fgSoft, fontSize: 11, paddingTop: 2 },
+  error: { color: mono.fgSoft, fontSize: 11, paddingTop: 2, fontFamily: typography.monoFamily },
   // One rung below `fg`: a platform caveat is not an error, and the app must not look like it is
   // refusing a key it is about to store happily.
-  advisory: { color: mono.fgSoft, fontSize: 11, paddingTop: 4, lineHeight: 15 },
+  advisory: {
+    color: mono.fgSoft,
+    fontSize: 11,
+    paddingTop: 4,
+    lineHeight: 15,
+    fontFamily: typography.monoFamily
+  },
   checkbox: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm },
-  checkboxMark: { color: mono.fg, fontSize: 13 },
-  checkboxLabel: { color: mono.dim, fontSize: 11, marginLeft: 6, flex: 1 },
+  checkboxMark: { color: mono.fg, fontSize: 13, fontFamily: typography.monoFamily },
+  checkboxLabel: {
+    color: mono.dim,
+    fontSize: 11,
+    marginLeft: 6,
+    flex: 1,
+    fontFamily: typography.monoFamily
+  },
   actions: { flexDirection: 'row', paddingTop: spacing.sm },
   // Emphasis by inversion, which is this palette's only way to say "primary" (mockup.html:863).
   primary: { backgroundColor: mono.fg, paddingHorizontal: 14, paddingVertical: 8, marginRight: 8 },
-  primaryLabel: { color: mono.ink, fontSize: 13, fontWeight: '700' },
+  primaryLabel: {
+    color: mono.ink,
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: typography.monoFamily
+  },
   button: { borderWidth: 1, borderColor: mono.line, paddingHorizontal: 14, paddingVertical: 8 },
-  buttonLabel: { color: mono.fg, fontSize: 13 }
+  buttonLabel: { color: mono.fg, fontSize: 13, fontFamily: typography.monoFamily }
 })

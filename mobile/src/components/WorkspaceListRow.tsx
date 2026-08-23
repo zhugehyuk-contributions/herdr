@@ -176,7 +176,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: mono.fg,
-    flexShrink: 1
+    flexShrink: 1,
+    fontFamily: typography.monoFamily
   },
   badge: {
     backgroundColor: mono.ink3,
@@ -186,7 +187,8 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     fontSize: 10,
-    color: mono.dim
+    color: mono.dim,
+    fontFamily: typography.monoFamily
   },
   workspaceMetaRow: {
     flexDirection: 'row',
@@ -197,7 +199,8 @@ const styles = StyleSheet.create({
   repoName: {
     fontSize: 11,
     color: mono.fgSoft,
-    maxWidth: 120
+    maxWidth: 120,
+    fontFamily: typography.monoFamily
   },
   branchName: {
     fontSize: 11,
@@ -208,7 +211,8 @@ const styles = StyleSheet.create({
   rollup: {
     marginTop: 2,
     fontSize: 11,
-    color: mono.dim
+    color: mono.dim,
+    fontFamily: typography.monoFamily
   },
   paneToggle: {
     alignSelf: 'flex-start',
@@ -224,6 +228,7 @@ const styles = StyleSheet.create({
   paneToggleText: {
     fontSize: 11,
     color: mono.fgSoft,
-    fontWeight: '600'
+    fontWeight: '600',
+    fontFamily: typography.monoFamily
   }
 })

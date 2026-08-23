@@ -40,6 +40,7 @@ import {
 import { describePrivateKey } from '../modules/herdr-ssh'
 import { useBlockedPushStatus } from '../src/notifications/blocked-push-context'
 import { BLOCKED_ONLY_NOTE, summarisePush } from '../src/notifications/blocked-push-summary'
+import { typography } from '../src/theme/mobile-theme'
 import { mono } from '../src/theme/monotone'
 import { spacing } from '../src/theme/mobile-theme'
 
@@ -339,22 +340,35 @@ const styles = StyleSheet.create({
   // Keeps its literal 24 — see the note in the component: below a native header this is plain
   // spacing, not a status-bar stand-in, so `safeChromePadding` has nothing to say about it.
   appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16, paddingTop: 24 },
-  logo: { color: mono.fg, fontSize: 20, fontWeight: '700' },
-  crumb: { color: mono.dim, fontSize: 13, marginLeft: 6 },
+  logo: { color: mono.fg, fontSize: 20, fontWeight: '700', fontFamily: typography.monoFamily },
+  crumb: { color: mono.dim, fontSize: 13, marginLeft: 6, fontFamily: typography.monoFamily },
   body: { flex: 1, paddingHorizontal: 16 },
   sectionLabel: {
     color: mono.dim,
     fontSize: 11,
     fontWeight: '700',
     paddingTop: spacing.lg,
-    paddingBottom: 2
+    paddingBottom: 2,
+    fontFamily: typography.monoFamily
   },
   row: { paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: mono.lineSoft },
-  name: { color: mono.fg, fontSize: 15 },
-  meta: { color: mono.dim, fontSize: 12, lineHeight: 16 },
-  advisory: { color: mono.fgSoft, fontSize: 11, lineHeight: 15, paddingTop: 2 },
-  notice: { color: mono.fg, fontSize: 13, lineHeight: 18, paddingTop: spacing.md },
-  error: { color: mono.fgSoft, fontSize: 11, paddingTop: 4 },
+  name: { color: mono.fg, fontSize: 15, fontFamily: typography.monoFamily },
+  meta: { color: mono.dim, fontSize: 12, lineHeight: 16, fontFamily: typography.monoFamily },
+  advisory: {
+    color: mono.fgSoft,
+    fontSize: 11,
+    lineHeight: 15,
+    paddingTop: 2,
+    fontFamily: typography.monoFamily
+  },
+  notice: {
+    color: mono.fg,
+    fontSize: 13,
+    lineHeight: 18,
+    paddingTop: spacing.md,
+    fontFamily: typography.monoFamily
+  },
+  error: { color: mono.fgSoft, fontSize: 11, paddingTop: 4, fontFamily: typography.monoFamily },
   actions: { flexDirection: 'row', paddingTop: spacing.sm },
   button: {
     borderWidth: 1,
@@ -371,7 +385,12 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     alignSelf: 'flex-start'
   },
-  buttonLabel: { color: mono.fg, fontSize: 13 },
+  buttonLabel: { color: mono.fg, fontSize: 13, fontFamily: typography.monoFamily },
   primary: { backgroundColor: mono.fg, paddingHorizontal: 12, paddingVertical: 6, marginRight: 8 },
-  primaryLabel: { color: mono.ink, fontSize: 13, fontWeight: '700' }
+  primaryLabel: {
+    color: mono.ink,
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: typography.monoFamily
+  }
 })

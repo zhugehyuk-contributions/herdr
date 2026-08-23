@@ -109,6 +109,7 @@ import { usePaneHistory } from '../../../../src/session/use-pane-history'
 import { PaneHistoryOverlay } from '../../../../src/session/PaneHistoryOverlay'
 import { PaneInputBar } from '../../../../src/session/PaneInputBar'
 import { safeChromePadding } from '../../../../src/layout/safe-area-chrome'
+import { typography } from '../../../../src/theme/mobile-theme'
 import { mono } from '../../../../src/theme/monotone'
 
 // Same floor and the same §D1 reasoning as `../index.tsx`: this header is drawn with 16 and, until
@@ -373,7 +374,14 @@ export function PaneViewerScreen({
               >
                 <AgentStateDot state={chip.status} />
                 <Text style={styles.chipLabel}>{chip.handle}</Text>
-                <Text style={styles.chipTab}>{chip.tabLabel}</Text>
+                {/* .prd/11 N3. This slot used to carry `chip.tabLabel` — `tab 1 · agents` — which
+                    repeats the section header the chips already sit under and is long enough that
+                    the third chip clipped off screen. The mockup's chip is `1-1 claude`: the
+                    handle and *who is in it*, which is the only thing that distinguishes one chip
+                    from the next. */}
+                <Text style={styles.chipTab} numberOfLines={1}>
+                  {chip.agentLabel}
+                </Text>
               </Pressable>
             ))}
           </ScrollView>
@@ -470,13 +478,13 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     paddingHorizontal: 16
   },
-  title: { color: mono.fg, fontSize: 15, fontWeight: '700' },
-  subtitle: { color: mono.fgSoft, fontSize: 12, flexShrink: 1 },
-  meta: { color: mono.dim, fontSize: 11, marginLeft: 8 },
+  title: { color: mono.fg, fontSize: 15, fontWeight: '700', fontFamily: typography.monoFamily },
+  subtitle: { color: mono.fgSoft, fontSize: 12, flexShrink: 1, fontFamily: typography.monoFamily },
+  meta: { color: mono.dim, fontSize: 11, marginLeft: 8, fontFamily: typography.monoFamily },
   spacer: { flex: 1 },
   back: { paddingRight: 6 },
-  backLabel: { color: mono.fgSoft, fontSize: 13 },
-  node: { color: mono.fgSoft, fontSize: 12 },
+  backLabel: { color: mono.fgSoft, fontSize: 13, fontFamily: typography.monoFamily },
+  node: { color: mono.fgSoft, fontSize: 12, fontFamily: typography.monoFamily },
   headerAction: {
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -487,7 +495,12 @@ const styles = StyleSheet.create({
   },
   // Monotone has no "disabled" hue, so the affordance dims down the ramp instead.
   headerActionDisabled: { opacity: 0.4 },
-  headerActionLabel: { color: mono.fg, fontSize: 11, fontWeight: '600' },
+  headerActionLabel: {
+    color: mono.fg,
+    fontSize: 11,
+    fontWeight: '600',
+    fontFamily: typography.monoFamily
+  },
   chipBar: { borderBottomWidth: 1, borderBottomColor: mono.line },
   chipContent: { paddingHorizontal: 12, paddingBottom: 8, gap: 8 },
   chip: {
@@ -502,8 +515,8 @@ const styles = StyleSheet.create({
     backgroundColor: mono.ink2
   },
   chipActive: { borderColor: mono.fgSoft, backgroundColor: mono.ink3 },
-  chipLabel: { color: mono.fg, fontSize: 12, fontWeight: '600' },
-  chipTab: { color: mono.dim2, fontSize: 10 },
+  chipLabel: { color: mono.fg, fontSize: 12, fontWeight: '600', fontFamily: typography.monoFamily },
+  chipTab: { color: mono.dim2, fontSize: 10, fontFamily: typography.monoFamily },
   terminalFrame: { flex: 1, backgroundColor: mono.ink },
   terminalSurface: { flex: 1 }
 })

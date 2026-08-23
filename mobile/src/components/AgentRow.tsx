@@ -24,6 +24,7 @@
 import { memo } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { spacing } from '../theme/mobile-theme'
+import { typography } from '../theme/mobile-theme'
 import { mono } from '../theme/monotone'
 import {
   agentIdentityLabel,
@@ -103,7 +104,8 @@ const styles = StyleSheet.create({
   identity: {
     fontSize: 14,
     color: mono.fgSoft,
-    flexShrink: 1
+    flexShrink: 1,
+    fontFamily: typography.monoFamily
   },
   identityEmphasis: {
     color: mono.fg,
@@ -114,17 +116,20 @@ const styles = StyleSheet.create({
   },
   trailing: {
     fontSize: 11,
-    color: mono.dim
+    color: mono.dim,
+    fontFamily: typography.monoFamily
   },
   chevron: {
     fontSize: 13,
     color: mono.dim2,
-    marginLeft: spacing.xs
+    marginLeft: spacing.xs,
+    fontFamily: typography.monoFamily
   },
   meta: {
     marginTop: 2,
     marginLeft: 14,
     fontSize: 11,
-    color: mono.dim
+    color: mono.dim,
+    fontFamily: typography.monoFamily
   }
 })

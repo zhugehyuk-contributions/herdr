@@ -7,6 +7,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { spacing } from '../theme/mobile-theme'
+import { typography } from '../theme/mobile-theme'
 import { mono } from '../theme/monotone'
 
 export type BottomNavTab = 'nodes' | 'agents'
@@ -56,7 +57,8 @@ const styles = StyleSheet.create({
   },
   label: {
     fontSize: 12,
-    color: mono.dim
+    color: mono.dim,
+    fontFamily: typography.monoFamily
   },
   labelActive: {
     color: mono.fg,

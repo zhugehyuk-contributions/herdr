@@ -191,3 +191,28 @@ describe('.prd/11 누락 #4 — the node list can add a remote', () => {
     expect(byLabel(target, 'add remote')).toBeTruthy()
   })
 })
+
+describe('.prd/11 타이포그래피 — the chrome is monospaced like the mockup', () => {
+  it('gives every text style a font family', async () => {
+    // The mockup's contract is one line and it is global: `body { font-family: var(--mono) }`
+    // (`assets/mockup.html`, `--mono: "JetBrains Mono", ui-monospace, …`). The implementation had
+    // it on two components, so the first device UI QA read the app as "generic Material dark"
+    // rather than terminal-native even though the palette matched exactly.
+    //
+    // Asserted on the *rendered* tree rather than on StyleSheet objects: what a reader sees is the
+    // sum of the ancestor chain, and a style entry that exists but is never applied would pass a
+    // source check while changing nothing on screen.
+    const target = await mount(createElement(NodeListScreen))
+    const withoutFamily = target.root
+      .findAllByType(host('Text'))
+      .filter((node) => {
+        const style = ([node.props['style']].flat(4) as unknown[]).filter(
+          (layer): layer is Record<string, unknown> => typeof layer === 'object' && layer !== null
+        )
+        const merged = Object.assign({}, ...style) as Record<string, unknown>
+        return merged['fontSize'] !== undefined && merged['fontFamily'] === undefined
+      })
+      .map((node) => String(node.props['children']))
+    expect(withoutFamily).toEqual([])
+  })
+})

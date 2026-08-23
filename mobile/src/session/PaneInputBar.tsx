@@ -25,6 +25,7 @@ import { PANE_QUICK_COMMANDS, quickCommandChunk } from './pane-quick-commands'
 import { inputStatusLabel } from './pane-input'
 import { keyboardBarLift } from '../layout/keyboard-clearance'
 import { useSoftKeyboardHeight } from '../layout/use-soft-keyboard-height'
+import { typography } from '../theme/mobile-theme'
 import { mono } from '../theme/monotone'
 import type { PaneInputView } from './use-pane-input'
 
@@ -175,8 +176,19 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: 10
   },
-  quickLabel: { color: mono.fg, fontSize: 12, fontWeight: '700' },
-  status: { color: mono.dim, fontSize: 10.5, flexShrink: 1, marginLeft: 4 },
+  quickLabel: {
+    color: mono.fg,
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: typography.monoFamily
+  },
+  status: {
+    color: mono.dim,
+    fontSize: 10.5,
+    flexShrink: 1,
+    marginLeft: 4,
+    fontFamily: typography.monoFamily
+  },
   keysRow: { flexDirection: 'row', gap: 6, paddingHorizontal: 12, paddingTop: 8 },
   key: {
     minWidth: 44,
@@ -188,7 +200,7 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: 8
   },
-  keyLabel: { color: mono.fgSoft, fontSize: 10.5 },
+  keyLabel: { color: mono.fgSoft, fontSize: 10.5, fontFamily: typography.monoFamily },
   inputBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -206,7 +218,8 @@ const styles = StyleSheet.create({
     borderColor: mono.line,
     backgroundColor: mono.ink2,
     paddingHorizontal: 10,
-    paddingVertical: 9
+    paddingVertical: 9,
+    fontFamily: typography.monoFamily
   },
   send: {
     width: 38,
@@ -216,6 +229,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: mono.fg
   },
-  sendLabel: { color: mono.ink, fontSize: 15, fontWeight: '700' },
+  sendLabel: {
+    color: mono.ink,
+    fontSize: 15,
+    fontWeight: '700',
+    fontFamily: typography.monoFamily
+  },
   disabled: { opacity: 0.4 }
 })

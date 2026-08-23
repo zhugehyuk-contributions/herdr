@@ -32,6 +32,7 @@ import {
   groupFleetAgentsByStatus
 } from '../src/agents/fleet-agents'
 import { safeChromePadding } from '../src/layout/safe-area-chrome'
+import { typography } from '../src/theme/mobile-theme'
 import { mono } from '../src/theme/monotone'
 
 // The gap this bar was drawn with before there was an inset in the picture, kept as its floor.
@@ -131,25 +132,44 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: mono.ink },
   // No `paddingTop`: it is the inset's, above.
   appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16 },
-  logo: { color: mono.fg, fontSize: 20, fontWeight: '700' },
-  crumb: { color: mono.dim, fontSize: 13, marginLeft: 6 },
-  meta: { color: mono.dim, fontSize: 12, paddingHorizontal: 16 },
-  error: { color: mono.fg, fontSize: 13, lineHeight: 18, paddingHorizontal: 16, paddingTop: 8 },
+  logo: { color: mono.fg, fontSize: 20, fontWeight: '700', fontFamily: typography.monoFamily },
+  crumb: { color: mono.dim, fontSize: 13, marginLeft: 6, fontFamily: typography.monoFamily },
+  meta: { color: mono.dim, fontSize: 12, paddingHorizontal: 16, fontFamily: typography.monoFamily },
+  error: {
+    color: mono.fg,
+    fontSize: 13,
+    lineHeight: 18,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    fontFamily: typography.monoFamily
+  },
   // One rung brighter than the `meta` beside it: brightness is the only emphasis axis this palette
   // has (mockup.html:863, `../src/theme/monotone.ts`) and a stale fleet is the one thing in this
   // header that is not routine. Still grayscale — the severity is in the word, never in a hue
   // (`../src/theme/monotone-discipline.test.tsx`).
-  stale: { color: mono.fgSoft, fontSize: 12, paddingHorizontal: 16 },
-  summary: { color: mono.fgSoft, fontSize: 12, paddingHorizontal: 16, paddingTop: 4 },
+  stale: {
+    color: mono.fgSoft,
+    fontSize: 12,
+    paddingHorizontal: 16,
+    fontFamily: typography.monoFamily
+  },
+  summary: {
+    color: mono.fgSoft,
+    fontSize: 12,
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    fontFamily: typography.monoFamily
+  },
   settings: { paddingLeft: 10, paddingRight: 16 },
-  settingsLabel: { color: mono.dim, fontSize: 12 },
+  settingsLabel: { color: mono.dim, fontSize: 12, fontFamily: typography.monoFamily },
   sectionLabel: {
     color: mono.dim,
     fontSize: 11,
     fontWeight: '700',
     paddingHorizontal: 8,
     paddingTop: 14,
-    paddingBottom: 2
+    paddingBottom: 2,
+    fontFamily: typography.monoFamily
   },
   body: { flex: 1, paddingHorizontal: 8 },
   spacer: { flex: 1 }

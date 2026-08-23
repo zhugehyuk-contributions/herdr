@@ -279,15 +279,19 @@ describe('pane viewer route', () => {
       createElement(PaneViewerScreen, { remoteId: 'remote-1', paneId: 'ws-1-p1' })
     )
     const texts = textNodes(target)
-    // Every pane of ws-1, flattened out of its two tabs — the tab survives as the chip's label.
+    // Every pane of ws-1, flattened out of its two tabs.
     expect(texts).toContain('1-1')
     expect(texts).toContain('1-2')
     expect(texts).toContain('2-1')
-    expect(texts.filter((entry) => entry.startsWith('tab '))).toEqual([
-      'tab 1 · herdr 1',
-      'tab 1 · herdr 1',
-      'tab 2 · herdr 2'
-    ])
+    // The chip's second line is *who is in the pane*, not the tab. It used to be the tab label,
+    // which repeats the section header the strip already sits under and clipped the third chip off
+    // screen on a 412pt phone (`.prd/11-mockup-conformance.md` N3; the mockup's chip is
+    // `1-1 claude`). The tab is still named on the accessibility label, asserted below.
+    expect(texts.filter((entry) => entry.startsWith('tab '))).toEqual([])
+    const chipLabels = target.root
+      .findAll((node) => String(node.props['accessibilityLabel'] ?? '').startsWith('tab '))
+      .map((node) => String(node.props['accessibilityLabel']))
+    expect(chipLabels).toHaveLength(3)
     // Exactly one WebView: this viewer mounts the pane it is showing and no others (unlike orca,
     // which keeps every terminal alive — see the route file's header for why).
     expect(target.root.findAllByType(host('WebView'))).toHaveLength(1)

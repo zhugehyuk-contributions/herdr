@@ -17,6 +17,7 @@
 // separator.
 import type { AgentInfo, AgentStatus, PaneInfo } from '../api/herdr-api-types'
 import { groupPanesByTab, tabLabelsFrom, type PaneTabGroup } from '../panes/pane-tree'
+import { agentIdentityLabel } from '../agents/agent-display'
 import { resolveActiveSessionTab, type ResolveActiveSessionTabResult } from './active-session-tab'
 
 export type PaneChip = {
@@ -28,6 +29,15 @@ export type PaneChip = {
   handle: string
   /** The tab this pane belongs to, as the strip labels it (`tab 1`, `tab 2 · build`). */
   tabLabel: string
+  /**
+   * Who is in the pane — the strip's second line (`.prd/11` N3, mockup chip `1-1 claude`).
+   *
+   * The strip used to render {@link tabLabel} there, which repeats the section header the chips
+   * already sit under and is long enough that a third chip clipped off screen. `tabLabel` stays on
+   * the record because the accessibility label still names the tab, which is what a screen reader
+   * needs and a sighted user reads from the header instead.
+   */
+  agentLabel: string
   status: AgentStatus
   /**
    * The *server's* opinion of which pane is current (`PaneInfo.focused`), not the phone's. It feeds
@@ -63,6 +73,14 @@ export function buildPaneChips(
       tabId: pane.tab_id,
       handle: paneChipHandle(pane),
       tabLabel: group.label,
+      agentLabel: agentIdentityLabel({
+        agent_status: pane.agent_status,
+        state_labels: pane.state_labels,
+        display_agent: pane.display_agent,
+        agent: pane.agent,
+        title: pane.title,
+        terminal_title_stripped: pane.terminal_title_stripped
+      }),
       status: pane.agent_status,
       isActive: pane.focused
     }))

@@ -39,6 +39,23 @@ export function tabLabelsFrom(agents: readonly AgentInfo[]): Map<string, string>
  * i.e. the server's own ordering. Numbering is positional (`tab 1`, `tab 2`) because `tab_id` is an
  * opaque id and the mockup's section header is a number (mockup.html:466).
  */
+/**
+ * herdr's own short handle for a pane — `1-2` = tab 1, pane 2 (`mockup.html:472`, and the
+ * acceptance line `:555`: *"pane id = herdr 표기 그대로 (`1-1`, `1-2` …)"*).
+ *
+ * Derived from position rather than read off the wire, because the wire has no such field: the
+ * pane carries `label` (a manual rename) and `pane_id` (`w1:p3`), neither of which is the notation
+ * herdr's own UI prints. The first device UI QA caught what using `label` here costs — a pane
+ * renamed `claude` rendered `claude claude`, the handle slot repeating the title slot beside it
+ * (`.prd/11-mockup-conformance.md` N1).
+ *
+ * Both indices are 1-based and both come from the order `groupPanesByTab` already established, so
+ * the handle a row shows is the position that row occupies on screen.
+ */
+export function positionalPaneHandle(tabIndex: number, paneIndex: number): string {
+  return `${tabIndex + 1}-${paneIndex + 1}`
+}
+
 export function groupPanesByTab(
   panes: readonly PaneInfo[],
   tabLabels?: ReadonlyMap<string, string>

@@ -21,6 +21,7 @@ import { useHerdrDataSource } from '../src/api/herdr-data-provider'
 import { snapshotStalenessLabel } from '../src/api/snapshot-staleness'
 import { rollupText } from '../src/panes/pane-tree'
 import { safeChromePadding } from '../src/layout/safe-area-chrome'
+import { typography } from '../src/theme/mobile-theme'
 import { mono } from '../src/theme/monotone'
 
 // Same floor as `./index.tsx`'s bar, which this one is a copy of — see it for why 24 stays.
@@ -127,21 +128,28 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: mono.ink },
   // No `paddingTop`: it is the inset's, above.
   appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16 },
-  logo: { color: mono.fg, fontSize: 20, fontWeight: '700' },
-  crumb: { color: mono.dim, fontSize: 13, marginLeft: 6 },
+  logo: { color: mono.fg, fontSize: 20, fontWeight: '700', fontFamily: typography.monoFamily },
+  crumb: { color: mono.dim, fontSize: 13, marginLeft: 6, fontFamily: typography.monoFamily },
   body: { flex: 1, paddingHorizontal: 16 },
   row: { paddingVertical: 12 },
   rowHead: { flexDirection: 'row', alignItems: 'center' },
-  name: { color: mono.fg, fontSize: 15 },
-  meta: { color: mono.dim, fontSize: 12 },
+  name: { color: mono.fg, fontSize: 15, fontFamily: typography.monoFamily },
+  meta: { color: mono.dim, fontSize: 12, fontFamily: typography.monoFamily },
   // Padded, unlike `meta`: that one is a row subtitle inside the already-inset body, so an error
   // borrowing it rendered flush against the screen edge, out of line with everything else.
-  error: { color: mono.fg, fontSize: 13, lineHeight: 18, paddingHorizontal: 16, paddingTop: 8 },
+  error: {
+    color: mono.fg,
+    fontSize: 13,
+    lineHeight: 18,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    fontFamily: typography.monoFamily
+  },
   // Brighter than `meta` on purpose, and grayscale — see the same style in `./index.tsx`.
-  stale: { color: mono.fgSoft, fontSize: 12 },
-  chevron: { color: mono.dim2, fontSize: 13 },
+  stale: { color: mono.fgSoft, fontSize: 12, fontFamily: typography.monoFamily },
+  chevron: { color: mono.dim2, fontSize: 13, fontFamily: typography.monoFamily },
   settings: { paddingLeft: 10 },
-  settingsLabel: { color: mono.dim, fontSize: 12 },
+  settingsLabel: { color: mono.dim, fontSize: 12, fontFamily: typography.monoFamily },
   // Pinned to the list's bottom-right the way the mockup draws it (:419). `bottom` clears the
   // nav bar rather than the window edge — the nav is what sits under it on this screen.
   fab: {
@@ -156,6 +164,6 @@ const styles = StyleSheet.create({
     borderColor: mono.line,
     backgroundColor: mono.ink2
   },
-  fabLabel: { color: mono.fg, fontSize: 13, fontWeight: '600' },
+  fabLabel: { color: mono.fg, fontSize: 13, fontWeight: '600', fontFamily: typography.monoFamily },
   spacer: { flex: 1 }
 })

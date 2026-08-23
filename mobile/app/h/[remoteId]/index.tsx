@@ -32,8 +32,14 @@ import {
   agentStateLabel
 } from '../../../src/agents/agent-display'
 import { paneHref } from '../../../src/agents/fleet-agents'
-import { groupPanesByTab, rollupText, tabLabelsFrom } from '../../../src/panes/pane-tree'
+import {
+  groupPanesByTab,
+  positionalPaneHandle,
+  rollupText,
+  tabLabelsFrom
+} from '../../../src/panes/pane-tree'
 import { safeChromePadding } from '../../../src/layout/safe-area-chrome'
+import { typography } from '../../../src/theme/mobile-theme'
 import { mono } from '../../../src/theme/monotone'
 
 // This screen has no appbar — its header is the remote's name — so its floor is the 16 it was
@@ -41,12 +47,6 @@ import { mono } from '../../../src/theme/monotone'
 // too: this title has been clipped on both platforms, not only on iOS.
 const HEADER_TOP_PADDING = 16
 import type { PaneInfo } from '../../../src/api/herdr-api-types'
-
-/** The short pane handle herdr shows in its own UI (`1-2`), or the id when never renamed. */
-function paneHandle(pane: PaneInfo): string {
-  const label = pane.label?.trim()
-  return label && label.length > 0 ? label : pane.pane_id
-}
 
 function paneActivity(pane: PaneInfo): string | null {
   return paneActivityLabel({
@@ -141,19 +141,21 @@ export function RemoteScreen({
                 }
               />
               {isOpen
-                ? groupPanesByTab(panes, tabLabels).map((group) => (
+                ? groupPanesByTab(panes, tabLabels).map((group, tabIndex) => (
                     <View key={group.tabId}>
                       <Text style={styles.tabLabel}>{group.label}</Text>
-                      {group.panes.map((pane) => (
+                      {group.panes.map((pane, paneIndex) => (
                         <Pressable
                           key={pane.pane_id}
                           accessibilityRole="button"
-                          accessibilityLabel={`${paneHandle(pane)} ${paneTitle(pane)}`}
+                          accessibilityLabel={`${positionalPaneHandle(tabIndex, paneIndex)} ${paneTitle(pane)}`}
                           onPress={() => router.push(paneHref(remoteId ?? '', pane.pane_id))}
                           style={styles.paneRowOuter}
                         >
                           <View style={styles.paneRow}>
-                            <Text style={styles.paneHandle}>{paneHandle(pane)}</Text>
+                            <Text style={styles.paneHandle}>
+                              {positionalPaneHandle(tabIndex, paneIndex)}
+                            </Text>
                             <AgentStateDot state={pane.agent_status} />
                             <Text style={styles.paneTitle} numberOfLines={1}>
                               {paneTitle(pane)}
@@ -201,15 +203,16 @@ const styles = StyleSheet.create({
   // No `paddingTop`: it is the inset's, above.
   screen: { flex: 1, backgroundColor: mono.ink },
   header: { flexDirection: 'row', alignItems: 'center', paddingBottom: 8, paddingHorizontal: 16 },
-  title: { color: mono.fg, fontSize: 18, fontWeight: '700' },
-  meta: { color: mono.dim, fontSize: 12, marginLeft: 8 },
+  title: { color: mono.fg, fontSize: 18, fontWeight: '700', fontFamily: typography.monoFamily },
+  meta: { color: mono.dim, fontSize: 12, marginLeft: 8, fontFamily: typography.monoFamily },
   tabLabel: {
     color: mono.dim2,
     fontSize: 10,
     fontWeight: '700',
     paddingTop: 8,
     paddingLeft: 40,
-    paddingBottom: 2
+    paddingBottom: 2,
+    fontFamily: typography.monoFamily
   },
   paneRow: {
     flexDirection: 'row',
@@ -219,14 +222,20 @@ const styles = StyleSheet.create({
     paddingLeft: 40,
     paddingRight: 16
   },
-  paneHandle: { color: mono.dim, fontSize: 11, minWidth: 24 },
-  paneTitle: { color: mono.fgSoft, fontSize: 13, flexShrink: 1 },
+  paneHandle: { color: mono.dim, fontSize: 11, minWidth: 24, fontFamily: typography.monoFamily },
+  paneTitle: { color: mono.fgSoft, fontSize: 13, flexShrink: 1, fontFamily: typography.monoFamily },
   paneRowOuter: { paddingVertical: 2 },
   // Indented to sit under the handle, the way the mockup's `└` hangs off the row above it.
-  paneActivity: { color: mono.dim, fontSize: 12, paddingLeft: 18, paddingBottom: 4 },
-  paneState: { color: mono.dim, fontSize: 11 },
-  chevron: { color: mono.dim2, fontSize: 13 },
+  paneActivity: {
+    color: mono.dim,
+    fontSize: 12,
+    paddingLeft: 6,
+    paddingBottom: 4,
+    fontFamily: typography.monoFamily
+  },
+  paneState: { color: mono.dim, fontSize: 11, fontFamily: typography.monoFamily },
+  chevron: { color: mono.dim2, fontSize: 13, fontFamily: typography.monoFamily },
   spacer: { flex: 1 },
   back: { paddingRight: 6 },
-  backLabel: { color: mono.fgSoft, fontSize: 13 }
+  backLabel: { color: mono.fgSoft, fontSize: 13, fontFamily: typography.monoFamily }
 })
