@@ -21,6 +21,13 @@ export default defineConfig({
     // by autolinking convention (`expo-modules-autolinking` resolves `./modules` as
     // `nativeModulesDir` — build/commands/autolinkingOptions.js:170-174), and its TypeScript half is
     // the only part of the native ssh path that can be tested without a device.
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'modules/**/*.test.ts']
+    // `scripts/` holds build tooling, not app code, but the pbxproj repair there is exactly the
+    // kind of thing that rots silently — it is covered by a fixture test and so must run here too.
+    include: [
+      'src/**/*.test.ts',
+      'src/**/*.test.tsx',
+      'modules/**/*.test.ts',
+      'scripts/**/*.test.mjs'
+    ]
   }
 })

@@ -515,3 +515,13 @@ QA를 돌렸으면 다음을 보고에 넣는다. 하나라도 없으면 "QA 했
 - **에뮬레이터 ≠ 실기기.** 네트워크 전환(Wi-Fi↔LTE), 배터리, 백그라운드 종료는 에뮬레이터가 재현하지 못한다 —
   그런데 그게 `.prd/09` §O가 다룬 결함들이 사는 곳이다.
 - **디버그 빌드 ≠ 배포 빌드.** Metro 의존이라 번들 임베딩·난독화·릴리즈 서명 경로는 이 절차가 안 건드린다.
+
+### iOS: `pod install`을 직접 부르지 마라
+
+`./scripts/pods-install.sh`를 쓴다. bare `pod install`은 `expo-camera`가 깔려 있으면
+`Pods.xcodeproj`의 프로젝트 객체를 SPM 참조가 덮어써서 Xcode가 "The project 'Pods' is damaged"로
+거부한다 — 그 뒤에 나오는 modulemap 부재·`SwiftDriver herdr` 실패는 전부 그 하류이므로
+**증상만 보고 다른 원인을 찾으면 안 된다**. 근거와 수리는 `.prd/12-qr-pairing.md` §수리.
+
+빌드 순서도 고정이다: `rm -rf ios/build` → `pods-install.sh` → `xcodebuild`.
+`pod install` 뒤에 `build/`를 지우면 ReactCodegen 입력이 사라진다.

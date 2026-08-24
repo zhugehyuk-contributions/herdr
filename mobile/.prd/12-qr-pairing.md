@@ -323,17 +323,27 @@ pod modulemap이 없다고 나오고 `SwiftDriver herdr` 실패가 뒤따른다 
 
 expo-camera는 원인이 아니라 **할당을 바닥으로 미는 조건**이다. n1은 우연히 `0003CF30`에 앉아 살았다.
 
-### 남은 선택지 3개 (전부 SPM 참조를 CocoaPods가 안 쓰게 만드는 방향)
+### 수리 — 완료 (2026-08-24)
 
-1. **`HerdrSsh`를 CocoaPods 밖 로컬 SPM 패키지로** — 구조적으로 옳지만 Expo 오토링킹이 pod 전제라 큰 작업
-2. **CocoaPods 1.16.x로 다운그레이드** — 신 포맷 SPM writer를 피함. 단 유저 머신의 전역 gem 환경 변경이라 **유저 게이트**
-3. **아래 딥링크 경로** — `expo-camera` 자체를 없애서 조건 5를 SPM 없이 성립시킴 (가장 쌈)
+`scripts/pods-install.sh` (bare `pod install` 대신 **항상 이걸** 쓴다):
 
-### 내가 틀렸던 것 2개 (정정)
+1. `HERDR_SSH_SPM=0 pod install` — SPM 선언 없이 한 번 깔아, 곧 밀려날 객체들의 스냅샷을 뜬다
+2. `pod install` — 정상 설치. 이 시점에 프로젝트는 깨져 있다
+3. `scripts/repair-pods-spm-collision.mjs` — SPM 객체 4개를 빈 번지(`46EB2E00FFFF00`+)로 옮기고,
+   밀려난 객체 4개를 스냅샷에서 되살리고, 프로젝트 객체에 `packageReferences`를 돌려준다
 
-- "각 SPM id가 파일에 정의 1회씩이므로 충돌 없음" — **측정 오류**. 내 패턴이 PBXProject 정의 줄을
-  안 잡았다. 실제로는 루트 객체와 정면 충돌이었다.
-- "id 길이 14자가 원인" — **아니다**. n1도 14자인데 열린다. 길이가 아니라 **값의 충돌**이다.
+**CocoaPods가 emit하는 배선은 그대로 둔다.** SPM 객체를 손으로 써넣는 판을 먼저 시도했는데
+(프로젝트는 열렸지만) `import Citadel`이 끝내 해석되지 않았다 — 즉 그 배선에는 pbxproj만 봐서는
+안 보이는 부분이 있다. 우리가 고치는 것은 **id 충돌 하나**로 좁힌다.
+
+**리시트**: `expo-camera`와 `spm_dependency`를 **둘 다 켠 채로** `** BUILD SUCCEEDED **`
+(qa-ios-8, 2026-08-24). Citadel이 실제로 컴파일된다(빌드 로그에 363회 등장).
+수리는 `scripts/repair-pods-spm-collision.test.mjs`가 픽스처로 고정 — 복원 단계나 이동 단계를
+각각 없애면 2건씩 RED가 된다(변이 실측).
+
+**포기한 선택지**: CocoaPods 1.16.x 다운그레이드(유저 전역 gem 환경 변경이라 게이트),
+`HerdrSsh`를 CocoaPods 밖 로컬 SPM 패키지로(Expo 오토링킹이 pod 전제라 대공사).
+아래 딥링크 경로는 **더 이상 필요 없다** — 대안으로만 남긴다.
 
 ### 내가 멈춘 지점
 

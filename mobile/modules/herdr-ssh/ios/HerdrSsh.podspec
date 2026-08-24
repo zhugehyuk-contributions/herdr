@@ -55,16 +55,21 @@ Pod::Spec.new do |s|
   # repository's tags lie — `0.4.0` (c997b6b, 2025-09-16) is the parent commit of `0.3.6`
   # (a05e6bb, 2026-04-02), so no version range there means what it says. Citadel floats that hop as
   # `0.3.4 ..< 0.4.0`; declaring it here overrides the resolution from the root.
-  spm_dependency(s,
-    url: 'https://github.com/orlandos-nl/Citadel.git',
-    requirement: { kind: 'exactVersion', version: '0.12.1' },
-    products: ['Citadel']
-  )
-  spm_dependency(s,
-    url: 'https://github.com/Wellz26/swift-nio-ssh.git',
-    requirement: { kind: 'revision', revision: 'a05e6bbe6b141ee68da3030e00275504c0595d4d' },
-    products: ['NIOSSH']
-  )
+  # Gated so `scripts/pods-install.sh` can take a snapshot of the project WITHOUT these —
+  # the repair it runs afterwards needs the objects CocoaPods' SPM integration evicts.
+  # See scripts/repair-pods-spm-collision.mjs and .prd/12-qr-pairing.md.
+  if ENV['HERDR_SSH_SPM'] != '0'
+    spm_dependency(s,
+      url: 'https://github.com/orlandos-nl/Citadel.git',
+      requirement: { kind: 'exactVersion', version: '0.12.1' },
+      products: ['Citadel']
+    )
+    spm_dependency(s,
+      url: 'https://github.com/Wellz26/swift-nio-ssh.git',
+      requirement: { kind: 'revision', revision: 'a05e6bbe6b141ee68da3030e00275504c0595d4d' },
+      products: ['NIOSSH']
+    )
+  end
 
   # Swift 6 concurrency checking off for now: Citadel's async surface is not fully Sendable-audited
   # at 0.12.1 and this module has never been compiled, so a strict-concurrency failure here would be
