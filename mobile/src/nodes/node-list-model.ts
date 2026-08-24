@@ -164,5 +164,8 @@ export function fleetSummary(args: {
   const total = args.remotes.length
   const dialled = args.remotes.filter((remote) => remote.disabled !== true).length
   const unreachable = Math.max(0, dialled - args.answered)
-  return unreachable === 0 ? `${total} nodes` : `${total} nodes · ${unreachable} unreachable`
+  // A one-node fleet is the common case for a first-time user, so `1 nodes` is the string most
+  // likely to be the first thing anyone reads (iOS QA 11차, 2026-08-25).
+  const nodes = `${total} ${total === 1 ? 'node' : 'nodes'}`
+  return unreachable === 0 ? nodes : `${nodes} · ${unreachable} unreachable`
 }

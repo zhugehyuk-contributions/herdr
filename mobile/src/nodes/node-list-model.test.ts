@@ -146,6 +146,13 @@ describe('mergeLastSeen', () => {
 })
 
 describe('fleetSummary — 5차가 잡은 자기모순 헤더', () => {
+  it('says node, not nodes, when the fleet is one', () => {
+    // The single-node fleet is a first-time user's whole screen, so `1 nodes` is the string most
+    // likely to be the first thing anyone reads (iOS QA 11차, 2026-08-25).
+    expect(fleetSummary({ remotes: [remote('a')], answered: 1 })).toBe('1 node')
+    expect(fleetSummary({ remotes: [remote('a')], answered: 0 })).toBe('1 node · 1 unreachable')
+  })
+
   const remote = (id: string, over: Partial<RemoteDefinition> = {}): RemoteDefinition => ({
     id,
     name: id,

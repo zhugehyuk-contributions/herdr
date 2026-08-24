@@ -702,3 +702,28 @@ settings 모노 · 핀치 후 `.xterm` 610×777 불변 · `FATAL EXCEPTION` 0 ·
 
 **픽스처 사실 공개 1건**: `tmux -x 80`이어도 herdr 영역은 **54×51**이고 pane rect은 27/27/54열이다 —
 **pane당 80열이 아니다.** 앱은 `xtermCols:80`으로 렌더하므로 본문이 좌측에 감긴다.
+
+---
+
+## iOS QA 11차 — expo-camera 포함 HEAD (2026-08-25, 별도 에이전트, `qa-ios-11` @ `e44f58ee`)
+
+**10차의 "HEAD 마이너스 `expo-camera`" 라벨이 해소됐다.** `VERDICT: PASS · MUST-FIX: none`.
+
+가장 중요한 항목은 **반증(A6)**이다. 판정관이 bare `pod install`로 되돌리자 커밋이 주장한 서명이
+그대로 재현됐고(`_setSavedArchiveVersion:` unrecognized selector · "The project 'Pods' is damaged" ·
+`isa = PBXProject` 0), `scripts/pods-install.sh` 재실행으로 복구됐다. 수리가 **인과**를 잡은 것이지
+우연히 통과한 게 아니라는 증거다.
+
+카메라가 배포 바이너리에 실재하는 것도 확인됐다 — `strings herdr.debug.dylib`에 `ExpoCamera` 136회,
+`CameraViewModule` 6회, `AVCaptureSession` 18회. Citadel도 실제 컴파일(`Citadel.swiftmodule`,
+dylib에 164회).
+
+`/pair`는 목업 ① 요소가 누락 0건. 권한 거부 경로가 정확히 동작한다(`open system settings` +
+"…or add the remote by hand"), 허용 시 `CameraView`가 프레임 안에 마운트되고 크래시 0.
+라이브 확증도 위조 불가 토큰으로 받았다 — pane 1-1/1-2에서 `ZQ11-LIVE-PROOF-D1964184`.
+
+**판정불가(시뮬레이터 한계)**: 실제 QR 스캔 성공 · 권한 다이얼로그 버튼 조작 · FAB의 실제 터치.
+전부 카메라 부재 또는 자동화 도구 부재 때문이며, **Android에서는 이미 실측**됐다(7차).
+남은 것은 실기기 게이트다.
+
+**잔결함 1건 수리**: 라이브 홈이 `1 nodes`로 단복수를 안 맞췄다 → `fleetSummary`가 단수를 낸다.
