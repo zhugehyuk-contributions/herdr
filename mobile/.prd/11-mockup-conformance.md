@@ -633,3 +633,18 @@ settings 모노 · 핀치 후 `.xterm` 610×777 불변 · `FATAL EXCEPTION` 0 ·
 
 **잔여**: 그 첫 다이얼이 만든 `~/.config/herdr-dev/sessions/qaui7`(및 이전 라운드 `qaui1lab`)가
 아직 running. `herdr server stop`이 ⛔라 판정자가 손대지 않았고, 정리 여부는 유저 판단으로 남긴다.
+
+
+## 남은 누락의 성격 — 코드를 더 쓰면 되는 일이 아니다 (2026-08-24 조사)
+
+7차 PASS 이후 남은 목업 누락을 **서버 API 표면으로 판별**했다(`src/api/schema/`).
+
+| # | 항목 | 판별 |
+|---|---|---|
+| #7 | `keybindings local\|server` | **서버에 변경 메서드가 없다.** `RemoteKeybindingsSnapshot`은 읽기 타입이고 `RemoteSet*Params` 계열에 keybindings가 없다(`RemoteAdd`/`Rename`/`SetEnabled`/`SetSession`/`SetAutoUpdate`만). 폰에 필드를 넣으면 **아무 데도 안 간다** — 목업을 맞추려고 무동작 컨트롤을 그리는 것이고, 6차가 `camera blocked`으로 이미 그 대가를 보여줬다. **서버 작업 선행** |
+| #8 | `auto-update to this client` | 메서드는 **있다**(`RemoteSetAutoUpdateParams`, `src/api/schema/mx.rs:35`). 그런데 의미가 갈린다: auto-update는 **클라이언트가 자기 빌드를 원격에 밀어넣는** 동작이고, 폰엔 밀어넣을 herdr 바이너리가 없다. 폰이 붙은 **허브**의 동작을 폰이 설정하는 것으로 읽으면 말이 되지만 목업 ③의 "to this client"와는 다른 뜻이다 → **유저 판정** |
+| #1 QR 화면 | — | **닫혔다**(조건 5). 사이드바 `show qr` 컨텍스트 메뉴만 별도 UI 작업으로 남음 — 명령은 `herdr pair` |
+| #2 수동추가 · #3 배치 · #11 경로 · #12 | — | 5·6차가 **기기에서 구현 확인** → 원장 재분류 완료 |
+| #16 경과시간 | — | 서버 `AgentInfo`에 타임스탬프가 없다. 클라이언트로 안 닫힌다 |
+
+**결론**: 폰만으로 닫을 수 있는 목업 누락은 남아 있지 않다. 남은 것은 ①서버 API 신설(#7) ②유저 판정(#8, 액세서리 키) ③별도 UI 작업(사이드바 메뉴) ④실기기 게이트다.
