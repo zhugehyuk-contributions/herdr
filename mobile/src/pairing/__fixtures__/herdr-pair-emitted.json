@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "host": "lab.example",
+  "port": 22,
+  "user": "z",
+  "key": "-----BEGIN OPENSSH PRIVATE KEY-----\nREDACTED-FIXTURE-NOT-A-REAL-KEY\n-----END OPENSSH PRIVATE KEY-----\n",
+  "issuedAt": 1787535849610
+}
