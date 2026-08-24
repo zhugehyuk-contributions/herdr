@@ -251,6 +251,31 @@ error: Internal inconsistency error: never received target ended message for tar
 `buildReactNativeFromSource: true`(app.json)와 dynamic frameworks의 알려진 마찰로 보인다.
 즉 **정적이면 프로젝트가 안 열리고, dynamic이면 RN이 안 빌드된다.**
 
+### 메커니즘 격리 — `HerdrSsh.podspec`의 `spm_dependency`가 자리다 (실험 3)
+
+리그에서 **camera는 그대로 둔 채**(`Podfile.lock`의 `ExpoCamera` **9건**) `HerdrSsh.podspec`의
+`spm_dependency` 두 블록만 주석 처리했더니:
+
+| | 값 |
+|---|---|
+| `pod install` | exit **0** |
+| `ExpoCamera` in Podfile.lock | **9** (카메라 있음) |
+| `XCRemoteSwiftPackageReference` in `Pods.xcodeproj` | **0** |
+| `xcodebuild -project Pods/Pods.xcodeproj -list` | **열린다** |
+
+→ **CocoaPods가 `Pods.xcodeproj`에 써 넣는 SPM 참조가 원인이고, 그 참조를 만드는 것은
+`spm_dependency`다.** 팟이 하나 늘어난 것(camera)은 그 조합을 임계 너머로 밀었을 뿐이다.
+
+**이것은 수리가 아니라 격리다** — `spm_dependency`를 빼면 Citadel이 링크되지 않아 `HerdrSsh`가
+컴파일되지 않는다(플러그인 헤더가 이미 그렇게 적어놨다: `HerdrSshModule.swift:22:8: error: unable to
+resolve module dependency: 'Citadel'`).
+
+**따라서 수리의 조건이 좁혀진다**: Citadel/NIOSSH를 `HerdrSsh`에 주되 **CocoaPods가 SPM 참조를
+`Pods.xcodeproj`에 쓰지 않게** 해야 한다. 후보:
+- Citadel을 **vendored pod**(`source_files`)나 **prebuilt xcframework**로
+- `HerdrSsh`를 CocoaPods 밖의 **로컬 SPM 패키지**로 빼고 앱 프로젝트가 직접 의존
+- CocoaPods 버전 변경(현재 **1.17.0**) — Xcode 26.6 파서와의 마찰이면 상류에서 고쳐졌을 수 있다
+
 ### 내가 멈춘 지점
 
 빌드 4회 실패, 진단 실험 2회로 인과는 확정. 남은 후보는 전부 **앱 전체에 영향이 가는 결정**이다:
