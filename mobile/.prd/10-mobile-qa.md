@@ -382,6 +382,27 @@ npx expo run:ios --device <UDID>
 > ①install 전에 **부팅을 보장**(`simctl boot` 후 `(Booted)` 폴링) ②install **성공을 확인한 뒤에만**
 > 마커를 찍어라(`&&` 체인). 9차는 부팅 후 재설치본이 우연히 올라와 있어 사고가 안 났을 뿐이다.
 
+### ⛔ HEAD가 iOS에서 안 빌드되는 동안의 리그 (2026-08-24)
+
+`expo-camera` 팟이 `Pods.xcodeproj`를 못 열게 만든다(`.prd/12` §iOS 빌드 파손, 실험 2회로 인과 확정).
+그동안 iOS를 **전혀 못 재는 것**보다 **정확히 라벨된 부분 판정**이 낫다:
+
+1. 리그 워크트리에서만 `package.json`의 `expo-camera` 의존성 줄과 `app.json`의 `expo-camera` 플러그인
+   블록을 제거 → `pnpm install --no-frozen-lockfile` → `expo prebuild --platform ios --no-install`
+2. `app/pair.tsx`가 그 모듈을 import하므로 **JS 스텁**을 `node_modules/expo-camera/`에 둔다
+   (`CameraView` = 그냥 `View`, `useCameraPermissions`는 **영구 거부**를 보고). 영구 거부로 만드는 게
+   요점이다 — 그러면 무카메라 경로가 기본으로 렌더돼 그 경로를 iOS에서 판정할 수 있다.
+3. `pod install` → **`build/`를 지우지 말고** `xcodebuild` (순서 중요, 아래)
+4. `npm run bundle`로 모듈 그래프가 실제로 해석되는지 확인한 뒤 디스패치
+
+**판정 라벨은 "HEAD 마이너스 expo-camera"** 로 달고, 스캔의 카메라 경로는 결함이 아니라
+**리그의 정의상 판정 불가**로 적는다.
+
+> ⚠️ **`pod install` 뒤에 `rm -rf ios/build` 하지 마라 (2026-08-24 실측).**
+> `pod install`이 `ios/build/generated/ios/ReactCodegen/…`에 코드젠을 생성한다. 그 뒤에 `build/`를
+> 지우면 `Build input file cannot be found: …/ReactCodegen/…/States.cpp`로 죽는다.
+> 클린이 필요하면 **`rm -rf build` → `pod install` → `xcodebuild`** 순서다.
+
 ### 화면 읽기 — XCUITest 타깃 주입
 
 `idb`도 `cliclick`도 이 머신에 없고 `simctl openurl`은 확인창을 띄운다. 그래서 **XCUITest 타깃을 넣어**
