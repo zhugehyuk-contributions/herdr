@@ -194,3 +194,50 @@ ssh config를 herdr이 안 읽으므로 같은 종류의 note를 낸다. ~~그�
 
 **조건 5 잔여**: 실기기 카메라(유저 게이트) · 사이드바 `show qr` 컨텍스트 메뉴(별도 UI 작업 —
 명령은 `herdr pair`이고 폰 안내도 그렇게 말한다) · QR 폭 85컬럼(유저 판정 "경고로 두고 진행").
+
+
+## ⛔ iOS 빌드 파손 — `expo-camera`를 넣은 뒤 Pods 프로젝트가 안 열린다 (2026-08-24)
+
+**조건 5의 폰 절반이 iOS에서 빌드되지 않는다.** Android는 같은 커밋에서 크래시 0건으로 7차 PASS.
+
+### 실측
+
+```
+xcodebuild … -workspace herdr.xcworkspace
+  → -[XCRemoteSwiftPackageReference _setSavedArchiveVersion:]: unrecognized selector
+  → The project 'Pods' is damaged and cannot be opened
+  → 에러 238건 (208건이 modulemap 부재, Foundation·Darwin 같은 시스템 모듈까지)
+```
+
+`xcodebuild -project Pods/Pods.xcodeproj -list` **단독으로도 같은 예외** → 파일 자체가 안 열린다.
+**`pod deintegrate` + `Pods`/`Podfile.lock` 삭제 후 재설치해도 동일**(`pod install` 자체는 exit 0).
+
+### 판별
+
+| | `qa-ios-n1`(00:25, camera 없음) | `qa-ios-8`(HEAD, camera 있음) |
+|---|---|---|
+| `Pods.xcodeproj -list` | **열린다** | **예외** |
+| SPM refs | 10 | 8 |
+| Xcode | 26.6 (동일) | 26.6 |
+
+두 워크트리의 델타는 **`expo-camera` 하나**다(같은 `with-herdr-ssh-spm.js`, 같은 Xcode).
+[가설] 인과는 그 델타지만 camera를 빼서 재현을 뒤집어보진 않았다.
+
+### 유력한 실마리 — `pod install`이 스스로 경고한다
+
+```
+[SPM] WARNING!!! Pod HerdrSsh is using swift package(s) Citadel, NIOSSH with static linking,
+this might cause linker errors. Consider using USE_FRAMEWORKS=dynamic
+```
+CocoaPods가 만든 프로젝트에 SPM 참조(Citadel/NIOSSH)가 **정적 링크**로 섞여 있는 상태이고,
+팟이 하나 늘자 그 조합이 깨진 것으로 보인다. 후보 수리: `USE_FRAMEWORKS=dynamic pod install`
+(RN 문서화된 우회) 또는 `plugins/with-herdr-ssh-spm.js`의 주입 방식 변경.
+
+### 내가 멈춘 지점
+
+빌드 3회 실패. 진단은 확정(위 실측), 수리는 **링크 방식 변경**이라 앱 전체에 영향이 가는 결정이므로
+여기서 멈춘다. `USE_FRAMEWORKS=dynamic`은 HerdrSsh 네이티브 모듈의 링크도 바꾼다 —
+M2b에서 그 모듈이 조용히 미링크됐던 전례가 있어(`.prd/10` §빌드) 가볍게 켤 값이 아니다.
+
+**이것이 조건 3(iOS QA)의 현재 블로커다.** 카메라 없이 빌드되던 `qa-ios-n1`(N1 9차 PASS)이
+마지막으로 성공한 iOS 리그다.
