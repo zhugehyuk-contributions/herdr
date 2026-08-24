@@ -587,3 +587,49 @@ PASS: pane 헤더 1012·엣지 0 · 터미널 아래 상태 줄 · **CDP 타깃 
 ① `└` 픽스처 레시피가 불충분했다: 타이틀만 세우면 `agentIdentityLabel`의 폴백이 **그 타이틀**이라
 identity와 같아져 `paneActivityLabel`이 설계대로 null을 낸다. **에이전트를 붙이고 그와 다른 타이틀**이
 필요하다. ② **`uiautomator`가 이제 전 화면 텍스트를 읽는다**(RN 0.83/expo 55) — "못 읽는다"는 stale.
+
+## UI QA 7차 — 기기 (2026-08-24, 별도 에이전트, `qa-ui7` @ `892f9bf0`) — **PASS · MUST-FIX none**
+
+### 6차 MUST-FIX 3건 전부 PASS
+
+| # | 실측 |
+|---|---|
+| ① 헤더 클리핑 | 앱바 max ink x **992**(6차 1079), 엣지 접촉 **0줄**(6차 12), `settings` 온전. 요약 줄 `2 nodes · 1 unreachable · 1 blocked · 2 working` ink x=932, 안 잘림 |
+| ② `pair` 네이티브 헤더 | 네이티브 헤더 **없음**, 자기 크럼만, 단일 mono, 뒤로가기 1개 |
+| ③ no-op 버튼 | 2회 거부 → `USER_SET\|USER_FIXED`. 버튼이 `open system settings`로 바뀌고 누르니 top activity가 **`com.android.settings/.spa.SpaActivity`** 로 전이. 그 상태에서 `allow camera` 없음 |
+
+### N2 측정 충돌 — **4차 손을 들어 해소**
+
+`screenrecord` 60fps, 1655프레임/28초, 칩 전환 6회(깊은 버퍼 3회). 터미널 영역 비배경 픽셀
+**0px 프레임 = 0개(0ms)**, ≤50/≤200/≤1000px 임계 전부 0개, 전 구간 최소 3880px이며 그 최소 프레임도
+실제 내용을 렌더 중. 전환 실재 증거는 전/후 중앙값 42,727 ↔ 3,889의 6회 반전.
+**전환은 60fps 입도에서 원자적이다** — 6차의 백지 포착은 `screencap` 캐던스(~0.5–1s)의 산물.
+
+### ⭐ 조건 5 스캔 실경로 — 종단 확증 (1회 시도로 성공)
+
+가상 씬 카메라가 초기 포즈에서 TV 벽을 봐 포스터가 프레임 밖이었고 `sensor set`은 씬 카메라를
+안 돌린다(12방위 스윕 통계 동일). **`automation play Walk_to_image_room`** 매크로가 답이었다.
+
+- 스캔 성공 → **즉시 이동 안 함**. `10.0.2.2 — qauser@10.0.2.2:22` + `Key included…` + `use this code`
+- **키 본문 화면에 전무** — 길이 표시조차 없고 화면 텍스트에 `BEGIN OPENSSH`/`PRIVATE KEY`/`AAAA` **0건**
+- `use this code` → 폼 프리필: id **`qauser-10.0.2.2-22`**(키스토어 charset), host/port/username 정확,
+  키 칸 채워짐, **`allow unknown host key` 꺼짐**
+- 손상 코드(wifi QR로 벽 교체) → **`This is not a herdr pairing code.`** + `scan again`, 값 노출 0
+- `cancel` 후 `remotes · 0` — **키스토어 무오염**
+- 10분 경과 경고 정상 발동(`This code was made 43m ago…`)
+
+### 회귀 전수 PASS
+
+pane 헤더 1012·엣지 0 · 터미널 아래 상태 줄 · **CDP 타깃 id 전후 동일** · 죽은 원격 속 빈 링 +
+`reconnecting…` · 칩 위치 핸들 · blocked 반전 뱃지 · agents 행 pane id · `REMOTES` · ANSI ·
+settings 모노 · 핀치 후 `.xterm` 610×777 불변 · `FATAL EXCEPTION` 0 ·
+**`└` 활동줄 렌더**(6차 갱신 레시피대로 에이전트+상이 타이틀 → `└ cargo nextest run`).
+
+### 절차 함정 1건 → `.prd/10` 반영
+
+**`herdrBinary`만으로는 랩이 격리되지 않는다.** ssh exec이 env를 안 실어 원격 herdr이 기본 config
+디렉터리로 폴백한다 — 7차 첫 다이얼이 `~/.config/herdr-dev`에 세션을 새로 만들었고 앱은 4-pane 랩
+대신 **1-pane 유령**을 보여줬다. 릴리즈 바이너리였다면 **유저 프로덕션 소켓**이다.
+
+**잔여**: 그 첫 다이얼이 만든 `~/.config/herdr-dev/sessions/qaui7`(및 이전 라운드 `qaui1lab`)가
+아직 running. `herdr server stop`이 ⛔라 판정자가 손대지 않았고, 정리 여부는 유저 판단으로 남긴다.

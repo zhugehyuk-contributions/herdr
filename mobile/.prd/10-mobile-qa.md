@@ -203,6 +203,14 @@ QA 사이에 랩이 죽어 있다(sshd·tmux 종료, `app.json` 원복). 매번 
    > 정확히 격리를 깨는 동작이다. 확인 방법: `lsof`로 랩 프로세스가 `~/.config/herdr`를 참조하지 않음을
    > 실측(3차가 참조 0건으로 확인).
 
+   > ⛔ **`herdrBinary`만으로는 랩이 격리되지 않는다 (2026-08-24, 7차가 실측으로 잡았다).**
+   > ssh exec은 env를 **안 싣는다.** 그래서 원격 `herdr`이 `HERDR_*`를 못 받고 **기본 config
+   > 디렉터리로 폴백**한다 — 7차의 첫 다이얼이 `~/.config/herdr-dev`에 세션을 새로 만들었고, 앱은
+   > 4-pane 랩 대신 **1-pane 유령**을 보여줬다(판정자가 "라이브"로 오판할 뻔한 자리다).
+   > 이번엔 디버그 바이너리라 `herdr-dev` 샌드박스에 떨어졌지만, **릴리즈 herdr을 `herdrBinary`로
+   > 주면 유저 프로덕션 소켓에 떨어진다.** 해법: remote config의 **`env`** 필드
+   > (`remoteBridgeCommand`가 `exec env NAME=val …`로 싣는다) 또는 래퍼 스크립트.
+
 4. `app.json`의 `extra.herdrRemotes`에 랩 원격 주입. **Metro 재시작 불필요** — 매니페스트를 요청 시
    재읽는다(실측 확인).
 

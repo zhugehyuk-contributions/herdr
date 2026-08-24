@@ -179,4 +179,18 @@ ssh config를 herdr이 안 읽으므로 같은 종류의 note를 낸다. ~~그�
 레포가 개인키를 들고 있으면 다음 사람에게 그래도 된다고 가르친다.
 저장 가능성(`id`가 키스토어 charset)까지 같은 테스트가 본다 — **파싱 성공과 저장 성공은 다른 일이다.**
 
-**다음**: Q5 — 별도 에이전트 QA(스캔 성공/거부/손상 코드/권한 4경로 + **실기기 카메라**).
+### Q5 — QA ✅ (2026-08-24, 7차, 별도 에이전트 PASS)
+
+**에뮬레이터에서 실제 QR을 읽혔다.** 6차가 판정불가로 남긴 자리다 — 가상 씬 포스터로 닫혔다:
+`emulator -camera-back virtualscene -virtualscene-poster wall=<png>` + 매크로
+**`automation play Walk_to_image_room`**(초기 포즈는 TV 벽을 보고 있고 `sensor set`은 씬 카메라를
+안 돌린다 — 12방위 스윕 통계가 동일했다).
+
+종단 확증: 스캔 → **즉시 이동 안 함** → `qauser@10.0.2.2:22` + `use this code` → 폼 프리필
+(id `qauser-10.0.2.2-22`, **`allow unknown host key` 꺼짐**) → cancel 시 `remotes · 0`(키스토어 무오염).
+**키 본문은 화면 어디에도 없다**(길이 표시조차, 텍스트에 `BEGIN OPENSSH` 0건).
+손상 코드(wifi QR)는 *"This is not a herdr pairing code."* + `scan again`, 값 노출 0.
+10분 경과 경고도 정상 발동.
+
+**조건 5 잔여**: 실기기 카메라(유저 게이트) · 사이드바 `show qr` 컨텍스트 메뉴(별도 UI 작업 —
+명령은 `herdr pair`이고 폰 안내도 그렇게 말한다) · QR 폭 85컬럼(유저 판정 "경고로 두고 진행").
