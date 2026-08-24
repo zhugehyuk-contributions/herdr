@@ -303,6 +303,38 @@ JSON 대신 **`herdr://pair?v=1&host=…&user=…&key=…`** 로 바꾸면:
 **작업량**: Rust에서 QR 인코딩 대상 문자열 교체 + 폰에 `herdr://pair` 딥링크 핸들러 + 파서에
 URL 분해 어댑터 + 테스트 + QA 1라운드. **SPM/CocoaPods/링크 방식은 전혀 안 건드린다.**
 
+### 근본 원인 — 확정 (2026-08-24, 대조군 있음)
+
+**`Pods.xcodeproj`의 루트 객체 id를 SPM 패키지 참조가 덮어쓴다.**
+
+| 리그 | `isa = PBXProject` | Citadel 참조 id | `rootObject` | 열리나 |
+|---|---|---|---|---|
+| qa-ios-n1 (expo-camera 없음) | **1** | `46EB2E0003CF30` | `46EB2E00000000` | ✅ 0 selector 에러 |
+| qa-ios-8 (expo-camera 있음) | **0** | `46EB2E00000000` | `46EB2E00000000` | ❌ unrecognized selector |
+
+깨진 쪽에서 두 값이 **같다**. Xcode가 `rootObject`를 읽으면 `XCRemoteSwiftPackageReference`가
+나오고, 거기에 루트 객체용 셀렉터 `_setSavedArchiveVersion:`을 부른다 — 에러 문자열 그대로다.
+PBXProject 객체는 파일에서 **아예 사라졌다**(`mainGroup`·`productRefGroup`도 없음). 그래서 모든
+pod modulemap이 없다고 나오고 `SwiftDriver herdr` 실패가 뒤따른다 — **두 에러는 하나의 원인**이다.
+
+**할당 시점**: `post_install` 훅에서 찍어보면 `rootIsa=PBXProject`이고 `spm=`이 **비어 있다**.
+즉 SPM 참조는 post_install **이후에** CocoaPods의 SPM 통합이 0부터 시작하는 카운터로 할당한다.
+→ **post_install 훅으로는 막을 수 없다.** (`deterministic_uuids => false`도 무효 — 실측 시 id 불변.)
+
+expo-camera는 원인이 아니라 **할당을 바닥으로 미는 조건**이다. n1은 우연히 `0003CF30`에 앉아 살았다.
+
+### 남은 선택지 3개 (전부 SPM 참조를 CocoaPods가 안 쓰게 만드는 방향)
+
+1. **`HerdrSsh`를 CocoaPods 밖 로컬 SPM 패키지로** — 구조적으로 옳지만 Expo 오토링킹이 pod 전제라 큰 작업
+2. **CocoaPods 1.16.x로 다운그레이드** — 신 포맷 SPM writer를 피함. 단 유저 머신의 전역 gem 환경 변경이라 **유저 게이트**
+3. **아래 딥링크 경로** — `expo-camera` 자체를 없애서 조건 5를 SPM 없이 성립시킴 (가장 쌈)
+
+### 내가 틀렸던 것 2개 (정정)
+
+- "각 SPM id가 파일에 정의 1회씩이므로 충돌 없음" — **측정 오류**. 내 패턴이 PBXProject 정의 줄을
+  안 잡았다. 실제로는 루트 객체와 정면 충돌이었다.
+- "id 길이 14자가 원인" — **아니다**. n1도 14자인데 열린다. 길이가 아니라 **값의 충돌**이다.
+
 ### 내가 멈춘 지점
 
 빌드 4회 실패, 진단 실험 2회로 인과는 확정. 남은 후보는 전부 **앱 전체에 영향이 가는 결정**이다:
