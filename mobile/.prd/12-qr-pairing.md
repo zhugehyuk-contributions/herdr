@@ -221,7 +221,15 @@ xcodebuild … -workspace herdr.xcworkspace
 | Xcode | 26.6 (동일) | 26.6 |
 
 두 워크트리의 델타는 **`expo-camera` 하나**다(같은 `with-herdr-ssh-spm.js`, 같은 Xcode).
-[가설] 인과는 그 델타지만 camera를 빼서 재현을 뒤집어보진 않았다.
+**인과 확정 (실험 2회)**:
+| 실험 | Podfile.lock `ExpoCamera` | `Pods.xcodeproj -list` |
+|---|---|---|
+| `expo-camera` 의존성 제거 후 재설치 | 9 → **0** | **열린다** |
+| 카메라 복원 + `USE_FRAMEWORKS=dynamic pod install` | **9** | **열린다** |
+| 카메라 있음 + 기본(정적) | 9 | **예외** |
+
+→ 원인은 camera 자체가 아니라 **정적 링크 SPM 참조(Citadel/NIOSSH)가 섞인 Pods 프로젝트에 팟이
+하나 더 얹힌 조합**이다. `pod install`이 스스로 경고하던 그 조합.
 
 ### 유력한 실마리 — `pod install`이 스스로 경고한다
 
@@ -233,11 +241,22 @@ CocoaPods가 만든 프로젝트에 SPM 참조(Citadel/NIOSSH)가 **정적 링�
 팟이 하나 늘자 그 조합이 깨진 것으로 보인다. 후보 수리: `USE_FRAMEWORKS=dynamic pod install`
 (RN 문서화된 우회) 또는 `plugins/with-herdr-ssh-spm.js`의 주입 방식 변경.
 
+### `USE_FRAMEWORKS=dynamic`은 해법이 아니다 — 실측
+
+프로젝트는 열리지만 **RN 빌드가 깨진다**:
+```
+error: The file "RCTAppDependencyProvider.h" couldn't be opened … (target 'ReactAppDependencyProvider')
+error: Internal inconsistency error: never received target ended message for target ID '53' (target 'React-utils')
+```
+`buildReactNativeFromSource: true`(app.json)와 dynamic frameworks의 알려진 마찰로 보인다.
+즉 **정적이면 프로젝트가 안 열리고, dynamic이면 RN이 안 빌드된다.**
+
 ### 내가 멈춘 지점
 
-빌드 3회 실패. 진단은 확정(위 실측), 수리는 **링크 방식 변경**이라 앱 전체에 영향이 가는 결정이므로
-여기서 멈춘다. `USE_FRAMEWORKS=dynamic`은 HerdrSsh 네이티브 모듈의 링크도 바꾼다 —
-M2b에서 그 모듈이 조용히 미링크됐던 전례가 있어(`.prd/10` §빌드) 가볍게 켤 값이 아니다.
+빌드 4회 실패, 진단 실험 2회로 인과는 확정. 남은 후보는 전부 **앱 전체에 영향이 가는 결정**이다:
+①`buildReactNativeFromSource`를 끄고 dynamic ②`with-herdr-ssh-spm.js`의 SPM 주입을 CocoaPods
+바깥으로(예: 앱 프로젝트에만) ③Citadel을 SPM이 아닌 다른 경로로 ④iOS에서 camera를 빼고 조건 5의
+스캔을 Android 전용으로. **유저 판정 대상.**
 
 **이것이 조건 3(iOS QA)의 현재 블로커다.** 카메라 없이 빌드되던 `qa-ios-n1`(N1 9차 PASS)이
 마지막으로 성공한 iOS 리그다.
