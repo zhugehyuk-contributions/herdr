@@ -292,11 +292,10 @@ handle 기반 `key`가 없어(`src/session/TerminalPaneView.tsx`) 컴포넌트 �
 (완전 중복; 배선하면 "format=text인데 본문은 ANSI"인 자기모순이 표현 가능해진다).
 `deny_unknown_fields` 부재로 구 클라이언트의 `strip_ansi` 송신은 종전과 동일하게 무시된다(테스트 고정).
 
-**같은 클래스 잔여 2건** (제거로 죽음이 증명됨, 후속 유닛):
-- `AgentReadParams.strip_ansi` (`src/api/schema/agents.rs:15-16`) — 핸들러 참조 0건, CLI가 보내고 서버가 버린다
-- `PaneWaitForOutputParams.strip_ansi` + `Subscription::PaneOutputMatched.strip_ansi` (`src/api/schema/events.rs`) —
-  유일 소비처가 방금 지운 죽은 필드였다. `herdr pane wait-output --raw`는 예전부터 no-op
-- 모바일 주석 stale 1건: `mobile/src/session/pane-history.ts:190-197`이 없어진 필드를 서술
+**같은 클래스 잔여 2건 — 역시 닫혔다** (`347cfd64`, nextest 4025):
+`AgentReadParams.strip_ansi` · `PaneWaitForOutputParams.strip_ansi`(+`Subscription::PaneOutputMatched`)
+제거, back-compat 무시 테스트 3건. `pane wait-output --raw`는 usage에서 빼되 인자로는 수용(no-op —
+삭제하면 구 스크립트가 죽는다). 모바일 stale 주석도 갱신(`8cb18d43`). strip_ansi는 API 전체에서 소멸.
 
 **병렬 금지 아님**: N1·N2·N4는 서로 독립이다. per-unit dispatch(rules/DEV.md §3) 유지 —
 **단, QA는 각자 고정 워크트리 + 각자 Metro 포트를 받는다**(§QA 게이트). 두 QA가 `app.json` 하나를
