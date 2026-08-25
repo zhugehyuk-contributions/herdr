@@ -65,6 +65,15 @@ vi.mock('expo-splash-screen', () => ({
   preventAutoHideAsync: vi.fn(async () => true),
   hideAsync: vi.fn(async () => true)
 }))
+
+// `_layout.tsx` loads the mockup's JetBrains Mono through expo-font, which drags expo-modules-core
+// (and its `__DEV__`) into a plain Vitest process. The faces are irrelevant to what these tests
+// assert, so the loader is reported as already settled.
+vi.mock('@expo-google-fonts/jetbrains-mono', () => ({
+  useFonts: () => [true, null],
+  JetBrainsMono_400Regular: 'JetBrainsMono_400Regular',
+  JetBrainsMono_700Bold: 'JetBrainsMono_700Bold'
+}))
 vi.mock('expo-status-bar', () => ({ StatusBar: 'StatusBar' }))
 vi.mock('lucide-react-native', () => ({ ChevronDown: 'ChevronDown', ChevronRight: 'ChevronRight' }))
 

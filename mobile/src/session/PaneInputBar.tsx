@@ -25,7 +25,7 @@ import { PANE_QUICK_COMMANDS, quickCommandChunk } from './pane-quick-commands'
 import { inputStatusLabel } from './pane-input'
 import { keyboardBarLift } from '../layout/keyboard-clearance'
 import { useSoftKeyboardHeight } from '../layout/use-soft-keyboard-height'
-import { typography } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 import { mono } from '../theme/monotone'
 import type { PaneInputView } from './use-pane-input'
 

@@ -24,7 +24,7 @@
 import { memo } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { spacing } from '../theme/mobile-theme'
-import { typography } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 import { mono } from '../theme/monotone'
 import {
   agentIdentityLabel,

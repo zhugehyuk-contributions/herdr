@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@expo-google-fonts/jetbrains-mono':
+        specifier: 0.4.1
+        version: 0.4.1
       '@herdr/client-ts':
         specifier: link:../packages/herdr-client-ts
         version: link:../packages/herdr-client-ts
@@ -41,6 +44,9 @@ importers:
       expo-dev-client:
         specifier: 55.0.35
         version: 55.0.35(expo@55.0.27)
+      expo-font:
+        specifier: 55.0.8
+        version: 55.0.8(expo@55.0.27)(react-native@0.83.9(@babel/core@7.29.7)(@react-native/metro-config@0.87.0(@babel/core@7.29.7))(@types/react@19.2.14)(react@19.2.6))(react@19.2.6)
       expo-haptics:
         specifier: 55.0.14
         version: 55.0.14(expo@55.0.27)
@@ -968,6 +974,9 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@expo-google-fonts/jetbrains-mono@0.4.1':
+    resolution: {integrity: sha512-CslACrtMOcRwoWXCO7OMEI+9w3fukWSoBtvNz46OqPoogEuuoY0tkDY1O8sFumk8t0pC6Cx0Xr95O0TOQhpkug==}
 
   '@expo-google-fonts/material-symbols@0.4.44':
     resolution: {integrity: sha512-36JP9Chcy/QEVZ9ZGY4i6zInlyFPbQjkIm6gRNuWWltScIj0WR8rddcD57EIjSC5YKCe2ZKLO6eO/N5r8Jit0A==}
@@ -5201,6 +5210,8 @@ snapshots:
 
   '@esbuild/win32-x64@0.28.2':
     optional: true
+
+  '@expo-google-fonts/jetbrains-mono@0.4.1': {}
 
   '@expo-google-fonts/material-symbols@0.4.44': {}
 

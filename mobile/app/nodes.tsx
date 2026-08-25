@@ -29,7 +29,7 @@ import {
   nodeSection
 } from '../src/nodes/node-list-model'
 import { safeChromePadding } from '../src/layout/safe-area-chrome'
-import { typography } from '../src/theme/mobile-theme'
+import { typography } from '../src/theme/herdr-typography'
 import { mono } from '../src/theme/monotone'
 
 // Same floor as `./index.tsx`'s bar, which this one is a copy of — see it for why 24 stays.
@@ -172,7 +172,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: mono.ink },
   // No `paddingTop`: it is the inset's, above.
   appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16 },
-  logo: { color: mono.fg, fontSize: 20, fontWeight: '700', fontFamily: typography.monoFamily },
+  logo: { color: mono.fg, fontSize: 20, fontFamily: typography.monoFamilyBold },
   crumb: { color: mono.dim, fontSize: 13, marginLeft: 6, fontFamily: typography.monoFamily },
   body: { flex: 1, paddingHorizontal: 16 },
   row: { paddingVertical: 12 },
@@ -220,6 +220,6 @@ const styles = StyleSheet.create({
     // what a FAB is for.
     backgroundColor: mono.fg
   },
-  fabLabel: { color: mono.ink, fontSize: 12, fontWeight: '700', fontFamily: typography.monoFamily },
+  fabLabel: { color: mono.ink, fontSize: 12, fontFamily: typography.monoFamilyBold },
   spacer: { flex: 1 }
 })

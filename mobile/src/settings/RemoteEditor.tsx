@@ -11,7 +11,7 @@
 //      key authenticates on Android and silently fails on iOS (`../../.prd/06-open-decisions.md`
 //      결정 7), and the advisory line is the only place that gap is visible before a dial fails.
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
-import { typography } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 import { mono } from '../theme/monotone'
 import { spacing } from '../theme/mobile-theme'
 import type { RemoteDraft, RemoteDraftField } from './remote-form'

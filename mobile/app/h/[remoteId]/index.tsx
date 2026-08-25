@@ -40,7 +40,7 @@ import {
   tabLabelsFrom
 } from '../../../src/panes/pane-tree'
 import { safeChromePadding } from '../../../src/layout/safe-area-chrome'
-import { typography } from '../../../src/theme/mobile-theme'
+import { typography } from '../../../src/theme/herdr-typography'
 import { mono } from '../../../src/theme/monotone'
 
 // This screen has no appbar — its header is the remote's name — so its floor is the 16 it was
@@ -224,7 +224,7 @@ const styles = StyleSheet.create({
   // No `paddingTop`: it is the inset's, above.
   screen: { flex: 1, backgroundColor: mono.ink },
   header: { flexDirection: 'row', alignItems: 'center', paddingBottom: 8, paddingHorizontal: 16 },
-  title: { color: mono.fg, fontSize: 18, fontWeight: '700', fontFamily: typography.monoFamily },
+  title: { color: mono.fg, fontSize: 18, fontFamily: typography.monoFamilyBold },
   meta: { color: mono.dim, fontSize: 12, marginLeft: 8, fontFamily: typography.monoFamily },
   tabLabel: {
     color: mono.dim2,

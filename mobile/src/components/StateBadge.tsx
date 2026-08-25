@@ -7,7 +7,7 @@
 // Kept a component rather than a style so the rule stays one decision: inversion means blocked. A
 // second surface that wants "emphasis" reaches for brightness (`mono.fg` text), not for this.
 import { StyleSheet, Text } from 'react-native'
-import { typography } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 import { mono } from '../theme/monotone'
 
 export function StateBadge({ label }: { label: string }) {
@@ -19,11 +19,10 @@ const styles = StyleSheet.create({
     backgroundColor: mono.fg,
     color: mono.ink,
     fontSize: 10,
-    fontWeight: '700',
     paddingHorizontal: 7,
     paddingVertical: 1,
     borderRadius: 3,
     overflow: 'hidden',
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilyBold
   }
 })

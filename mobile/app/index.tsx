@@ -32,7 +32,7 @@ import {
   groupFleetAgentsByStatus
 } from '../src/agents/fleet-agents'
 import { safeChromePadding } from '../src/layout/safe-area-chrome'
-import { typography } from '../src/theme/mobile-theme'
+import { typography } from '../src/theme/herdr-typography'
 import { mono } from '../src/theme/monotone'
 
 // The gap this bar was drawn with before there was an inset in the picture, kept as its floor.
@@ -145,7 +145,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: mono.ink },
   // No `paddingTop`: it is the inset's, above.
   appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16 },
-  logo: { color: mono.fg, fontSize: 20, fontWeight: '700', fontFamily: typography.monoFamily },
+  logo: { color: mono.fg, fontSize: 20, fontFamily: typography.monoFamilyBold },
   crumb: { color: mono.dim, fontSize: 13, marginLeft: 6, fontFamily: typography.monoFamily },
   meta: { color: mono.dim, fontSize: 12, paddingHorizontal: 16, fontFamily: typography.monoFamily },
   error: {

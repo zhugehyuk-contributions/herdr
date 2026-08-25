@@ -24,7 +24,7 @@ import { useCallback, useRef } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { historySummary } from './pane-history'
 import { mono } from '../theme/monotone'
-import { typography } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 import type { PaneHistoryView } from './use-pane-history'
 
 /**
@@ -149,7 +149,7 @@ const styles = StyleSheet.create({
     // itself. The route supplies it (`topPadding`), so a flat constant cannot creep back in.
     paddingBottom: 8
   },
-  title: { color: mono.fg, fontSize: 15, fontWeight: '700', fontFamily: typography.monoFamily },
+  title: { color: mono.fg, fontSize: 15, fontFamily: typography.monoFamilyBold },
   subtitle: { color: mono.fgSoft, fontSize: 12, flexShrink: 1, fontFamily: typography.monoFamily },
   spacer: { flex: 1 },
   action: {

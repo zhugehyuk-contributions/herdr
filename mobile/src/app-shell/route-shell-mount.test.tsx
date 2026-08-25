@@ -34,6 +34,15 @@ const splash = vi.hoisted(() => ({
 }))
 
 vi.mock('expo-splash-screen', () => splash)
+
+// `_layout.tsx` loads the mockup's JetBrains Mono through expo-font, which drags expo-modules-core
+// (and its `__DEV__`) into a plain Vitest process. The faces are irrelevant to what these tests
+// assert, so the loader is reported as already settled.
+vi.mock('@expo-google-fonts/jetbrains-mono', () => ({
+  useFonts: () => [true, null],
+  JetBrainsMono_400Regular: 'JetBrainsMono_400Regular',
+  JetBrainsMono_700Bold: 'JetBrainsMono_700Bold'
+}))
 vi.mock('expo-status-bar', () => ({ StatusBar: 'StatusBar' }))
 // The ported orca chrome draws its chevrons with lucide icons, which pull in react-native-svg —
 // nothing this environment can render. Every other test that touches a lucide-using component

@@ -43,7 +43,7 @@ import {
 import { describePrivateKey } from '../modules/herdr-ssh'
 import { useBlockedPushStatus } from '../src/notifications/blocked-push-context'
 import { BLOCKED_ONLY_NOTE, summarisePush } from '../src/notifications/blocked-push-summary'
-import { typography } from '../src/theme/mobile-theme'
+import { typography } from '../src/theme/herdr-typography'
 import { mono } from '../src/theme/monotone'
 import { spacing } from '../src/theme/mobile-theme'
 
@@ -390,7 +390,7 @@ const styles = StyleSheet.create({
   // Keeps its literal 24 — see the note in the component: below a native header this is plain
   // spacing, not a status-bar stand-in, so `safeChromePadding` has nothing to say about it.
   appbar: { flexDirection: 'row', alignItems: 'baseline', paddingHorizontal: 16, paddingTop: 24 },
-  logo: { color: mono.fg, fontSize: 20, fontWeight: '700', fontFamily: typography.monoFamily },
+  logo: { color: mono.fg, fontSize: 20, fontFamily: typography.monoFamilyBold },
   crumb: { color: mono.dim, fontSize: 13, marginLeft: 6, fontFamily: typography.monoFamily },
   body: { flex: 1, paddingHorizontal: 16 },
   sectionLabel: {

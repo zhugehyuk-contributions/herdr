@@ -24,7 +24,7 @@ import {
 } from '../src/pairing/pairing-payload'
 import { pendingPairing } from '../src/pairing/pairing-handoff'
 import { safeChromePadding } from '../src/layout/safe-area-chrome'
-import { typography } from '../src/theme/mobile-theme'
+import { typography } from '../src/theme/herdr-typography'
 import { mono } from '../src/theme/monotone'
 
 const APPBAR_TOP_PADDING = 24

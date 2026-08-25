@@ -109,7 +109,7 @@ import { usePaneHistory } from '../../../../src/session/use-pane-history'
 import { PaneHistoryOverlay } from '../../../../src/session/PaneHistoryOverlay'
 import { PaneInputBar } from '../../../../src/session/PaneInputBar'
 import { safeChromePadding } from '../../../../src/layout/safe-area-chrome'
-import { typography } from '../../../../src/theme/mobile-theme'
+import { typography } from '../../../../src/theme/herdr-typography'
 import { mono } from '../../../../src/theme/monotone'
 
 // Same floor and the same §D1 reasoning as `../index.tsx`: this header is drawn with 16 and, until
@@ -509,7 +509,7 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     paddingHorizontal: 16
   },
-  title: { color: mono.fg, fontSize: 15, fontWeight: '700', fontFamily: typography.monoFamily },
+  title: { color: mono.fg, fontSize: 15, fontFamily: typography.monoFamilyBold },
   subtitle: { color: mono.fgSoft, fontSize: 12, flexShrink: 1, fontFamily: typography.monoFamily },
   meta: { color: mono.dim, fontSize: 11, marginLeft: 8, fontFamily: typography.monoFamily },
   // The mockup's `agentline` (:587, `.agentline` at :169-ish): one row under the terminal, dim,
@@ -563,7 +563,7 @@ const styles = StyleSheet.create({
     backgroundColor: mono.ink2
   },
   chipActive: { borderColor: mono.fgSoft, backgroundColor: mono.ink3 },
-  chipLabel: { color: mono.fg, fontSize: 12, fontWeight: '600', fontFamily: typography.monoFamily },
+  chipLabel: { color: mono.fg, fontSize: 12, fontFamily: typography.monoFamilyBold },
   chipTab: { color: mono.dim2, fontSize: 10, fontFamily: typography.monoFamily },
   terminalFrame: { flex: 1, backgroundColor: mono.ink },
   terminalSurface: { flex: 1 }

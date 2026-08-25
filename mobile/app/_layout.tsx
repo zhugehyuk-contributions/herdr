@@ -30,7 +30,12 @@ import { View, StyleSheet } from 'react-native'
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import * as SplashScreen from 'expo-splash-screen'
-import { typography } from '../src/theme/mobile-theme'
+import {
+  useFonts,
+  JetBrainsMono_400Regular,
+  JetBrainsMono_700Bold
+} from '@expo-google-fonts/jetbrains-mono'
+import { typography } from '../src/theme/herdr-typography'
 import { mono } from '../src/theme/monotone'
 import { HerdrDataProvider } from '../src/api/herdr-data-provider'
 import { HerdrClientsProvider } from '../src/transport/herdr-clients-context'
@@ -88,10 +93,21 @@ export default function RootLayout() {
   // waiting before this fires, and routing to it any sooner is a `push` into a Stack that does not
   // exist yet.
   const [navigatorReady, setNavigatorReady] = useState(false)
+  // The mockup's type contract is JetBrains Mono everywhere (`.prd/assets/mockup.html:863`), and a
+  // custom family is not available until expo-font has registered it. Rendering before that shows
+  // one frame of the system face — on iOS a *sans-serif* one, since `'monospace'` names nothing
+  // there — so the splash stays up until the faces are loaded. `fontsError` is deliberately not a
+  // blocker: a missing face should degrade to the platform default, not to a blank app.
+  const [fontsLoaded, fontsError] = useFonts({ JetBrainsMono_400Regular, JetBrainsMono_700Bold })
+  const fontsSettled = fontsLoaded || fontsError !== null
   const onNavigatorLayout = useCallback(async () => {
     setNavigatorReady(true)
     await SplashScreen.hideAsync()
   }, [])
+
+  if (!fontsSettled) {
+    return null
+  }
 
   return (
     // Which loader runs is `HerdrDataProvider`'s single decision (live when a remote is reachable,
