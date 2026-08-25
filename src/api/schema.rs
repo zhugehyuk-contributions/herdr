@@ -73,6 +73,8 @@ pub enum Method {
     RemoteSetAutoUpdate(RemoteSetAutoUpdateParams),
     #[serde(rename = "remote.set_session")]
     RemoteSetSession(RemoteSetSessionParams),
+    #[serde(rename = "remote.set_keybindings")]
+    RemoteSetKeybindings(RemoteSetKeybindingsParams),
     #[serde(rename = "session.list")]
     SessionList(EmptyParams),
     #[serde(rename = "notification.show")]

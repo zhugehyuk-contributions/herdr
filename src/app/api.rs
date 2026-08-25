@@ -1017,6 +1017,9 @@ impl App {
             Method::RemoteSetSession(params) => {
                 return self.handle_remote_set_session(request.id, params)
             }
+            Method::RemoteSetKeybindings(params) => {
+                return self.handle_remote_set_keybindings(request.id, params)
+            }
             Method::SessionList(_) => return self.handle_session_list(request.id),
             Method::NotificationShow(params) => {
                 return self.handle_notification_show(request.id, params);

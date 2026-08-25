@@ -265,6 +265,24 @@ fn remote_set_session_omits_an_absent_session() {
 }
 
 #[test]
+fn request_round_trips_for_remote_set_keybindings() {
+    // mockup #7: the side is on the wire as the same `local`/`server` string `remote.add` uses.
+    let request = Request {
+        id: "req_remote_set_keybindings".into(),
+        method: Method::RemoteSetKeybindings(RemoteSetKeybindingsParams {
+            remote_id: "remote-1".into(),
+            keybindings: crate::remote_registry::RemoteKeybindingsSnapshot::Server,
+        }),
+    };
+
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "remote.set_keybindings");
+    assert_eq!(json["params"]["keybindings"], "server");
+    let restored: Request = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, request);
+}
+
+#[test]
 fn request_round_trips_for_session_list() {
     let request = Request {
         id: "req_session_list".into(),

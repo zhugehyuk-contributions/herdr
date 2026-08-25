@@ -3791,6 +3791,22 @@
           ],
           "type": "object"
         },
+        "RemoteSetKeybindingsParams": {
+          "description": "mockup #7: switch which side owns an existing remote's keybindings. Same `local`/`server`\nsemantics `RemoteAddParams::keybindings` carries at add time.",
+          "properties": {
+            "keybindings": {
+              "$ref": "#/schemas/request/$defs/RemoteKeybindingsSnapshot"
+            },
+            "remote_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "remote_id",
+            "keybindings"
+          ],
+          "type": "object"
+        },
         "RemoteSetSessionParams": {
           "description": "Point an existing remote at a different session. Absent/empty/`\"default\"` = the remote's\ndefault session.",
           "properties": {
@@ -4826,6 +4842,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/RemoteSetSessionParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "remote.set_keybindings",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/RemoteSetKeybindingsParams"
             }
           },
           "required": [

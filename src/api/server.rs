@@ -395,6 +395,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::RemoteSetEnabled(_) => "remote.set_enabled",
         Method::RemoteSetAutoUpdate(_) => "remote.set_auto_update",
         Method::RemoteSetSession(_) => "remote.set_session",
+        Method::RemoteSetKeybindings(_) => "remote.set_keybindings",
         Method::SessionList(_) => "session.list",
         Method::NotificationShow(_) => "notification.show",
         Method::ClientWindowTitleSet(_) => "client.window_title.set",

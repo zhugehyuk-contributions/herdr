@@ -236,6 +236,25 @@ impl RemoteRegistrySnapshot {
         Ok(remote.clone())
     }
 
+    /// mockup #7: switch which side owns this remote's keybindings (`local` = the client's own
+    /// bindings, `server` = the remote server's). Persisted on the definition like `auto_update`;
+    /// the client supervisor re-applies it from the registry on every sync, so the change takes
+    /// effect on the remote's next connection. Returns the updated definition clone, or `NotFound`
+    /// if the id is unknown.
+    pub fn set_keybindings(
+        &mut self,
+        remote_id: &str,
+        keybindings: RemoteKeybindingsSnapshot,
+    ) -> Result<RemoteDefinitionSnapshot, RemoteRegistryError> {
+        let remote = self
+            .remotes
+            .iter_mut()
+            .find(|remote| remote.id == remote_id)
+            .ok_or(RemoteRegistryError::NotFound)?;
+        remote.keybindings = keybindings;
+        Ok(remote.clone())
+    }
+
     /// Point a remote at a different session (`None` = the remote's default session).
     ///
     /// A `Local` remote carries its session inside the target (`local:<name>`), so the target is
@@ -905,6 +924,54 @@ mod tests {
         let mut registry = RemoteRegistrySnapshot::default();
         assert_eq!(
             registry.set_auto_update("missing", true).unwrap_err(),
+            RemoteRegistryError::NotFound
+        );
+    }
+
+    #[test]
+    fn set_keybindings_flips_the_persisted_side_and_round_trips() {
+        // mockup #7: a remote added with `local` keybindings can be switched to `server`, the flag
+        // is what serializes, and switching back reads `local` again.
+        let mut registry = RemoteRegistrySnapshot::default();
+        let remote = registry
+            .add(
+                Some("dev".into()),
+                "user@dev".into(),
+                RemoteKeybindingsSnapshot::Local,
+            )
+            .unwrap();
+        assert_eq!(remote.keybindings, RemoteKeybindingsSnapshot::Local);
+
+        let switched = registry
+            .set_keybindings(&remote.id, RemoteKeybindingsSnapshot::Server)
+            .unwrap();
+        assert_eq!(switched.keybindings, RemoteKeybindingsSnapshot::Server);
+        assert_eq!(
+            registry.remotes[0].keybindings,
+            RemoteKeybindingsSnapshot::Server
+        );
+        let json = serde_json::to_string(&registry).unwrap();
+        assert!(
+            json.contains("\"keybindings\":\"server\""),
+            "a server-keybindings remote must serialize the side: {json}"
+        );
+
+        assert_eq!(
+            registry
+                .set_keybindings(&remote.id, RemoteKeybindingsSnapshot::Local)
+                .unwrap()
+                .keybindings,
+            RemoteKeybindingsSnapshot::Local
+        );
+    }
+
+    #[test]
+    fn set_keybindings_missing_id_returns_not_found() {
+        let mut registry = RemoteRegistrySnapshot::default();
+        assert_eq!(
+            registry
+                .set_keybindings("missing", RemoteKeybindingsSnapshot::Server)
+                .unwrap_err(),
             RemoteRegistryError::NotFound
         );
     }

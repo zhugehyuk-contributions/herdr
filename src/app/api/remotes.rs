@@ -1,6 +1,6 @@
 use crate::api::schema::{
     RemoteAddParams, RemoteRemoveParams, RemoteRenameParams, RemoteSetAutoUpdateParams,
-    RemoteSetEnabledParams, RemoteSetSessionParams, ResponseResult,
+    RemoteSetEnabledParams, RemoteSetKeybindingsParams, RemoteSetSessionParams, ResponseResult,
 };
 use crate::app::App;
 
@@ -94,6 +94,27 @@ impl App {
             .state
             .remote_registry
             .set_auto_update(&params.remote_id, params.auto_update)
+        {
+            Ok(remote) => {
+                self.state.mark_session_dirty();
+                encode_success(id, ResponseResult::RemoteEnabledChanged { remote })
+            }
+            Err(err) => encode_error(id, err.code(), err.message()),
+        }
+    }
+
+    /// mockup #7: persist which side owns a remote's keybindings. Mirrors
+    /// `handle_remote_set_auto_update` — the registry is the only state that changes here; the
+    /// client re-applies the side from the periodic `remote.list` on its next registry sync.
+    pub(super) fn handle_remote_set_keybindings(
+        &mut self,
+        id: String,
+        params: RemoteSetKeybindingsParams,
+    ) -> String {
+        match self
+            .state
+            .remote_registry
+            .set_keybindings(&params.remote_id, params.keybindings)
         {
             Ok(remote) => {
                 self.state.mark_session_dirty();
@@ -402,6 +423,53 @@ mod tests {
             error_code(
                 &mut app,
                 r#"{"id":"set","method":"remote.set_auto_update","params":{"remote_id":"missing","auto_update":true}}"#,
+            ),
+            "remote_not_found"
+        );
+    }
+
+    #[test]
+    fn remote_set_keybindings_persists_marks_dirty_and_lists() {
+        // mockup #7: switching a remote to server-side keybindings flips the persisted side, marks
+        // the session dirty, and the side round-trips through `remote.list`.
+        let mut app = test_app();
+        let add = call(
+            &mut app,
+            r#"{"id":"add","method":"remote.add","params":{"name":"x","target":"user@x","keybindings":"local"}}"#,
+        );
+        let remote_id = add["result"]["remote"]["id"].as_str().unwrap().to_string();
+        assert_eq!(add["result"]["remote"]["keybindings"], "local");
+        app.state.session_dirty = false;
+
+        let set = format!(
+            r#"{{"id":"kb","method":"remote.set_keybindings","params":{{"remote_id":"{remote_id}","keybindings":"server"}}}}"#
+        );
+        let response = call(&mut app, &set);
+        assert_eq!(response["result"]["type"], "remote_enabled_changed");
+        assert_eq!(response["result"]["remote"]["id"], remote_id);
+        assert_eq!(response["result"]["remote"]["keybindings"], "server");
+        assert!(app.state.session_dirty);
+
+        let snapshot = capture_snapshot(&app);
+        assert_eq!(
+            snapshot.remote_registry.remotes[0].keybindings,
+            crate::remote_registry::RemoteKeybindingsSnapshot::Server
+        );
+
+        let list = call(
+            &mut app,
+            r#"{"id":"list","method":"remote.list","params":{}}"#,
+        );
+        assert_eq!(list["result"]["remotes"][0]["keybindings"], "server");
+    }
+
+    #[test]
+    fn remote_set_keybindings_unknown_id_returns_not_found() {
+        let mut app = test_app();
+        assert_eq!(
+            error_code(
+                &mut app,
+                r#"{"id":"kb","method":"remote.set_keybindings","params":{"remote_id":"missing","keybindings":"server"}}"#,
             ),
             "remote_not_found"
         );

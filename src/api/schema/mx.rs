@@ -46,6 +46,14 @@ pub struct RemoteSetSessionParams {
     pub session: Option<String>,
 }
 
+/// mockup #7: switch which side owns an existing remote's keybindings. Same `local`/`server`
+/// semantics `RemoteAddParams::keybindings` carries at add time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RemoteSetKeybindingsParams {
+    pub remote_id: String,
+    pub keybindings: crate::remote_registry::RemoteKeybindingsSnapshot,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RemoteSetEnabledParams {
     pub remote_id: String,
