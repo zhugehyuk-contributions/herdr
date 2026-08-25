@@ -137,6 +137,11 @@ nextest 4019/4019 · clippy 0err · fmt clean · 모바일 1035 tests + typechec
 
 ### N-QA. **재QA 라운드 — 최우선** (Android 8차 · iOS 12차, 각각 별도 에이전트)
 
+**Android 8차 판정 도착 (2026-08-25, `.prd/09` §VV): 서체 1 FAIL / 4 PASS.** FAIL = 볼드 5곳
+Roboto 폴백(합성/잔존 `fontWeight` 페어 — Android는 커스텀 패밀리 weight 합성이 없다).
+2(클리핑)·3(요약줄 recent)·4(keybindings 세그)·5(회귀)는 PASS. 수리 유닛(fontWeight 전수 스윕 +
+600 SemiBold 페이스 + 소스 스캔 discipline 테스트) 진행 → **Android 9차 표적 재QA 필요**.
+
 대상(전부 08-25 오후 변경분):
 1. **JetBrains Mono 실렌더** — iOS는 첫 실증(지금까지 산세리프였다), Android는
    Roboto Mono→JetBrains Mono 전환에 따른 **클리핑 회귀**(1·2차 QA가 잡던 클래스) 확인.

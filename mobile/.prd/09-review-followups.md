@@ -2247,3 +2247,27 @@ settings 폼이 편집하는 대상(키스토어 원격 = 폰이 ssh로 붙는 �
 **확장 안 함 (디스패처 판정)**: nodes 행(listed 원격)으로 컨트롤을 옮기거나 복제하지 않는다 —
 목업 #7이 지정한 자리는 settings 폼뿐이고(조건 4), 목업에 없는 표면 신설은 초과다. 허브
 listed 원격의 keybindings 편집이 실제로 필요해지는 순간 이 절이 그 근거 문서다.
+
+## VV. Android UI QA 8차 — 서체 1 FAIL / 4 PASS (2026-08-25, 별도 에이전트, `qa-and-8` @ `7cb4fe8f`)
+
+APK 14:11:39(커밋 13:58 이후, 대조 통과) · Metro 8241 결속을 번들 로그로 확증 · `pm clear` 후 mock 판정
+(`└ mock-fixture · …` 3행 + `demo data` 배지 + `remotes · 0`).
+
+- **1 JetBrains Mono — FAIL.** 로드는 성공(글리프 대조: `0` 중앙 점, `l` 플래그+직각 꼬리 — 실TTF
+  참조 스트립과 대조)이나 **볼드 5곳이 Roboto(산세리프)로 폴백**: `AgentRow.tsx:104-113`(스타일
+  배열 **합성** 페어 — 같은-객체 스윕이 못 잡는 형태), `app/index.tsx:178-186`, `BottomNav.tsx:65`,
+  `app/h/[remoteId]/index.tsx:235`, `RemoteEditor.tsx:262`(세그 선택 라벨). 'monospace' 시절에는
+  시스템이 볼드를 해소해줬으므로 **Android 실화면 회귀**다. 의심(미확정): `settings.tsx:439,483`,
+  `fontWeight:'600'` 사이트들(`WorkspaceListRow.tsx:178,232` 등).
+- **2 클리핑 — PASS** (전 화면 스윕, 우측 잘림 0 — 말줄임·개행·가로 스크롤 연속 표시는 비결함).
+- **3 요약줄 recent 소비 — PASS** (`└ mock-fixture · test result: ok. 118 passed…` 등 3행 실측 =
+  구 `terminal_title_stripped` 근사가 아니라 픽스처 recent 마지막 비빈 줄).
+- **4 keybindings 세그 — PASS** (라벨·`local`→`server` 순서·선택 반전 = 목업 `.seg .on` 계약 일치,
+  미연결 토글 시 `keybindings · stored as server — … not connected, so nothing was sent` 결과줄이
+  `remotes · 1` 아래 렌더 — `keybindings-push.ts` 미연결 경로 문자열 일치).
+- **5 회귀 스윕 — PASS** (전이·스와이프·입력바·logcat 치명 0. 특이: dev-client 기어 FAB가
+  appbar settings 탭을 가로챔 — dev 오버레이 전용, Tools 스위치로 해소).
+
+**교훈**: "fontWeight 페어 전부 교체" 주장은 같은-객체 페어만 봤다 — **스타일 배열 합성 페어**가
+빠졌다. 수리 유닛은 fontWeight 전수 스윕 + weight별 실물 페이스(600 SemiBold 포함) +
+**소스 스캔 discipline 테스트**(monotone-discipline 선례)로 기계화한다.
