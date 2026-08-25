@@ -17,6 +17,20 @@
 // arrives from outside the program is parsed, not asserted, and a bad entry is dropped by name
 // instead of crashing the app shell at mount.
 import { z } from 'zod'
+import type { RemoteKeybindings } from '../../../src/api/herdr-api-types'
+
+/**
+ * The two sides mockup #7 offers (`.prd/assets/mockup.html:456`), spelled the way the wire spells
+ * them — `RemoteKeybindingsSnapshot` is `#[serde(rename_all = "snake_case")]`
+ * (`src/remote_registry.rs:56-64`), so `local`/`server` is one vocabulary from this form to
+ * `remote.set_keybindings` and back out of `remote.list`.
+ *
+ * `satisfies` rather than a second spelling: the mirror type is the one checked against the schema
+ * artefact (`src/api/herdr-api-types.schema.test.ts`), and a member added on the Rust side that
+ * never reached this list would otherwise be a silent divergence between the phone's own registry
+ * and the server's.
+ */
+const KEYBINDINGS = ['local', 'server'] as const satisfies readonly RemoteKeybindings[]
 
 const remoteSchema = z.object({
   /** Matches `RemoteDefinition.id`; this is what `useHerdrConnection(remoteId)` looks up. */
@@ -35,6 +49,18 @@ const remoteSchema = z.object({
   herdrBinary: z.string().min(1).optional(),
   /** `herdr --session <name>`. Omitted when absent or `default`. */
   session: z.string().min(1).optional(),
+  /**
+   * Which side owns this remote's keybindings — the phone's own registry entry for it, in the same
+   * model the multi-remote client keeps (`.prd/assets/mockup.html:426`, "폰 자체 remote registry —
+   * multi-remote client와 동일 모델").
+   *
+   * Optional exactly the way the wire's is: `RemoteDefinitionSnapshot.keybindings` is
+   * `#[serde(default)]` over a `#[default] Local` (`src/remote_registry.rs:14-64`), so absent has
+   * never been a third state — it *is* `local`. Readers resolve it with `?? 'local'`; nothing
+   * downstream sees `undefined` (`./remote-store.ts`, `./app-connections.ts`), and a remote stored
+   * before this field existed needs no migration.
+   */
+  keybindings: z.enum(KEYBINDINGS).optional(),
   env: z.record(z.string(), z.string()).optional(),
   connectTimeoutMs: z.number().int().positive().default(20_000),
   keepaliveIntervalMs: z.number().int().positive().default(15_000)

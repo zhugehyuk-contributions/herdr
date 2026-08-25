@@ -3,10 +3,11 @@
 // screen M2b exists for, mounted for real over a fake keystore, and the assertions are the two
 // halves of the milestone's "됐다": a remote can be added from the phone, and its key is never on
 // the glass.
-import { Children, createElement, type ElementType, type ReactNode } from 'react'
+import { Children, type ElementType, type ReactNode } from 'react'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mono } from '../theme/monotone'
+import type { HerdrRemoteConnection } from '../transport/herdr-connection'
 
 const keychain = vi.hoisted(() => new Map<string, string>())
 const environment = vi.hoisted(() => ({ bundled: [] as unknown[], secureStore: true }))
@@ -69,6 +70,7 @@ vi.mock('react-native', () => ({
 const { default: SettingsScreen } = await import('../../app/settings')
 const { loadStoredRemotes, saveStoredRemote } =
   await import('../../modules/herdr-ssh/src/remote-store')
+const { HerdrClientsProvider } = await import('../transport/herdr-clients-context')
 
 const KEY =
   '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n-----END OPENSSH PRIVATE KEY-----\n'
@@ -79,10 +81,24 @@ function host(name: string): ElementType {
 
 let renderer: ReactTestRenderer | null = null
 
-async function mount(): Promise<ReactTestRenderer> {
+/**
+ * `connections` is empty for every case that predates mockup #7 — the screen behaves exactly as it
+ * did, because `useHerdrConnection` answers `null` for a remote nobody dialled.
+ *
+ * `subscribeRevival` is stubbed rather than left to the provider's dynamic import: the real trigger
+ * source reads `react-native`'s `AppState` and `expo-network`, and this file mocks `react-native`
+ * down to five host components (`../transport/connection-revival-triggers.ts`).
+ */
+async function mount(
+  connections: readonly HerdrRemoteConnection[] = []
+): Promise<ReactTestRenderer> {
   let created: ReactTestRenderer | null = null
   await act(async () => {
-    created = create(createElement(SettingsScreen))
+    created = create(
+      <HerdrClientsProvider connections={connections} subscribeRevival={() => () => {}}>
+        <SettingsScreen />
+      </HerdrClientsProvider>
+    )
   })
   if (!created) {
     throw new Error('SettingsScreen did not render')
@@ -273,6 +289,122 @@ describe('editing and deleting', () => {
 
     expect((await loadStoredRemotes()).remotes).toEqual([])
     expect([...keychain.values()].some((value) => value.includes('OPENSSH'))).toBe(false)
+  })
+})
+
+describe('keybindings (mockup #7)', () => {
+  type Sent = { method: string; params: Record<string, unknown> }
+
+  const STORED = {
+    id: 'fable',
+    name: 'fable-m5max',
+    host: '192.168.50.10',
+    port: 22,
+    username: 'z',
+    privateKey: KEY,
+    connectTimeoutMs: 20_000,
+    keepaliveIntervalMs: 15_000
+  }
+
+  /** A dialled remote whose API records what the screen asks it and answers as the server would. */
+  function dialled(sent: Sent[], echo: 'local' | 'server' | 'refuse'): HerdrRemoteConnection {
+    return {
+      remote: { id: STORED.id, name: STORED.name, target: { type: 'ssh', target: 'z@fable' } },
+      api: {
+        request: (method: string, params: Record<string, unknown> = {}) => {
+          sent.push({ method, params })
+          return echo === 'refuse'
+            ? Promise.reject(new Error('ssh channel closed'))
+            : Promise.resolve({
+                type: 'remote_enabled_changed',
+                remote: { id: STORED.id, name: STORED.name, keybindings: echo }
+              })
+        }
+      } as unknown as HerdrRemoteConnection['api'],
+      openTerminalStream: () => Promise.reject(new Error('not opened by this suite'))
+    }
+  }
+
+  it('draws the mockup’s two segments, with the stored side selected', async () => {
+    await saveStoredRemote({ ...STORED, keybindings: 'server' })
+    const target = await mount()
+    await press(target, 'edit fable')
+
+    // `<div class="seg"><span class="on">local</span><span>server</span></div>`
+    // (`.prd/assets/mockup.html:456`) — both halves pressable, exactly one selected.
+    expect(pressableLabels(target)).toEqual(
+      expect.arrayContaining(['keybindings local', 'keybindings server'])
+    )
+    const selected = target.root
+      .findAll((node) => String(node.props['accessibilityLabel']).startsWith('keybindings '))
+      .filter((node) => (node.props['accessibilityState'] as { selected?: boolean })?.selected)
+      .map((node) => String(node.props['accessibilityLabel']))
+    expect(selected).toEqual(['keybindings server'])
+  })
+
+  it('stores the side the user picked, so a new remote carries it like remote.add does', async () => {
+    const target = await mount()
+    await fillValidRemote(target)
+    await press(target, 'keybindings server')
+    await press(target, 'save remote')
+
+    expect((await loadStoredRemotes()).remotes[0]?.keybindings).toBe('server')
+  })
+
+  it('sends remote.set_keybindings when an edit moves the side, and says the remote took it', async () => {
+    await saveStoredRemote(STORED)
+    const sent: Sent[] = []
+    const target = await mount([dialled(sent, 'server')])
+    await press(target, 'edit fable')
+    await press(target, 'keybindings server')
+    await press(target, 'save remote')
+
+    expect(sent).toEqual([
+      { method: 'remote.set_keybindings', params: { remote_id: 'fable', keybindings: 'server' } }
+    ])
+    expect((await loadStoredRemotes()).remotes[0]?.keybindings).toBe('server')
+    expect(textNodes(target).some((text) => text.startsWith('keybindings · fable now uses'))).toBe(
+      true
+    )
+  })
+
+  it('spends no exec on an edit that left the side alone', async () => {
+    // One request is one ssh exec channel on this transport (blocker B8), so re-asserting a value
+    // nobody touched is a real cost on an LTE link — and the mockup's control is about a change.
+    await saveStoredRemote(STORED)
+    const sent: Sent[] = []
+    const target = await mount([dialled(sent, 'local')])
+    await press(target, 'edit fable')
+    await type(target, 'host', '10.0.0.9')
+    await press(target, 'save remote')
+
+    expect(sent).toEqual([])
+  })
+
+  it('keeps the local edit and says nothing was sent when the remote is not dialled', async () => {
+    await saveStoredRemote(STORED)
+    const target = await mount()
+    await press(target, 'edit fable')
+    await press(target, 'keybindings server')
+    await press(target, 'save remote')
+
+    expect((await loadStoredRemotes()).remotes[0]?.keybindings).toBe('server')
+    const line = textNodes(target).find((text) => text.startsWith('keybindings · '))
+    expect(line).toContain('not connected')
+  })
+
+  it('does not report success when the remote refused, and still keeps the local edit', async () => {
+    await saveStoredRemote(STORED)
+    const sent: Sent[] = []
+    const target = await mount([dialled(sent, 'refuse')])
+    await press(target, 'edit fable')
+    await press(target, 'keybindings server')
+    await press(target, 'save remote')
+
+    expect(sent).toHaveLength(1)
+    expect((await loadStoredRemotes()).remotes[0]?.keybindings).toBe('server')
+    const line = textNodes(target).find((text) => text.startsWith('keybindings · '))
+    expect(line).toContain('refused')
   })
 })
 

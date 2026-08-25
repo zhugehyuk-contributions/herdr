@@ -11,7 +11,14 @@ import {
   MOCK_PANE_LIST_MAX_RECENT_LINES,
   type MockApiResponse
 } from './mock-api-handlers'
-import { DEFAULT_SCENARIO, mockAgents, mockPanes, mockWorkspaces, rollUp } from './mock-fixture'
+import {
+  DEFAULT_SCENARIO,
+  mockAgents,
+  mockPanes,
+  mockRemotes,
+  mockWorkspaces,
+  rollUp
+} from './mock-fixture'
 
 /** The `panes` array of a `pane.list` envelope, as objects — so `'recent' in pane` is askable. */
 function panesFrom(response: MockApiResponse): Array<Record<string, unknown>> {
@@ -97,6 +104,76 @@ describe('mock API dispatcher', () => {
         MOCK_PANE_LIST_MAX_RECENT_LINES
       )
     }
+  })
+})
+
+describe('remote.set_keybindings (mockup #7)', () => {
+  it('round-trips through the real client codec and answers remote_enabled_changed', () => {
+    const remoteId = mockRemotes()[1]!.id
+    const line = handleMockApiLine(
+      encodeJsonApiRequest('ts-7', 'remote.set_keybindings', {
+        remote_id: remoteId,
+        keybindings: 'server'
+      }).trimEnd()
+    )
+    const parsed = parseJsonApiResponse(line.trimEnd())
+
+    expect(parsed.id).toBe('ts-7')
+    expect('result' in parsed && parsed.result.type).toBe('remote_enabled_changed')
+    // The updated definition, not an acknowledgement: the caller reads the side back off this reply
+    // (`src/settings/keybindings-push.ts`) rather than assuming the write took.
+    expect(
+      'result' in parsed && (parsed.result['remote'] as { id: string; keybindings: string })
+    ).toMatchObject({ id: remoteId, keybindings: 'server' })
+  })
+
+  it('answers remote_not_found with the registry’s own code for an id it does not hold', () => {
+    // `RemoteRegistryError::NotFound` (`src/remote_registry.rs:77-99`). This is the answer a phone
+    // gets whenever it names a remote the *answering* server does not manage, so the client branch
+    // that reports it has to be reachable against the mock too.
+    const response = handleMockApiRequest({
+      id: 'ts-1',
+      method: 'remote.set_keybindings',
+      params: { remote_id: 'not-a-remote', keybindings: 'local' }
+    })
+
+    expect(response.id).toBe('ts-1')
+    expect('error' in response && response.error.code).toBe('remote_not_found')
+  })
+
+  it('treats bad params the way the server treats an unknown method: invalid_request, id dropped', () => {
+    // `Method` is externally tagged (`src/api/schema.rs:42-44`), so params that do not deserialize
+    // fail the whole `Request` — there is no per-field validation error on this wire.
+    const cases = [{}, { remote_id: 'remote-1' }, { remote_id: 'remote-1', keybindings: 'both' }]
+    for (const params of cases) {
+      const response = handleMockApiRequest({
+        id: 'ts-1',
+        method: 'remote.set_keybindings',
+        params
+      })
+      expect(response.id, JSON.stringify(params)).toBe('')
+      expect('error' in response && response.error.code).toBe('invalid_request')
+    }
+  })
+
+  it('does not remember the write, because one request is one connection', () => {
+    const remoteId = mockRemotes()[1]!.id
+    handleMockApiRequest({
+      id: 'ts-1',
+      method: 'remote.set_keybindings',
+      params: { remote_id: remoteId, keybindings: 'server' }
+    })
+    const listed = handleMockApiRequest({ id: 'ts-2', method: 'remote.list' })
+
+    // The fixture is recomputed per request. A mock that persisted here would let a screen depend
+    // on the mock's memory instead of on `remote.list`, which is where the real client re-reads the
+    // side from (`src/app/api/remotes.rs`, `handle_remote_set_keybindings`).
+    expect(
+      'result' in listed &&
+        (listed.result['remotes'] as Array<{ id: string; keybindings: string }>).find(
+          (remote) => remote.id === remoteId
+        )?.keybindings
+    ).toBe('local')
   })
 })
 

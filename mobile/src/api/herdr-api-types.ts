@@ -172,6 +172,36 @@ export type PaneListResult = { type: 'pane_list'; panes: PaneInfo[] }
 /** `agent.list` result. Params: none (`EmptyParams`). */
 export type AgentListResult = { type: 'agent_list'; agents: AgentInfo[] }
 
+/** `remote.set_keybindings` method name, in one place so a caller cannot misspell it. */
+export const REMOTE_SET_KEYBINDINGS = 'remote.set_keybindings'
+
+/**
+ * `remote.set_keybindings` params — `#/schemas/request/$defs/RemoteSetKeybindingsParams`.
+ *
+ * The only mutating request the phone sends over this API, and mockup #7's whole wire
+ * (`src/app/api/remotes.rs`, `handle_remote_set_keybindings`). `remote_id` is resolved against the
+ * **answering server's** registry (`remote.list` returns `state.remote_registry.remotes` verbatim),
+ * so a remote that server does not manage comes back as `remote_not_found` rather than silently
+ * doing nothing — which is why the settings screen renders the answer instead of assuming one.
+ */
+export type RemoteSetKeybindingsParams = {
+  remote_id: string
+  keybindings: RemoteKeybindings
+}
+
+/**
+ * What `remote.set_keybindings` answers with — the same body `remote.set_enabled` and
+ * `remote.set_auto_update` use, carrying the updated definition and nothing else.
+ *
+ * Shared rather than a variant per setter: the server reuses `ResponseResult::RemoteEnabledChanged`
+ * for all three (`src/app/api/remotes.rs`), and inventing a second name here would make a client
+ * branch on a discriminator the wire never sends.
+ */
+export type RemoteEnabledChangedResult = {
+  type: 'remote_enabled_changed'
+  remote: RemoteDefinition
+}
+
 /**
  * What one remote answers with. herdr's JSON API is per-server, so the phone asks every configured
  * remote and the app stitches; `remotes` is what the *first* server knows about (its own

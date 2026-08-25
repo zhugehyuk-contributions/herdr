@@ -13,6 +13,7 @@
 // This module never touches a socket, so `mock-api-handlers.test.ts` is the whole P1 boundary: if a
 // screen shows the wrong thing and this file's tests are green, the defect is in the screen.
 
+import { REMOTE_SET_KEYBINDINGS, type RemoteKeybindings } from '../herdr-api-types'
 import {
   DEFAULT_SCENARIO,
   mockAgents,
@@ -71,6 +72,47 @@ function recentLines(params: unknown): number | null {
 }
 
 /**
+ * `remote.set_keybindings` — mockup #7's write path, imitated down to which failure is which.
+ *
+ * Three faithfulnesses, and each one is a branch a client would otherwise ship untested:
+ *   · a malformed `params` is `invalid_request` with a **dropped id**, because `Method` is an
+ *     externally tagged enum and a params mismatch fails the same `Request` deserialization an
+ *     unknown method does (`src/api/server.rs:159-172`);
+ *   · an id the registry does not hold is `remote_not_found` / "remote not found", the literal code
+ *     and message `RemoteRegistryError::NotFound` carries (`src/remote_registry.rs:77-99`);
+ *   · success answers `remote_enabled_changed` with the *updated* definition, which is the body
+ *     `set_enabled` and `set_auto_update` already share.
+ *
+ * Nothing is persisted. The fixture is recomputed per request (`mockRemotes`), and `handleMockApiLine`
+ * is one line in, one line out — a mock that mutated module state would make two identical requests
+ * answer differently and let a screen depend on the mock's memory rather than on `remote.list`.
+ */
+function setKeybindings(id: string, params: unknown, scenario: MockScenario): MockApiResponse {
+  const body =
+    typeof params === 'object' && params !== null ? (params as Record<string, unknown>) : {}
+  const remoteId = body['remote_id']
+  const keybindings = body['keybindings']
+  if (typeof remoteId !== 'string' || (keybindings !== 'local' && keybindings !== 'server')) {
+    return mockApiError(
+      '',
+      'invalid_request',
+      `invalid request: ${REMOTE_SET_KEYBINDINGS} needs {remote_id: string, keybindings: "local"|"server"}`
+    )
+  }
+  const remote = mockRemotes(scenario).find((candidate) => candidate.id === remoteId)
+  if (remote === undefined) {
+    return mockApiError(id, 'remote_not_found', 'remote not found')
+  }
+  return {
+    id,
+    result: {
+      type: 'remote_enabled_changed',
+      remote: { ...remote, keybindings: keybindings satisfies RemoteKeybindings }
+    }
+  }
+}
+
+/**
  * Dispatches one parsed request. Returns the response envelope; never throws for a *server*-level
  * problem, because on the wire those are values.
  */
@@ -102,6 +144,8 @@ export function handleMockApiRequest(
         )
       return { id, result: { type: 'pane_list', panes } }
     }
+    case REMOTE_SET_KEYBINDINGS:
+      return setKeybindings(id, request.params, scenario)
     case 'agent.list':
       return { id, result: { type: 'agent_list', agents: mockAgents(scenario) } }
     case 'ping':

@@ -41,6 +41,8 @@ import {
   type RemoteDraftField
 } from '../src/settings/remote-form'
 import { describePrivateKey } from '../modules/herdr-ssh'
+import { pushKeybindings } from '../src/settings/keybindings-push'
+import { useHerdrConnection } from '../src/transport/herdr-clients-context'
 import { useBlockedPushStatus } from '../src/notifications/blocked-push-context'
 import { BLOCKED_ONLY_NOTE, summarisePush } from '../src/notifications/blocked-push-summary'
 import { typography } from '../src/theme/herdr-typography'
@@ -164,6 +166,14 @@ export default function SettingsScreen() {
   }, [])
 
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  // mockup #7. What the remote said about the keybindings side the user just picked, kept on the
+  // *screen* rather than in `RemoteEditor` because the form closes on a successful save and this
+  // line is about the half of that save which did not happen in the keystore
+  // (`src/settings/keybindings-push.ts`).
+  const [keybindingsLine, setKeybindingsLine] = useState<string | null>(null)
+  // The connection for the remote being edited, or null when it is configured but not dialled.
+  // Read unconditionally, as a hook must be: `editing` is null on every visit that only lists.
+  const editingConnection = useHerdrConnection(editing?.draft.id)
 
   const reload = useCallback(async () => {
     setInventory(await readInventory())
@@ -197,6 +207,10 @@ export default function SettingsScreen() {
       return
     }
     setErrors({})
+    // Read before the write, because the write is what makes it stale: mockup #7's control only
+    // has a *remote* to tell when the side actually moved, and an edit that changed a port must not
+    // spend an ssh exec re-asserting a value nobody touched.
+    const previous = inventory.stored.find((remote) => remote.id === parsed.config.id)?.keybindings
     try {
       // `keepKey` is the whole reason an edit form can exist without a secret in it: the config
       // being saved has no `privateKey`, and the store reunites it with the one already encrypted
@@ -210,8 +224,26 @@ export default function SettingsScreen() {
     }
     setSaveError(null)
     setEditing(null)
+    // After the keystore, never instead of it. The phone's own registry entry is the thing the user
+    // pressed save on; the remote is a second party that may be unreachable or may not manage this
+    // remote at all, and neither outcome should lose the local edit.
+    //
+    // The value comes off the *draft*, not off `parsed.config`: the stored shape leaves
+    // `keybindings` optional so that a remote saved before mockup #7 existed still parses
+    // (`modules/herdr-ssh/src/remote-config.ts`), while the draft always holds one of the two
+    // segments — which is the thing being asserted to the remote.
+    setKeybindingsLine(
+      editing.mode === 'edit' && previous !== undefined && previous !== editing.draft.keybindings
+        ? (
+            await pushKeybindings(editingConnection?.api ?? null, {
+              remote_id: parsed.config.id,
+              keybindings: editing.draft.keybindings
+            })
+          ).line
+        : null
+    )
     await reload()
-  }, [editing, reload])
+  }, [editing, editingConnection, inventory.stored, reload])
 
   const remove = useCallback(
     async (id: string) => {
@@ -252,6 +284,10 @@ export default function SettingsScreen() {
         <Text style={styles.sectionLabel}>push</Text>
         <NotificationsSection />
         <Text style={styles.sectionLabel}>{`remotes · ${inventory.stored.length}`}</Text>
+        {/* mockup #7's receipt. One rung below `fg`, like the key advisories: "the remote refused
+            this" is a fact about the fleet, not a rejection of what the user typed — the local edit
+            was saved before this line was computed. */}
+        {keybindingsLine === null ? null : <Text style={styles.advisory}>{keybindingsLine}</Text>}
         {inventory.stored.length === 0 ? (
           <Text style={styles.meta}>
             None yet. Everything the app shows until one is added is the built-in demo fleet.
@@ -278,6 +314,9 @@ export default function SettingsScreen() {
                 onPress={() => {
                   setErrors({})
                   setSaveError(null)
+                  // The receipt belongs to the save that produced it; a form opened after it is a
+                  // new question.
+                  setKeybindingsLine(null)
                   setEditing({ mode: 'edit', draft: draftFromRemote(remote) })
                 }}
                 style={styles.button}
@@ -315,6 +354,7 @@ export default function SettingsScreen() {
             onPress={() => {
               setErrors({})
               setSaveError(null)
+              setKeybindingsLine(null)
               setEditing({ mode: 'create', draft: emptyDraft() })
             }}
             style={styles.addButton}

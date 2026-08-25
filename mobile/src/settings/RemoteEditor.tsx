@@ -14,6 +14,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import { typography } from '../theme/herdr-typography'
 import { mono } from '../theme/monotone'
 import { spacing } from '../theme/mobile-theme'
+import type { RemoteKeybindings } from '../api/herdr-api-types'
 import type { RemoteDraft, RemoteDraftField } from './remote-form'
 
 interface FieldSpec {
@@ -42,6 +43,15 @@ const FIELDS: FieldSpec[] = [
   { field: 'herdrBinary', label: 'herdr binary', placeholder: 'optional — /opt/herdr' },
   { field: 'session', label: 'session', placeholder: 'optional — herdr --session <name>' }
 ]
+
+/**
+ * The two segments of mockup #7, left to right as the mockup draws them
+ * (`../../.prd/assets/mockup.html:456`: `<span class="on">local</span><span>server</span>`).
+ *
+ * `local` first *and* selected there, which is also the value both registries default to
+ * (`src/remote_registry.rs:55-64`), so the drawn order is the useful order rather than a coincidence.
+ */
+const KEYBINDING_SIDES: readonly RemoteKeybindings[] = ['local', 'server']
 
 export function RemoteEditor({
   draft,
@@ -102,6 +112,35 @@ export function RemoteEditor({
           ) : null}
         </View>
       ))}
+      {/* mockup #7 (`../../.prd/assets/mockup.html:455-458`), and it sits here because that is where
+          the mockup puts it: after the target fields, before the sheet's switch row.
+
+          `.seg` is a two-segment control whose selected half is *inverted*
+          (`.seg .on { background: var(--fg); color: var(--ink); font-weight: 700 }`, mockup.html:234)
+          — the same emphasis-by-inversion the save button below already renders as `styles.primary`,
+          so nothing new enters the palette. The mockup's 7px corner radius is dropped for the same
+          reason every `styles.input` above dropped it: one form should not have two corner
+          treatments in it. */}
+      <View style={styles.field}>
+        <Text style={styles.label}>keybindings</Text>
+        <View style={styles.segmented}>
+          {KEYBINDING_SIDES.map((side) => {
+            const selected = draft.keybindings === side
+            return (
+              <Pressable
+                key={side}
+                accessibilityRole="radio"
+                accessibilityLabel={`keybindings ${side}`}
+                accessibilityState={{ selected }}
+                onPress={() => onChange('keybindings', side)}
+                style={[styles.segment, selected && styles.segmentOn]}
+              >
+                <Text style={[styles.segmentLabel, selected && styles.segmentLabelOn]}>{side}</Text>
+              </Pressable>
+            )
+          })}
+        </View>
+      </View>
       {/* A checkbox rather than a `Switch`: the platform switch paints itself in a hue, and the
           palette here has none (`../theme/monotone.ts`). */}
       <Pressable
@@ -209,6 +248,18 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     fontFamily: typography.monoFamily
   },
+  // mockup.html:232-234. `overflow: 'hidden'` is the mockup's own, and it is what keeps the
+  // inverted segment from painting over the frame it sits in.
+  segmented: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: mono.line,
+    overflow: 'hidden'
+  },
+  segment: { flex: 1, alignItems: 'center', paddingVertical: 8 },
+  segmentOn: { backgroundColor: mono.fg },
+  segmentLabel: { color: mono.dim, fontSize: 11, fontFamily: typography.monoFamily },
+  segmentLabelOn: { color: mono.ink, fontWeight: '700' },
   checkbox: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm },
   checkboxMark: { color: mono.fg, fontSize: 13, fontFamily: typography.monoFamily },
   checkboxLabel: {

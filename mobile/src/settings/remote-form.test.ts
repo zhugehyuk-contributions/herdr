@@ -131,6 +131,7 @@ describe('draftFromRemote', () => {
       allowUnknownHostKey: false,
       herdrBinary: null,
       session: null,
+      keybindings: 'server',
       hasPassphrase: true,
       key: { container: 'openssh-v1', algorithm: 'ssh-ed25519', encrypted: false }
     }
@@ -144,7 +145,10 @@ describe('draftFromRemote', () => {
       name: 'fable-m5max',
       port: '2222',
       username: 'z',
-      hostKeySha256: 'abc+def/123'
+      hostKeySha256: 'abc+def/123',
+      // mockup #7. `server` rather than the default, so an edit form that quietly reset the side to
+      // `local` — and then pushed that reset to the remote on the next save — fails here.
+      keybindings: 'server'
     })
   })
 
@@ -159,6 +163,7 @@ describe('draftFromRemote', () => {
       allowUnknownHostKey: false,
       herdrBinary: null,
       session: null,
+      keybindings: 'local',
       hasPassphrase: false,
       key: { container: 'unknown', algorithm: null, encrypted: false },
       privateKey: KEY

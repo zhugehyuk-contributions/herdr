@@ -162,6 +162,12 @@ export interface StoredRemoteSummary {
   allowUnknownHostKey: boolean
   herdrBinary: string | null
   session: string | null
+  /**
+   * mockup #7. Resolved, not optional — absent in the store means `local`
+   * (`./remote-config.ts`), and a summary that passed the ambiguity on would make the settings
+   * form render a segmented control with neither segment selected.
+   */
+  keybindings: NonNullable<HerdrSshRemoteConfig['keybindings']>
   hasPassphrase: boolean
   key: PrivateKeyDescriptor
 }
@@ -193,6 +199,7 @@ export function summariseRemote(config: HerdrSshRemoteConfig): StoredRemoteSumma
     allowUnknownHostKey: config.allowUnknownHostKey ?? false,
     herdrBinary: config.herdrBinary ?? null,
     session: config.session ?? null,
+    keybindings: config.keybindings ?? 'local',
     hasPassphrase: (config.passphrase ?? '').length > 0,
     key: describePrivateKey(config.privateKey)
   }

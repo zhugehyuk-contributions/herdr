@@ -14,8 +14,16 @@ import {
   type StoredRemoteSummary
 } from '../../modules/herdr-ssh'
 import { pairingRemoteId } from '../pairing/pairing-payload'
+import type { RemoteKeybindings } from '../api/herdr-api-types'
 
-/** Every field as the user types it — all strings, because that is what a `TextInput` produces. */
+/**
+ * Every field as the user types it — all strings, because that is what a `TextInput` produces.
+ *
+ * The two exceptions are the two controls that are not text boxes, and they carry their own type
+ * rather than a stringly-typed stand-in: `allowUnknownHostKey` is a checkbox and `keybindings` is
+ * mockup #7's two-segment control, whose members are the wire's own
+ * (`modules/herdr-ssh/src/remote-config.ts`).
+ */
 export interface RemoteDraft {
   id: string
   name: string
@@ -28,6 +36,7 @@ export interface RemoteDraft {
   allowUnknownHostKey: boolean
   herdrBinary: string
   session: string
+  keybindings: RemoteKeybindings
 }
 
 export type RemoteDraftField = keyof RemoteDraft
@@ -44,7 +53,10 @@ export function emptyDraft(): RemoteDraft {
     hostKeySha256: '',
     allowUnknownHostKey: false,
     herdrBinary: '',
-    session: ''
+    session: '',
+    // The side the schema defaults to, so a new remote and a remote saved before the field existed
+    // start the form on the same segment (`src/remote_registry.rs:55-64`).
+    keybindings: 'local'
   }
 }
 
@@ -69,7 +81,8 @@ export function draftFromRemote(summary: StoredRemoteSummary): RemoteDraft {
     hostKeySha256: summary.hostKeySha256 ?? '',
     allowUnknownHostKey: summary.allowUnknownHostKey,
     herdrBinary: summary.herdrBinary ?? '',
-    session: summary.session ?? ''
+    session: summary.session ?? '',
+    keybindings: summary.keybindings
   }
 }
 
@@ -134,7 +147,11 @@ export function parseRemoteDraft(
     ...optional('session', draft.session),
     ...(keepKey ? {} : optional('passphrase', draft.passphrase)),
     // Absent rather than `false`: the schema's default already means "enforce the host key".
-    ...(draft.allowUnknownHostKey ? { allowUnknownHostKey: true } : {})
+    ...(draft.allowUnknownHostKey ? { allowUnknownHostKey: true } : {}),
+    // Always present, unlike the line above: `local` is the schema's default *and* a value the user
+    // can have chosen deliberately, so omitting it would make "the user picked local" and "the user
+    // never saw this control" the same stored entry.
+    keybindings: draft.keybindings
   }
 
   const parsed = parseRemoteConfig(record)

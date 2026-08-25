@@ -136,7 +136,11 @@ function remoteDefinition(config: HerdrSshRemoteConfig): RemoteDefinition {
   const definition: RemoteDefinition = {
     id: config.id,
     name: config.name ?? config.id,
-    target: { type: 'ssh', target: `${config.username}@${config.host}` }
+    target: { type: 'ssh', target: `${config.username}@${config.host}` },
+    // mockup #7. The phone's registry entry answers for its own remotes the way a server's
+    // `remote.list` answers for its: a fleet row built here and one built from the wire carry the
+    // same field, so nothing downstream has to know which provenance it is looking at.
+    keybindings: config.keybindings ?? 'local'
   }
   if (config.session !== undefined) {
     definition.session = config.session
