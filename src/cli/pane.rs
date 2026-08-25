@@ -480,7 +480,6 @@ fn parse_pane_read_args(args: &[String]) -> Result<PaneReadParams, String> {
     let mut source = ReadSource::Recent;
     let mut lines = None;
     let mut format = ReadFormat::Text;
-    let mut strip_ansi = true;
 
     let mut index = 0;
     while index < args.len() {
@@ -511,9 +510,10 @@ fn parse_pane_read_args(args: &[String]) -> Result<PaneReadParams, String> {
                 format = ReadFormat::Ansi;
                 index += 1;
             }
+            // Kept as an alias of `--ansi`: it also used to clear the `strip_ansi` request flag,
+            // which the server never read. `--format ansi` is the whole knob.
             "--raw" => {
                 format = ReadFormat::Ansi;
-                strip_ansi = false;
                 index += 1;
             }
             option if option.starts_with('-') => {
@@ -538,7 +538,6 @@ fn parse_pane_read_args(args: &[String]) -> Result<PaneReadParams, String> {
         source,
         lines,
         format,
-        strip_ansi,
         intent: crate::api::schema::ReadIntent::Interactive,
     })
 }
@@ -1990,7 +1989,19 @@ mod tests {
         assert_eq!(params.source, ReadSource::Recent);
         assert_eq!(params.lines, None);
         assert_eq!(params.format, ReadFormat::Text);
-        assert!(params.strip_ansi);
+    }
+
+    #[test]
+    fn parse_pane_read_args_maps_raw_to_the_ansi_format() {
+        let params = parse_pane_read_args(&args(&["issue-1", "--raw"])).unwrap();
+
+        // `--raw` no longer carries a second, server-ignored `strip_ansi` flag: the format IS
+        // the ANSI switch, so it must land on exactly what `--ansi` produces.
+        assert_eq!(params.format, ReadFormat::Ansi);
+        assert_eq!(
+            params,
+            parse_pane_read_args(&args(&["issue-1", "--ansi"])).unwrap()
+        );
     }
 
     #[test]

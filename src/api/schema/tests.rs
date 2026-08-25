@@ -517,6 +517,33 @@ fn pane_read_defaults_to_text_format() {
 }
 
 #[test]
+fn pane_read_ignores_a_legacy_strip_ansi_flag() {
+    // `strip_ansi` was a dead param (never read by `handle_pane_read`) and is gone. Clients
+    // pinned to the old shape must keep working: the params are not `deny_unknown_fields`, so
+    // the flag is dropped and `format` still decides everything -- including the `false` case
+    // that a client might have believed would hand it escapes.
+    let json = r#"
+    {
+        "id": "req_1",
+        "method": "pane.read",
+        "params": {
+            "pane_id": "p_1",
+            "source": "visible",
+            "strip_ansi": false
+        }
+    }
+    "#;
+
+    let request: Request = serde_json::from_str(json).unwrap();
+    let serialized = serde_json::to_value(&request).unwrap();
+    assert!(serialized["params"].get("strip_ansi").is_none());
+    let Method::PaneRead(params) = request.method else {
+        panic!("wrong method parsed");
+    };
+    assert_eq!(params.format, ReadFormat::Text);
+}
+
+#[test]
 fn pane_current_request_round_trips() {
     let request = Request {
         id: "req_current".into(),

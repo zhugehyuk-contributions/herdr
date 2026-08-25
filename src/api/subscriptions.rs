@@ -41,7 +41,6 @@ pub(super) struct ActiveOutputMatchedSubscription {
     lines: Option<u32>,
     matcher: crate::api::schema::OutputMatch,
     regex: Option<Regex>,
-    strip_ansi: bool,
     currently_matching: bool,
     request_prefix: String,
 }
@@ -245,7 +244,9 @@ impl ActiveSubscription {
                 source,
                 lines,
                 r#match,
-                strip_ansi,
+                // `pane.read` gets its ANSI behaviour from `format` alone; this subscription
+                // always reads stripped text, so the client's flag has no read to influence.
+                strip_ansi: _,
             } => {
                 let regex = match &r#match {
                     crate::api::schema::OutputMatch::Regex { value } => match Regex::new(value) {
@@ -268,7 +269,6 @@ impl ActiveSubscription {
                     &pane_id,
                     source,
                     lines,
-                    strip_ansi,
                     api_tx,
                 );
                 probe?;
@@ -279,7 +279,6 @@ impl ActiveSubscription {
                     lines,
                     matcher: r#match,
                     regex,
-                    strip_ansi,
                     currently_matching: false,
                     request_prefix: format!("{request_id}:sub:{index}"),
                 }))
@@ -405,7 +404,6 @@ impl ActiveOutputMatchedSubscription {
             &self.pane_id,
             output_match_read_source(&self.source),
             self.lines,
-            self.strip_ansi,
             api_tx,
         )
         .ok()?;
@@ -602,7 +600,6 @@ fn pane_read(
     pane_id: &str,
     source: crate::api::schema::ReadSource,
     lines: Option<u32>,
-    strip_ansi: bool,
     api_tx: &ApiRequestSender,
 ) -> Result<crate::api::schema::PaneReadResult, ErrorResponse> {
     let response = dispatch_to_app_with_timeout(
@@ -613,7 +610,6 @@ fn pane_read(
                 source,
                 lines,
                 format: crate::api::schema::ReadFormat::Text,
-                strip_ansi,
                 intent: crate::api::schema::ReadIntent::Passive,
             }),
         },

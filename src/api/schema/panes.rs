@@ -290,10 +290,14 @@ pub struct PaneReadParams {
     pub source: ReadSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<u32>,
+    /// The only ANSI knob: `text` returns the stripped screen text, `ansi` returns the
+    /// escape-preserving snapshot (see `app::api_helpers::read_terminal_snapshot`, which
+    /// dispatches on `(format, source)` alone). A separate `strip_ansi` flag used to sit here,
+    /// was never read by `handle_pane_read`, and could only restate what `format` already says.
+    /// Legacy clients may keep sending it: these params are not `deny_unknown_fields`, so it is
+    /// ignored exactly as it always was in practice.
     #[serde(default)]
     pub format: ReadFormat,
-    #[serde(default = "super::default_true")]
-    pub strip_ansi: bool,
     #[serde(skip)]
     #[schemars(skip)]
     pub(crate) intent: super::common::ReadIntent,

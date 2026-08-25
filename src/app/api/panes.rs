@@ -2283,7 +2283,6 @@ mod tests {
                 source: crate::api::schema::ReadSource::Recent,
                 lines: Some(3),
                 format: crate::api::schema::ReadFormat::Text,
-                strip_ansi: true,
                 intent: crate::api::schema::ReadIntent::Interactive,
             },
         );
@@ -2336,7 +2335,6 @@ mod tests {
                 source: crate::api::schema::ReadSource::Recent,
                 lines: Some(2),
                 format: crate::api::schema::ReadFormat::Text,
-                strip_ansi: true,
                 intent: crate::api::schema::ReadIntent::Interactive,
             },
         );
@@ -2346,6 +2344,48 @@ mod tests {
         };
         assert!(read.text.contains("line 19"));
         assert!(read.truncated);
+    }
+
+    #[tokio::test]
+    async fn api_pane_read_format_is_the_only_ansi_switch() {
+        // The removed `strip_ansi` param had no behaviour to own: `format` alone decides whether
+        // escapes survive. Pin both branches so a future re-added flag has to justify itself.
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.insert_test_runtime(
+            pane_id,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(
+                20,
+                3,
+                b"\x1b[31mcolored\x1b[0m",
+            ),
+        );
+
+        let read_with = |app: &mut App, format| {
+            let response = app.handle_pane_read(
+                "req".into(),
+                PaneReadParams {
+                    pane_id: public_pane_id.clone(),
+                    source: crate::api::schema::ReadSource::Visible,
+                    lines: None,
+                    format,
+                    intent: crate::api::schema::ReadIntent::Interactive,
+                },
+            );
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::PaneRead { read } = success.result else {
+                panic!("expected pane read response");
+            };
+            read.text
+        };
+
+        let text = read_with(&mut app, crate::api::schema::ReadFormat::Text);
+        assert!(text.contains("colored"), "text read: {text:?}");
+        assert!(!text.contains('\u{1b}'), "text read kept escapes: {text:?}");
+
+        let ansi = read_with(&mut app, crate::api::schema::ReadFormat::Ansi);
+        assert!(ansi.contains("colored"), "ansi read: {ansi:?}");
+        assert!(ansi.contains('\u{1b}'), "ansi read lost escapes: {ansi:?}");
     }
 
     #[tokio::test]

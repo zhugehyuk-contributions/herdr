@@ -62,8 +62,10 @@ pub(super) fn wait_for_output(
                 pane_id: params.pane_id.clone(),
                 source: output_match_read_source(&params.source),
                 lines: params.lines,
+                // The matcher always matches against stripped text, so this read is pinned to
+                // `text`. `params.strip_ansi` has nowhere to go: `pane.read` derives ANSI from
+                // `format`, and the flag it used to be forwarded into was never read.
                 format: crate::api::schema::ReadFormat::Text,
-                strip_ansi: params.strip_ansi,
                 intent: crate::api::schema::ReadIntent::Passive,
             }),
         };
