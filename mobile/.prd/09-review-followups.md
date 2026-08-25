@@ -2279,3 +2279,24 @@ APK 14:11:39(커밋 13:58 이후, 대조 통과) · Metro 8241 결속을 번들 
 **추가 발견 겸 수리**: `ConnectionStatusLine`은 family 자체가 없어 라이브 pane 헤더에서
 산세리프였다(fd42c472도 8차 QA도 놓친 별개 사이트) — 9차 줌 확인 대상. 미착수 잔존:
 포팅 orca 모달 5종의 monotone 팔레트 위반(`statusRed`/`'#fff'` — 아직 어느 화면도 마운트 안 함).
+
+## WW. iOS UI QA 12차 — 5항목 전부 PASS (2026-08-25, 별도 에이전트, `qa-ios-12` @ `7cb4fe8f`)
+
+빌드 14:19:20 · `scripts/pods-install.sh` 경유(`[repair-pods-spm] restored: 4객체`) · **Metro 8251
+결속 §HH 이중 확증**(딥링크 + dev 메뉴 `Connected to: …:8251`, 8081 리스너 부재 실측).
+
+- **1 JBMono 실렌더 — PASS. iOS 최초 실증.** dotted zero + `1` 베이스 세리프 zoom 확증, 스윕 전
+  화면 산세리프 잔존 0. **주목: fontWeight 700 콜사이트도 iOS에선 폴백 미발생**(모노 렌더) —
+  8차 Android FAIL(§VV)은 Android 전용 증상이었다. U6의 페이스 명명 통일은 양 플랫폼 안전.
+- **2 요약줄 — PASS** mock `└ mock-fixture · …` 3/3 + **라이브 3경로 실측**(recent 끝줄 /
+  빈 recent→title 폴백 / identity==title→생략).
+- **3 keybindings — PASS** 반전·순서·영속 + **거부 경로 라이브 실측**
+  (`keybindings · qa12lab refused local: the transport is closed`, 로컬 저장 생존).
+- **4 splash 게이트 — PASS** (0.7/2.5s splash → ~5.7s 완전 진입, 산세리프 프레임 0).
+- **5 회귀 — PASS** (스와이프 6/6, 딥링크 3종, 입력 문자 왕복 실증, 크래시 0).
+- live 판별 = 위조 불가 토큰 `ZQ12-LIVE-22b6b1fb` + sshd `Accepted publickey … ED25519`(일회용 키).
+
+**잔여 관찰 (비-FAIL, 다음 유닛)**: **터미널 웹뷰 내부 서체가 JBMono가 아니다**(무점 0 —
+웹뷰 자체 폰트 스택). RN 층 수리(fd42c472·d2c696b7)의 범위 밖이고, 목업 "전면 JBMono"
+계약(:14,863)의 마지막 구멍. 웹뷰 문서에 페이스 임베드가 수리 방향 — 셀 메트릭이 바뀌므로
+§P(213col 도달 불가)와 fit/scale 계열의 재측정이 따라와야 한다.
