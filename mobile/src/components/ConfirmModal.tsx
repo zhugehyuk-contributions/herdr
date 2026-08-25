@@ -1,8 +1,13 @@
 // Ported from orca mobile/src/components/ConfirmModal.tsx
 // at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
 // MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.
+//
+// Changed for herdr, for the reason `./ActionSheetModal.tsx`'s header states: every text style
+// names a JetBrains Mono face instead of a `fontWeight`, which Android does not synthesise for a
+// custom family. Palette still orca's; this drawer is not mounted by a herdr screen yet.
 import { View, Text, Pressable, StyleSheet } from 'react-native'
-import { colors, spacing, radii, typography } from '../theme/mobile-theme'
+import { colors, spacing, radii } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 import { BottomDrawer } from './BottomDrawer'
 
 type Props = {
@@ -65,14 +70,15 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 16,
-    fontWeight: '700',
+    fontFamily: typography.monoFamilyBold,
     color: colors.textPrimary
   },
   message: {
     fontSize: typography.bodySize,
     color: colors.textSecondary,
     marginTop: spacing.xs,
-    lineHeight: 20
+    lineHeight: 20,
+    fontFamily: typography.monoFamily
   },
   buttons: {
     flexDirection: 'row',
@@ -98,17 +104,17 @@ const styles = StyleSheet.create({
   },
   cancelText: {
     fontSize: typography.bodySize,
-    fontWeight: '600',
+    fontFamily: typography.monoFamilySemiBold,
     color: colors.textSecondary
   },
   confirmText: {
     fontSize: typography.bodySize,
-    fontWeight: '600',
+    fontFamily: typography.monoFamilySemiBold,
     color: colors.bgBase
   },
   destructiveText: {
     fontSize: typography.bodySize,
-    fontWeight: '600',
+    fontFamily: typography.monoFamilySemiBold,
     color: '#fff'
   }
 })

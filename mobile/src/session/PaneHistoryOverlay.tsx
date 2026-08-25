@@ -163,8 +163,7 @@ const styles = StyleSheet.create({
   actionLabel: {
     color: mono.fg,
     fontSize: 11,
-    fontWeight: '600',
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilySemiBold
   },
   meta: {
     color: mono.dim,

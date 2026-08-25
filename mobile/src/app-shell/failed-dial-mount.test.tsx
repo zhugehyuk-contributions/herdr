@@ -72,6 +72,8 @@ vi.mock('expo-splash-screen', () => ({
 vi.mock('@expo-google-fonts/jetbrains-mono', () => ({
   useFonts: () => [true, null],
   JetBrainsMono_400Regular: 'JetBrainsMono_400Regular',
+  JetBrainsMono_500Medium: 'JetBrainsMono_500Medium',
+  JetBrainsMono_600SemiBold: 'JetBrainsMono_600SemiBold',
   JetBrainsMono_700Bold: 'JetBrainsMono_700Bold'
 }))
 vi.mock('expo-status-bar', () => ({ StatusBar: 'StatusBar' }))

@@ -33,6 +33,8 @@ import * as SplashScreen from 'expo-splash-screen'
 import {
   useFonts,
   JetBrainsMono_400Regular,
+  JetBrainsMono_500Medium,
+  JetBrainsMono_600SemiBold,
   JetBrainsMono_700Bold
 } from '@expo-google-fonts/jetbrains-mono'
 import { typography } from '../src/theme/herdr-typography'
@@ -98,7 +100,15 @@ export default function RootLayout() {
   // one frame of the system face — on iOS a *sans-serif* one, since `'monospace'` names nothing
   // there — so the splash stays up until the faces are loaded. `fontsError` is deliberately not a
   // blocker: a missing face should degrade to the platform default, not to a blank app.
-  const [fontsLoaded, fontsError] = useFonts({ JetBrainsMono_400Regular, JetBrainsMono_700Bold })
+  //
+  // Four faces, not one: Android synthesises no weight for a custom family, so each weight the
+  // design uses has to be a registered file (`src/theme/herdr-typography.ts` has the measurement).
+  const [fontsLoaded, fontsError] = useFonts({
+    JetBrainsMono_400Regular,
+    JetBrainsMono_500Medium,
+    JetBrainsMono_600SemiBold,
+    JetBrainsMono_700Bold
+  })
   const fontsSettled = fontsLoaded || fontsError !== null
   const onNavigatorLayout = useCallback(async () => {
     setNavigatorReady(true)
@@ -128,7 +138,7 @@ export default function RootLayout() {
               screenOptions={{
                 headerStyle: { backgroundColor: mono.ink2 },
                 headerTintColor: mono.fg,
-                headerTitleStyle: { fontSize: 16, fontWeight: '600' },
+                headerTitleStyle: { fontSize: 16, fontFamily: typography.monoFamilySemiBold },
                 contentStyle: { backgroundColor: mono.ink },
                 headerShadowVisible: false
                 // Why: deliberately no `orientation` screenOption. react-native-screens

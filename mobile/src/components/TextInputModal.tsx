@@ -1,6 +1,10 @@
 // Ported from orca mobile/src/components/TextInputModal.tsx
 // at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
 // MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.
+//
+// Changed for herdr, for the reason `./ActionSheetModal.tsx`'s header states: every text style —
+// the `input` included, since what is typed into it is a remote address or a path — names a
+// JetBrains Mono face instead of a `fontWeight`. Palette still orca's.
 import { useState } from 'react'
 import {
   View,
@@ -11,7 +15,8 @@ import {
   Platform,
   type KeyboardTypeOptions
 } from 'react-native'
-import { colors, spacing, radii, typography } from '../theme/mobile-theme'
+import { colors, spacing, radii } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 import { BottomDrawer } from './BottomDrawer'
 
 type Props = {
@@ -118,13 +123,14 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 15,
-    fontWeight: '600',
+    fontFamily: typography.monoFamilySemiBold,
     color: colors.textPrimary
   },
   message: {
     fontSize: 13,
     color: colors.textMuted,
-    marginTop: 2
+    marginTop: 2,
+    fontFamily: typography.monoFamily
   },
   // Why: matches NewWorktreeModal's input — bgRaised on the modal
   // background reads as a tappable surface (brighter than the wrapper)
@@ -138,7 +144,8 @@ const styles = StyleSheet.create({
     paddingVertical: Platform.OS === 'ios' ? spacing.sm + 2 : spacing.sm,
     fontSize: typography.bodySize,
     borderWidth: 1,
-    borderColor: colors.borderSubtle
+    borderColor: colors.borderSubtle,
+    fontFamily: typography.monoFamily
   },
   actions: {
     flexDirection: 'row',
@@ -166,11 +173,11 @@ const styles = StyleSheet.create({
   cancelText: {
     color: colors.textSecondary,
     fontSize: typography.bodySize,
-    fontWeight: '500'
+    fontFamily: typography.monoFamilyMedium
   },
   submitText: {
     color: colors.bgBase,
     fontSize: typography.bodySize,
-    fontWeight: '600'
+    fontFamily: typography.monoFamilySemiBold
   }
 })

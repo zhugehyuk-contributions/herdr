@@ -546,8 +546,7 @@ const styles = StyleSheet.create({
   headerActionLabel: {
     color: mono.fg,
     fontSize: 11,
-    fontWeight: '600',
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilySemiBold
   },
   chipBar: { borderBottomWidth: 1, borderBottomColor: mono.line },
   chipContent: { paddingHorizontal: 12, paddingBottom: 8, gap: 8 },

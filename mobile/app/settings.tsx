@@ -436,10 +436,9 @@ const styles = StyleSheet.create({
   sectionLabel: {
     color: mono.dim,
     fontSize: 11,
-    fontWeight: '700',
     paddingTop: spacing.lg,
     paddingBottom: 2,
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilyBold
   },
   row: { paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: mono.lineSoft },
   name: { color: mono.fg, fontSize: 15, fontFamily: typography.monoFamily },
@@ -480,7 +479,6 @@ const styles = StyleSheet.create({
   primaryLabel: {
     color: mono.ink,
     fontSize: 13,
-    fontWeight: '700',
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilyBold
   }
 })

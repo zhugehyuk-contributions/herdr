@@ -232,11 +232,10 @@ const styles = StyleSheet.create({
   tabLabel: {
     color: mono.dim2,
     fontSize: 10,
-    fontWeight: '700',
     paddingTop: 8,
     paddingLeft: 40,
     paddingBottom: 2,
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilyBold
   },
   paneRow: {
     flexDirection: 'row',

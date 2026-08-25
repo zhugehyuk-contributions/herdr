@@ -1,10 +1,16 @@
 // Ported from orca mobile/src/components/PickerModal.tsx
 // at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
 // MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.
+//
+// Changed for herdr, for the reason `./ActionSheetModal.tsx`'s header states: every text style
+// names a JetBrains Mono face instead of a `fontWeight`. `rowLabelSelected` is the case that makes
+// it necessary — it is composed over `rowLabel` by a style array, so a bare weight there would put
+// the selected row alone in the system sans. Palette still orca's.
 import type { ReactNode } from 'react'
 import { View, Text, Pressable, StyleSheet } from 'react-native'
 import { Check } from 'lucide-react-native'
-import { colors, spacing, typography } from '../theme/mobile-theme'
+import { colors, spacing } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 import { BottomDrawer } from './BottomDrawer'
 
 export type PickerOption<T extends string = string> = {
@@ -130,7 +136,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 13,
-    fontWeight: '500',
+    fontFamily: typography.monoFamilyMedium,
     color: colors.textMuted
   },
   group: {
@@ -166,14 +172,16 @@ const styles = StyleSheet.create({
   },
   rowLabel: {
     fontSize: typography.bodySize,
-    color: colors.textPrimary
+    color: colors.textPrimary,
+    fontFamily: typography.monoFamily
   },
   rowLabelSelected: {
-    fontWeight: '600'
+    fontFamily: typography.monoFamilySemiBold
   },
   rowSubtitle: {
     fontSize: 11,
     color: colors.textMuted,
-    marginTop: 1
+    marginTop: 1,
+    fontFamily: typography.monoFamily
   }
 })

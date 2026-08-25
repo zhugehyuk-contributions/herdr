@@ -250,8 +250,7 @@ const styles = StyleSheet.create({
   primaryLabel: {
     color: mono.ink,
     fontSize: 12,
-    fontWeight: '700',
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilyBold
   },
   secondary: {
     borderWidth: 1,

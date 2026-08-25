@@ -22,6 +22,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native'
 import type { AgentInfo } from '../api/herdr-api-types'
 import { radii, spacing } from '../theme/mobile-theme'
 import { mono } from '../theme/monotone'
+import { typography } from '../theme/herdr-typography'
 import { agentIdentityLabel } from '../agents/agent-display'
 import { AgentStateDot } from './AgentStateDot'
 
@@ -94,11 +95,14 @@ const styles = StyleSheet.create({
   summaryPressed: {
     opacity: 0.72
   },
+  // Every text style here names a family, `expandedLabel` a heavier one instead of a weight: this
+  // sits inside `WorkspaceListRow`, which is JetBrains Mono throughout, and Android synthesises
+  // nothing for a custom family (`../theme/herdr-typography.ts`).
   expandedLabel: {
     flex: 1,
     paddingLeft: spacing.xs,
     fontSize: 11,
-    fontWeight: '500',
+    fontFamily: typography.monoFamilyMedium,
     color: mono.dim
   },
   agentIcons: {
@@ -119,10 +123,12 @@ const styles = StyleSheet.create({
   },
   agentName: {
     fontSize: 10,
-    color: mono.fgSoft
+    color: mono.fgSoft,
+    fontFamily: typography.monoFamily
   },
   hiddenCount: {
     fontSize: 10,
-    color: mono.dim
+    color: mono.dim,
+    fontFamily: typography.monoFamily
   }
 })

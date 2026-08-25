@@ -1,10 +1,18 @@
 // Ported from orca mobile/src/components/ActionSheetModal.tsx
 // at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
 // MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.
+//
+// Changed for herdr: `typography` now comes from `../theme/herdr-typography` (a superset of orca's
+// — same `bodySize`/`metaSize`, plus the JetBrains Mono face names), and the text styles name a
+// face rather than a `fontWeight`, which a custom family does not synthesise on Android. The family
+// is named on *every* text style, not only the weighted ones, so the sheet cannot render half in
+// JetBrains Mono and half in the system sans. The palette is still orca's — this chrome is not
+// mounted by any herdr screen yet, and `../theme/monotone.ts` is the rule when it is.
 import { useRef, type ReactNode } from 'react'
 import { ActivityIndicator, View, Text, Pressable, StyleSheet } from 'react-native'
 import { Edit3, Trash2, type LucideIcon } from 'lucide-react-native'
-import { colors, spacing, typography } from '../theme/mobile-theme'
+import { colors, spacing } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 import { BottomDrawer } from './BottomDrawer'
 
 export type ActionSheetAction = {
@@ -153,13 +161,14 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 13,
-    fontWeight: '500',
+    fontFamily: typography.monoFamilyMedium,
     color: colors.textMuted
   },
   message: {
     fontSize: 12,
     color: colors.textMuted,
-    marginTop: 2
+    marginTop: 2,
+    fontFamily: typography.monoFamily
   },
   actionGroup: {
     backgroundColor: colors.bgPanel,
@@ -190,7 +199,7 @@ const styles = StyleSheet.create({
   },
   actionText: {
     fontSize: typography.bodySize,
-    fontWeight: '500',
+    fontFamily: typography.monoFamilyMedium,
     color: colors.textPrimary
   },
   actionTextDisabled: {
@@ -202,6 +211,7 @@ const styles = StyleSheet.create({
   actionHint: {
     marginTop: 2,
     fontSize: typography.metaSize,
-    color: colors.textMuted
+    color: colors.textMuted,
+    fontFamily: typography.monoFamily
   }
 })

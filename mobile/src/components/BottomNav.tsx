@@ -60,8 +60,9 @@ const styles = StyleSheet.create({
     color: mono.dim,
     fontFamily: typography.monoFamily
   },
+  // Names the family again because it is composed over `label` as a style array — see AgentRow.
   labelActive: {
     color: mono.fg,
-    fontWeight: '700'
+    fontFamily: typography.monoFamilyBold
   }
 })

@@ -29,6 +29,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { StatusDot } from './StatusDot'
 import { mono } from '../theme/monotone'
+import { typography } from '../theme/herdr-typography'
 import type { ConnectionStatus } from '../transport/use-connection-status'
 
 /**
@@ -76,11 +77,13 @@ const styles = StyleSheet.create({
   },
   // `dim` is the same weight the header's other meta text uses: an escalated verdict is made loud by
   // the dot's shape and by the words, not by a brighter grey competing with the pane title.
-  label: { color: mono.dim, fontSize: 11, flexShrink: 1 },
+  // Both styles name a family: this line sits inside the pane header, whose title and meta are
+  // JetBrains Mono, and a node that names none renders in the system sans next to them.
+  label: { color: mono.dim, fontSize: 11, flexShrink: 1, fontFamily: typography.monoFamily },
   retry: {
     color: mono.fg,
     fontSize: 11,
-    fontWeight: '600',
+    fontFamily: typography.monoFamilySemiBold,
     marginLeft: 8,
     paddingHorizontal: 6,
     paddingVertical: 2,

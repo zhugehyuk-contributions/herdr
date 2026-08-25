@@ -175,10 +175,9 @@ const styles = StyleSheet.create({
   },
   workspaceName: {
     fontSize: 14,
-    fontWeight: '600',
     color: mono.fg,
     flexShrink: 1,
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilySemiBold
   },
   badge: {
     backgroundColor: mono.ink3,
@@ -229,7 +228,6 @@ const styles = StyleSheet.create({
   paneToggleText: {
     fontSize: 11,
     color: mono.fgSoft,
-    fontWeight: '600',
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilySemiBold
   }
 })

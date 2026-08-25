@@ -221,9 +221,8 @@ const styles = StyleSheet.create({
   formTitle: {
     color: mono.fg,
     fontSize: 13,
-    fontWeight: '700',
     paddingBottom: spacing.sm,
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilyBold
   },
   field: { paddingBottom: spacing.sm },
   label: { color: mono.dim, fontSize: 11, paddingBottom: 2, fontFamily: typography.monoFamily },
@@ -259,7 +258,8 @@ const styles = StyleSheet.create({
   segment: { flex: 1, alignItems: 'center', paddingVertical: 8 },
   segmentOn: { backgroundColor: mono.fg },
   segmentLabel: { color: mono.dim, fontSize: 11, fontFamily: typography.monoFamily },
-  segmentLabelOn: { color: mono.ink, fontWeight: '700' },
+  // Composed over `segmentLabel` as a style array, so the family is re-stated — see AgentRow.
+  segmentLabelOn: { color: mono.ink, fontFamily: typography.monoFamilyBold },
   checkbox: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm },
   checkboxMark: { color: mono.fg, fontSize: 13, fontFamily: typography.monoFamily },
   checkboxLabel: {
@@ -275,8 +275,7 @@ const styles = StyleSheet.create({
   primaryLabel: {
     color: mono.ink,
     fontSize: 13,
-    fontWeight: '700',
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilyBold
   },
   button: { borderWidth: 1, borderColor: mono.line, paddingHorizontal: 14, paddingVertical: 8 },
   buttonLabel: { color: mono.fg, fontSize: 13, fontFamily: typography.monoFamily },

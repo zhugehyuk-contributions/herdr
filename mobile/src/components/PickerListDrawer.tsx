@@ -1,11 +1,17 @@
 // Ported from orca mobile/src/components/PickerListDrawer.tsx
 // at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
 // MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.
+//
+// Changed for herdr, for the reason `./ActionSheetModal.tsx`'s header states: every text style
+// names a JetBrains Mono face instead of a `fontWeight`, `itemTextSelected` included — it is
+// composed over `itemText` by a style array, where a bare weight is dropped and takes the family
+// with it. Palette still orca's.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native'
 import { Check } from 'lucide-react-native'
 
-import { colors, spacing, typography } from '../theme/mobile-theme'
+import { colors, spacing } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 import { BottomDrawer } from './BottomDrawer'
 import { BOTTOM_DRAWER_HIDE_DURATION_MS } from './bottom-drawer-constants'
 
@@ -125,7 +131,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 13,
-    fontWeight: '500',
+    fontFamily: typography.monoFamilyMedium,
     color: colors.textMuted
   },
   group: {
@@ -155,7 +161,8 @@ const styles = StyleSheet.create({
   },
   itemText: {
     fontSize: typography.bodySize,
-    color: colors.textPrimary
+    color: colors.textPrimary,
+    fontFamily: typography.monoFamily
   },
   itemCopy: {
     flex: 1,
@@ -164,9 +171,10 @@ const styles = StyleSheet.create({
   itemDetail: {
     fontSize: typography.metaSize,
     color: colors.textMuted,
-    marginTop: 1
+    marginTop: 1,
+    fontFamily: typography.monoFamily
   },
   itemTextSelected: {
-    fontWeight: '600'
+    fontFamily: typography.monoFamilySemiBold
   }
 })

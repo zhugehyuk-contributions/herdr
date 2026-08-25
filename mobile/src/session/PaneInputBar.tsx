@@ -179,8 +179,7 @@ const styles = StyleSheet.create({
   quickLabel: {
     color: mono.fg,
     fontSize: 12,
-    fontWeight: '700',
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilyBold
   },
   status: {
     color: mono.dim,
@@ -232,8 +231,7 @@ const styles = StyleSheet.create({
   sendLabel: {
     color: mono.ink,
     fontSize: 15,
-    fontWeight: '700',
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilyBold
   },
   disabled: { opacity: 0.4 }
 })

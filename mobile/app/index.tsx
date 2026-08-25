@@ -178,11 +178,10 @@ const styles = StyleSheet.create({
   sectionLabel: {
     color: mono.dim,
     fontSize: 11,
-    fontWeight: '700',
     paddingHorizontal: 8,
     paddingTop: 14,
     paddingBottom: 2,
-    fontFamily: typography.monoFamily
+    fontFamily: typography.monoFamilyBold
   },
   body: { flex: 1, paddingHorizontal: 8 },
   spacer: { flex: 1 }

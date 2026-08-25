@@ -1,10 +1,15 @@
 // Ported from orca mobile/src/terminal/terminal-webview-engine-error-state.tsx
 // at commit 4fd93ead1999dc34e13ac5915693ad8467a39a6e (github.com/stablyai/orca).
 // MIT License, Copyright (c) 2026 Lovecast Inc. — see mobile/THIRD_PARTY_NOTICES.md.
+//
+// Changed for herdr: the three text styles name a JetBrains Mono face instead of a `fontWeight`.
+// This overlay covers the terminal itself, so it is read against the app's own type
+// (`../theme/herdr-typography.ts` — Android synthesises no weight for a custom family).
 import { useCallback, useState } from 'react'
 import { RefreshCw } from 'lucide-react-native'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { colors } from '../theme/mobile-theme'
+import { typography } from '../theme/herdr-typography'
 
 export type NativeWebViewEngineEvent = {
   readonly nativeEvent?: object
@@ -107,14 +112,15 @@ const styles = StyleSheet.create({
   errorTitle: {
     color: colors.textPrimary,
     fontSize: 16,
-    fontWeight: '700',
+    fontFamily: typography.monoFamilyBold,
     textAlign: 'center'
   },
   errorDetail: {
     color: colors.textSecondary,
     fontSize: 13,
     lineHeight: 18,
-    textAlign: 'center'
+    textAlign: 'center',
+    fontFamily: typography.monoFamily
   },
   reloadButton: {
     flexDirection: 'row',
@@ -128,6 +134,6 @@ const styles = StyleSheet.create({
   reloadButtonText: {
     color: colors.terminalBg,
     fontSize: 14,
-    fontWeight: '700'
+    fontFamily: typography.monoFamilyBold
   }
 })

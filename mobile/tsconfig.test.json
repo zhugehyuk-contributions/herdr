@@ -14,6 +14,7 @@
     "src/api/mock/mock-api-schema.test.ts",
     "src/storage/sidebar-width.test.ts",
     "src/theme/monotone-discipline.test.tsx",
+    "src/theme/typography-discipline.test.ts",
     "src/app-shell/route-shell-mount.test.tsx",
     "src/app-shell/agents-home-mount.test.tsx",
     "src/app-shell/failed-dial-mount.test.tsx",

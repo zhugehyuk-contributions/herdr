@@ -107,9 +107,12 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     fontFamily: typography.monoFamily
   },
+  // Composed *over* `identity` by a style array, so it has to re-state the family: a weight alone
+  // would leave the emphasised name in the system sans while its unemphasised neighbours stay
+  // JetBrains Mono (8차 Android round).
   identityEmphasis: {
     color: mono.fg,
-    fontWeight: '700'
+    fontFamily: typography.monoFamilyBold
   },
   spacer: {
     flex: 1
