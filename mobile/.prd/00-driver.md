@@ -39,7 +39,7 @@ orca가 이긴다(`06-open-decisions.md` 결정 8이 그 적용례).
 | 1 폰으로 원격 에이전트 사용 | ✅ 라이브 확증 | ✅ 라이브 확증 (`ZQ11-LIVE-PROOF`) | — |
 | 2 orca 와꾸 | ✅ 이식 지도 15/15 | ✅ | — |
 | 3 별도 에이전트 QA | ✅ 7차 PASS | ✅ 11차 PASS | 재QA(아래) 후 재판정 |
-| 4 목업 대조 UI QA | 8차: 서체 FAIL(볼드 5곳, §VV)→수리 `d2c696b7` | **12차 5/5 PASS**(§WW — JBMono 첫 실증) | 웹뷰 서체도 착지(`16248702`, §XX) → **Android 9차 · iOS 13차 표적 재QA** (진행) |
+| 4 목업 대조 UI QA | **9차 5/5 PASS**(§YY — 볼드 수리·웹뷰 dotted zero·ConnectionStatusLine 라이브 확증) | 12차 5/5 PASS(§WW) → **13차**(U6·U7 표적) 진행 | iOS 13차 판정 대기 |
 | 5 QR 로그인 | ✅ **실제 스캔 실측** | 화면·권한·폴백 ✅ / **실제 스캔 판정불가** | **실기기** (+데스크톱 show qr 실서버 실측) |
 
 | 마일스톤 | 코드 | Android | iOS |

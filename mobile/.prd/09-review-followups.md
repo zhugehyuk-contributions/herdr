@@ -2314,3 +2314,21 @@ Regular+Bold 2페이스 base64 임베드(+308 KiB/플랫폼, 코드젠 산출물
 그리드 근거 아님). 잔여: italic은 합성 oblique(폭 안전, +300KiB면 실페이스 가능),
 `document.fonts` 부재 엔진은 no-op(실측 대상 기기엔 전부 존재), oxlint max-lines 캡(1784)이
 정확값 지뢰, 생성 모듈은 postinstall 미실행 체크아웃에서 import 파손(기존 엔진 산출물과 동일 전제).
+
+## YY. Android UI QA 9차 (표적) — **5/5 전 항목 PASS** (2026-08-25, 별도 에이전트, `qa-and-9` @ `16248702`)
+
+APK 15:15:27 > 커밋 대조 통과 · Metro 8242 단독 리슨 + 딥링크 직결(10.0.2.2, adb reverse 불사용) ·
+postinstall 생성물 2종(엔진 624KB + 폰트 306KB) 확인 후 시작.
+
+- **8차 FAIL 5곳 전부 PASS** — 실TTF 참조 스트립(4 weight + Helvetica Bold 대조군) 글리프 대조로
+  AgentRow명·섹션 라벨·하단 nav 선택 라벨·탭 섹션 헤더·keybindings 세그 선택 라벨(양 상태) 전부
+  JBMono Bold. 볼드 폴백 클래스 소멸.
+- **500/600 표본 PASS** (repo/branch 행 + History 버튼 SemiBold 실렌더).
+- **웹뷰 내부 서체 PASS** — 라이브 pane에서 `0` 전부 dotted, `O` 무점 대조 명확. fit 정상(80col
+  그리드 정렬). **§P 관찰**: `[fit]renderer { renderer:'webgl', cellW: 7.6190…, paintedCellW: 0 }`.
+- **ConnectionStatusLine 라이브 PASS** — mock에선 설계상 null 렌더(supervisor 부재,
+  `ConnectionStatusLine.tsx:42-44`) → 랩 연결 후 sshd PID kill로 `● Can't connect · Retry` 격상,
+  라벨·버튼 JBMono.
+- **회귀 PASS** — 요약줄 유지(그 `0`도 dotted), 스와이프, 입력 왕복(`echo QA9INPUT0K` 실행+출력),
+  클리핑 신규 0, logcat 치명 0. live 판별 = 일회용 키 `Accepted publickey … ED25519` + 토큰
+  `ZQ9-LIVE-66b8e50f` 실렌더 + `demo data` 배지 소멸.
