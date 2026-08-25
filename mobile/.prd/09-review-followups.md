@@ -2300,3 +2300,17 @@ APK 14:11:39(커밋 13:58 이후, 대조 통과) · Metro 8241 결속을 번들 
 웹뷰 자체 폰트 스택). RN 층 수리(fd42c472·d2c696b7)의 범위 밖이고, 목업 "전면 JBMono"
 계약(:14,863)의 마지막 구멍. 웹뷰 문서에 페이스 임베드가 수리 방향 — 셀 메트릭이 바뀌므로
 §P(213col 도달 불가)와 fit/scale 계열의 재측정이 따라와야 한다.
+
+## XX. 웹뷰 터미널 JBMono 임베드 — 전면 JBMono 계약의 마지막 구멍 수리 (2026-08-25, `16248702`)
+
+Regular+Bold 2페이스 base64 임베드(+308 KiB/플랫폼, 코드젠 산출물 gitignore), 폰트 스택 선두
+`"JetBrains Mono"`, **`web-ready`를 `document.fonts` 로드 뒤로 게이트**(로드 전 측정 = 폴백
+메트릭으로 셀이 굳는다; 3s 상한, RED 증명 2종). **함정 회피 기록**: xterm `fontWeightBold:'500'`
+이 400/700 정수 선언에선 CSS 매칭상 400으로 떨어져 볼드가 붕괴 — `font-weight: 100 400`/`500 900`
+**구간 선언**으로 강제. JBMono advance = 정확 0.600em(Regular=Bold — 볼드가 그리드를 안 민다).
+
+**§P는 이 커밋이 안 고쳤다** — fit/scale 로컬 테스트는 전부 셀 치수를 주입하므로 실폰트 메트릭을
+잴 능력이 없다. 다음 기기 라운드에서 `[fit]renderer` cellW 실측 필요(단 §BB대로 그 `cols`는
+그리드 근거 아님). 잔여: italic은 합성 oblique(폭 안전, +300KiB면 실페이스 가능),
+`document.fonts` 부재 엔진은 no-op(실측 대상 기기엔 전부 존재), oxlint max-lines 캡(1784)이
+정확값 지뢰, 생성 모듈은 postinstall 미실행 체크아웃에서 import 파손(기존 엔진 산출물과 동일 전제).
