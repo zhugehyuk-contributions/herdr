@@ -233,8 +233,17 @@ export class JsonApiClient {
     return this.request("agent.list");
   }
 
-  /** `pane.list` — `{ type: "pane_list", panes: [...] }`. */
-  async paneList(): Promise<{ type: string } & Record<string, unknown>> {
-    return this.request("pane.list");
+  /**
+   * `pane.list` — `{ type: "pane_list", panes: [...] }`.
+   *
+   * `params` stays untyped for the same reason {@link request}'s does. The one option a caller
+   * reaches for here is `{ recent_lines: n }`: it asks the server to batch each pane's last `n`
+   * rows of recent output into `PaneInfo.recent`, instead of the caller spending one `pane.read`
+   * per pane — which over this transport is one ssh exec per pane.
+   */
+  async paneList(
+    params: Record<string, unknown> = {},
+  ): Promise<{ type: string } & Record<string, unknown>> {
+    return this.request("pane.list", params);
   }
 }

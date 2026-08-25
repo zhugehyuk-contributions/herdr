@@ -21,6 +21,7 @@ import type {
   RemoteSnapshot,
   WorkspaceInfo
 } from '../herdr-api-types'
+import { PANE_SUMMARY_RECENT_LINES } from '../../agents/agent-display'
 import type { HerdrSnapshot, SnapshotLoader } from '../snapshot-context'
 import type { HerdrRemoteConnection } from '../../transport/herdr-connection'
 
@@ -52,7 +53,11 @@ async function snapshotOf(connection: HerdrRemoteConnection): Promise<RemoteSnap
     'workspace.list',
     'workspaces'
   )
-  const panes = arrayField<PaneInfo>(await connection.api.paneList(), 'pane.list', 'panes')
+  const panes = arrayField<PaneInfo>(
+    await connection.api.paneList({ recent_lines: PANE_SUMMARY_RECENT_LINES }),
+    'pane.list',
+    'panes'
+  )
   const agents = arrayField<AgentInfo>(await connection.api.agentList(), 'agent.list', 'agents')
   return { remote: connection.remote, workspaces, panes, agents }
 }

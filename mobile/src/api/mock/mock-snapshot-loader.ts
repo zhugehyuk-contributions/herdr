@@ -14,6 +14,7 @@
 // boxes do not all report an identical tree.
 import { handleMockApiRequest } from './mock-api-handlers'
 import { DEFAULT_SCENARIO, type MockScenario } from './mock-fixture'
+import { PANE_SUMMARY_RECENT_LINES } from '../../agents/agent-display'
 import type {
   AgentInfo,
   PaneInfo,
@@ -23,8 +24,12 @@ import type {
 } from '../herdr-api-types'
 import type { HerdrSnapshot, SnapshotLoader } from '../snapshot-context'
 
-function resultOf(method: string, scenario: MockScenario): Record<string, unknown> {
-  const response = handleMockApiRequest({ id: `mock-${method}`, method }, scenario)
+function resultOf(
+  method: string,
+  scenario: MockScenario,
+  params?: Record<string, unknown>
+): Record<string, unknown> {
+  const response = handleMockApiRequest({ id: `mock-${method}`, method, params }, scenario)
   if ('error' in response) {
     throw new Error(`mock ${method} failed: ${response.error.message}`)
   }
@@ -36,7 +41,12 @@ function snapshotOf(remote: RemoteDefinition, scenario: MockScenario): RemoteSna
   return {
     remote,
     workspaces: resultOf('workspace.list', scenario)['workspaces'] as WorkspaceInfo[],
-    panes: resultOf('pane.list', scenario)['panes'] as PaneInfo[],
+    // Same `recent_lines` the live loader asks for, so the pane rows' summary line has the same
+    // source on both paths — a mock that skipped it would leave the fallback as the only branch
+    // the phone-less reproduction ever renders.
+    panes: resultOf('pane.list', scenario, {
+      recent_lines: PANE_SUMMARY_RECENT_LINES
+    })['panes'] as PaneInfo[],
     agents: resultOf('agent.list', scenario)['agents'] as AgentInfo[]
   }
 }

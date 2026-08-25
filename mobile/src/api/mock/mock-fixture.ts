@@ -77,8 +77,38 @@ const WORKING_LABELS = [
   'reading src/api/server.rs'
 ] as const
 
+/**
+ * Tails for `PaneInfo.recent` — what a pane row's summary line renders now that
+ * `pane.list {recent_lines}` serves the mockup's source (`../../agents/agent-display.ts`).
+ *
+ * Every one of them says `mock-fixture` on purpose. QA's mock-vs-live discriminator on this app is
+ * a fixture-unique string on screen — never a count or a shape — and this line is the most text a
+ * pane row carries, so a screenshot whose pane rows say `mock-fixture` settles the question.
+ */
+const RECENT_TAILS = [
+  'mock-fixture · test result: ok. 118 passed; 0 failed',
+  'mock-fixture · Compiling herdr v0.8.0-mx.1',
+  'mock-fixture · waiting for approval to run `git push`',
+  'mock-fixture · error[E0308]: mismatched types'
+] as const
+
 function seedOf(scenario: MockScenario): number {
   return scenario.seed ?? 0
+}
+
+/**
+ * One pane's `recent`, oldest first — the shape `pane.list {recent_lines: n}` answers with.
+ *
+ * The middle entry is blank on purpose: the server counts terminal ROWS, so a blank row inside the
+ * window is the ordinary case (the cursor sits on one), and a fixture without one would never
+ * exercise the "scan past blank rows" branch the summary line depends on.
+ */
+function recentFor(paneId: string, flat: number, seed: number): string[] {
+  return [
+    `mock-fixture · ${paneId} — this is the mock, not a live herdr`,
+    '',
+    RECENT_TAILS[(flat + seed) % RECENT_TAILS.length]!
+  ]
 }
 
 function statusAt(index: number, seed = 0): AgentStatus {
@@ -203,7 +233,10 @@ export function mockPanes(scenario: MockScenario = DEFAULT_SCENARIO): PaneInfo[]
         terminal_title_stripped: `${agent} — ${workspaceId}`,
         scroll: { offset_from_bottom: 0, max_offset_from_bottom: 5000, viewport_rows: 44 },
         state_labels: stateLabelsFor(status, flat),
-        tokens: {}
+        tokens: {},
+        // Always built, never always served: `handleMockApiRequest` strips it unless the request
+        // asked for `recent_lines`, because that is what the server does.
+        recent: recentFor(`${workspaceId}-p${index + 1}`, flat, seed)
       })
       flat += 1
     }

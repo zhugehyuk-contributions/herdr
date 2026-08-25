@@ -56,6 +56,20 @@ function workspaceFilter(params: unknown): string | null {
   return typeof value === 'string' ? value : null
 }
 
+/** `src/app/api/panes.rs:40` — the server clamps `recent_lines` to this, so the mock does too. */
+export const MOCK_PANE_LIST_MAX_RECENT_LINES = 80
+
+/** The requested row count, or `null` for the opt-out that every pre-existing caller takes. */
+function recentLines(params: unknown): number | null {
+  if (typeof params !== 'object' || params === null) {
+    return null
+  }
+  const value = (params as Record<string, unknown>)['recent_lines']
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.min(Math.trunc(value), MOCK_PANE_LIST_MAX_RECENT_LINES)
+    : null
+}
+
 /**
  * Dispatches one parsed request. Returns the response envelope; never throws for a *server*-level
  * problem, because on the wire those are values.
@@ -74,9 +88,18 @@ export function handleMockApiRequest(
       return { id, result: { type: 'workspace_list', workspaces: mockWorkspaces(scenario) } }
     case 'pane.list': {
       const workspaceId = workspaceFilter(request.params)
-      const panes = mockPanes(scenario).filter(
-        (pane) => workspaceId === null || pane.workspace_id === workspaceId
-      )
+      const lines = recentLines(request.params)
+      const panes = mockPanes(scenario)
+        .filter((pane) => workspaceId === null || pane.workspace_id === workspaceId)
+        // `recent` is opt-in on the server (`src/app/api/panes.rs`, `handle_pane_list`): without
+        // `recent_lines` no pane is read at all and the field is skipped entirely. A mock that
+        // always shipped it would let a screen depend on a field the server withholds.
+        // `slice(-0)` is the whole array, so zero rows is spelled out rather than computed.
+        .map(({ recent, ...pane }) =>
+          lines === null
+            ? pane
+            : { ...pane, recent: lines === 0 ? [] : (recent ?? []).slice(-lines) }
+        )
       return { id, result: { type: 'pane_list', panes } }
     }
     case 'agent.list':

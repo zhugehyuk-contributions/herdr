@@ -56,7 +56,10 @@ function paneActivity(pane: PaneInfo): string | null {
     display_agent: pane.display_agent,
     agent: pane.agent,
     title: pane.title,
-    terminal_title_stripped: pane.terminal_title_stripped
+    terminal_title_stripped: pane.terminal_title_stripped,
+    // The mockup's own source for this line (`:555`), batched onto `pane.list` by the snapshot
+    // loaders' `recent_lines` so it costs no extra ssh exec. Absent = the terminal-title fallback.
+    recent: pane.recent
   })
 }
 

@@ -8,20 +8,29 @@
 import { describe, expect, it } from 'vitest'
 import { JsonApiClient, type JsonApiConnection } from '@herdr/client-ts'
 import { createLiveSnapshotLoader } from './live-snapshot-loader'
+import { PANE_SUMMARY_RECENT_LINES } from '../../agents/agent-display'
 import { nodeDetail, nodeDotState } from '../../nodes/node-list-model'
 import type { HerdrRemoteConnection } from '../../transport/herdr-connection'
 import type { RemoteDefinition } from '../herdr-api-types'
 
 type Script = Record<string, unknown>
 
+/** One request as it went out on the wire, for the assertions that are about the params. */
+type Sent = { method: string; params?: Record<string, unknown> }
+
 /** A `JsonApiClient` that answers from a table, and records which methods were asked. */
-function scriptedApi(script: Script, asked: string[] = []): JsonApiClient {
+function scriptedApi(script: Script, asked: string[] = [], sent: Sent[] = []): JsonApiClient {
   return new JsonApiClient(async (): Promise<JsonApiConnection> => {
     let pending: string | null = null
     return {
       write: (line: string) => {
-        const request = JSON.parse(line) as { id: string; method: string }
+        const request = JSON.parse(line) as {
+          id: string
+          method: string
+          params?: Record<string, unknown>
+        }
         asked.push(request.method)
+        sent.push({ method: request.method, params: request.params })
         const result = script[request.method]
         pending = JSON.stringify(
           result === undefined
@@ -43,11 +52,12 @@ function remote(id: string, name: string): RemoteDefinition {
 function connection(
   definition: RemoteDefinition,
   script: Script,
-  asked: string[] = []
+  asked: string[] = [],
+  sent: Sent[] = []
 ): HerdrRemoteConnection {
   return {
     remote: definition,
-    api: scriptedApi(script, asked),
+    api: scriptedApi(script, asked, sent),
     openTerminalStream: () => Promise.reject(new Error('not used by the snapshot loader'))
   }
 }
@@ -93,6 +103,23 @@ describe('live snapshot loader', () => {
     expect(snapshot.perRemote[0]!.workspaces[0]!.label).toBe('herdr')
     expect(snapshot.perRemote[0]!.panes[0]!.pane_id).toBe('w1:p1')
     expect(snapshot.perRemote[0]!.agents[0]!.tab_label).toBe('main')
+  })
+
+  it('asks pane.list to batch each pane summary line, instead of one pane.read per pane', async () => {
+    // `.prd/06-open-decisions.md` 결정 9: the mockup's summary source is the pane's last output
+    // line, and reading it per pane is one ssh exec per pane (blocker B8). The server grew
+    // `pane.list {recent_lines}` for exactly this, so the whole list costs one request — and this
+    // is the assertion that the client actually asks, since a missing param degrades silently into
+    // the old `terminal_title_stripped` line rather than into an error.
+    const sent: Sent[] = []
+    const hub = connection(remote('remote-1', 'fable-m5max'), HUB_LISTS, [], sent)
+    await createLiveSnapshotLoader([hub])()
+    const paneList = sent.filter((request) => request.method === 'pane.list')
+    expect(paneList).toHaveLength(1)
+    expect(paneList[0]!.params).toEqual({ recent_lines: PANE_SUMMARY_RECENT_LINES })
+    // Nothing else grew a param, and no `pane.read` was issued at all.
+    expect(sent.filter((request) => request.method === 'pane.read')).toHaveLength(0)
+    expect(sent.find((request) => request.method === 'agent.list')!.params).toEqual({})
   })
 
   it('keeps a dead remote in the fleet and out of perRemote, exactly like an undialled one', async () => {

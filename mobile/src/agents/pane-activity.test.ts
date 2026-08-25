@@ -9,7 +9,7 @@
 // through to the terminal title exactly when there is no agent name, so a naive implementation
 // prints the same string twice on precisely the rows that have the least to say.
 import { describe, expect, it } from 'vitest'
-import { agentIdentityLabel, paneActivityLabel } from './agent-display'
+import { agentIdentityLabel, paneActivityLabel, PANE_SUMMARY_RECENT_LINES } from './agent-display'
 
 const WORKING = { agent_status: 'working' } as const
 
@@ -37,6 +37,53 @@ describe('paneActivityLabel', () => {
     expect(
       paneActivityLabel({ ...WORKING, agent: 'claude', terminal_title_stripped: '   ' })
     ).toBeNull()
+  })
+
+  it('prefers the last output line the server batched onto pane.list', () => {
+    // The mockup's own source (`:555` — `pane.read {recent, lines:1}`), now reachable in one round
+    // trip via `pane.list {recent_lines}`. It outranks the running command: `cargo nextest run` is
+    // what the pane was told to do, `test result: FAILED` is what it has to say about it.
+    const pane = {
+      ...WORKING,
+      agent: 'claude',
+      terminal_title_stripped: 'cargo nextest run',
+      recent: ['   Compiling herdr v0.8.0-mx.1', 'test result: FAILED. 2 failed']
+    }
+    expect(paneActivityLabel(pane)).toBe('test result: FAILED. 2 failed')
+  })
+
+  it('reads past the blank rows the row budget spends, rather than rendering an empty line', () => {
+    // `recent_lines` counts terminal ROWS, so the cursor's own blank row is inside the window
+    // (`src/app/api/panes.rs`, `pane_recent_lines`). Taking the last entry blindly would summarise
+    // a working pane as nothing at all.
+    const pane = {
+      ...WORKING,
+      agent: 'claude',
+      terminal_title_stripped: 'cargo nextest run',
+      recent: ['test result: ok. 118 passed', '', '   ']
+    }
+    expect(paneActivityLabel(pane)).toBe('test result: ok. 118 passed')
+  })
+
+  it('falls back exactly as before when recent is absent or empty', () => {
+    // The field is opt-in, so a caller that did not ask for it — or an older server that has never
+    // heard of it — gets panes without one, and a pane that has produced no output gets `[]`.
+    const base = { ...WORKING, agent: 'claude', terminal_title_stripped: 'cargo nextest run' }
+    expect(paneActivityLabel(base)).toBe('cargo nextest run')
+    expect(paneActivityLabel({ ...base, recent: [] })).toBe('cargo nextest run')
+    expect(paneActivityLabel({ ...base, recent: null })).toBe('cargo nextest run')
+    expect(paneActivityLabel({ ...base, recent: ['', '  '] })).toBe('cargo nextest run')
+  })
+
+  it('still says nothing when the last output line is what the row above already says', () => {
+    // The suppression rule applies to the new candidate too, not only to the titles.
+    const pane = { ...WORKING, terminal_title_stripped: 'zsh', recent: ['zsh'] }
+    expect(agentIdentityLabel(pane)).toBe('zsh')
+    expect(paneActivityLabel(pane)).toBeNull()
+  })
+
+  it('asks for more rows than it renders, because blank rows count against the budget', () => {
+    expect(PANE_SUMMARY_RECENT_LINES).toBeGreaterThan(1)
   })
 
   it('does not invent an elapsed time', () => {

@@ -42,6 +42,8 @@ export type AgentDisplayFields = {
   manual_label?: string | null
   title?: string | null
   terminal_title_stripped?: string | null
+  /** `PaneInfo.recent`, oldest first — present only when `pane.list` was asked for it. */
+  recent?: string[] | null
 }
 
 /**
@@ -82,18 +84,61 @@ export function agentIdentityLabel(agent: AgentDisplayFields): string {
 }
 
 /**
+ * Rows of `recent` a snapshot loader has to ask `pane.list` for to draw this one line reliably.
+ *
+ * Three for a line that renders **one**, and the extra two are not slack: the field counts terminal
+ * ROWS the way `pane.read`'s `lines` does (`src/app/api/panes.rs`, `pane_recent_lines`), so a pane
+ * whose cursor rests on a blank row spends one of them on that blank row and blank rows drop out of
+ * the answer. Asking for a single row would leave exactly those panes with an empty `recent` and no
+ * summary at all. It costs nothing on the wire that matters — it is still ONE request for every
+ * pane on the box, which under blocker B8 (one request = one ssh exec) is the whole reason the
+ * server grew the batch field.
+ *
+ * Declared here, next to its only consumer, so the two loaders cannot ask for different amounts.
+ */
+export const PANE_SUMMARY_RECENT_LINES = 3
+
+/**
+ * The newest line of a pane's `recent` that has anything on it, or `null`.
+ *
+ * The array is oldest first, so this reads from the end. It scans past blank entries instead of
+ * taking `at(-1)` because the server counts terminal ROWS, not text lines: a pane whose cursor
+ * rests on a blank row spends one of the requested rows on it, and a screen with trailing blank
+ * rows would otherwise summarise as an empty string.
+ */
+function lastOutputLine(agent: AgentDisplayFields): string | null {
+  const recent = agent.recent
+  if (!Array.isArray(recent)) {
+    return null
+  }
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const trimmed = recent[index]?.trim()
+    if (trimmed) {
+      return trimmed
+    }
+  }
+  return null
+}
+
+/**
  * What the pane is *doing*, for the second line the mockup draws under every pane row
  * (`mockup.html:535` — `└ Running cargo nextest… · 2m41s`).
  *
- * **This diverges from the mockup's stated source and the divergence is deliberate.** The mockup's
- * acceptance line (`:555`) says *"요약 줄 = `pane.read` {recent, lines:1}"*, i.e. read the pane's
- * last output line from the server. On this client that is one JSON call per pane — blocker B8
- * makes each one an ssh exec and a remote `herdr` process — so a workspace with twelve panes would
- * spend twelve execs to draw a list. `terminal_title_stripped` carries the running command and is
- * **already in the `pane.list` payload** (`src/api/herdr-api-types.ts:104`), so the same line costs
- * nothing. `.prd/11-mockup-conformance.md` records this as an open question rather than a silent
- * substitution: if the last output line is what the user actually wants, the fix is a server-side
- * batch field, not twelve execs.
+ * **The mockup's own source, now that the server can serve it in one round trip.** The mockup's
+ * acceptance line (`:555`) says *"요약 줄 = `pane.read` {recent, lines:1}"*, i.e. the pane's last
+ * output line. `.prd/06-open-decisions.md` 결정 9 refused to implement that as written and said why:
+ * one `pane.read` per pane is one ssh exec per pane under blocker B8, so a twelve-pane workspace
+ * would spend twelve execs to draw one list — and it named the correct repair, *"올바른 수리는
+ * 클라이언트가 아니라 서버다"*, a batch field on `pane.list`. That field now exists:
+ * `pane.list {recent_lines: n}` fills every returned pane's `recent` from the same source
+ * `pane.read {source: recent}` reads (`src/api/schema/panes.rs`, `src/app/api/panes.rs`
+ * `handle_pane_list`), so the mockup's semantics cost **zero** extra execs. `recent`'s last
+ * non-blank line therefore wins here.
+ *
+ * `terminal_title_stripped` stays as the fallback rather than being deleted, and it is not
+ * vestigial: the field is opt-in, an older server (or any caller that did not ask for it) returns
+ * panes with no `recent` at all, and a pane that has produced no output has an empty one. Both land
+ * on the running command, which is what this line said for eight milestones.
  *
  * Returns `null` rather than a placeholder when the only candidate is what
  * {@link agentIdentityLabel} already rendered — a row that says `claude` twice is worse than a row
@@ -102,7 +147,7 @@ export function agentIdentityLabel(agent: AgentDisplayFields): string {
  */
 export function paneActivityLabel(agent: AgentDisplayFields): string | null {
   const identity = agentIdentityLabel(agent)
-  for (const candidate of [agent.terminal_title_stripped, agent.title]) {
+  for (const candidate of [lastOutputLine(agent), agent.terminal_title_stripped, agent.title]) {
     const trimmed = candidate?.trim()
     if (trimmed && trimmed !== identity) {
       return trimmed

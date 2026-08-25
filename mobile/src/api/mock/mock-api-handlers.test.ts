@@ -4,8 +4,22 @@
 // client would reject.
 import { describe, expect, it } from 'vitest'
 import { parseJsonApiResponse, encodeJsonApiRequest } from '@herdr/client-ts'
-import { handleMockApiLine, handleMockApiRequest, MOCK_API_METHODS } from './mock-api-handlers'
+import {
+  handleMockApiLine,
+  handleMockApiRequest,
+  MOCK_API_METHODS,
+  MOCK_PANE_LIST_MAX_RECENT_LINES,
+  type MockApiResponse
+} from './mock-api-handlers'
 import { DEFAULT_SCENARIO, mockAgents, mockPanes, mockWorkspaces, rollUp } from './mock-fixture'
+
+/** The `panes` array of a `pane.list` envelope, as objects — so `'recent' in pane` is askable. */
+function panesFrom(response: MockApiResponse): Array<Record<string, unknown>> {
+  if ('error' in response) {
+    throw new Error(`pane.list answered with an error envelope: ${response.error.message}`)
+  }
+  return response.result['panes'] as Array<Record<string, unknown>>
+}
 
 describe('mock API dispatcher', () => {
   it.each(MOCK_API_METHODS)('%s answers a result envelope the real client can parse', (method) => {
@@ -41,6 +55,48 @@ describe('mock API dispatcher', () => {
     const scenario = { remoteCount: 2, workspaceCount: 1, panesPerWorkspace: 5 }
     const response = handleMockApiRequest({ id: 'ts-1', method: 'pane.list' }, scenario)
     expect('result' in response && (response.result['panes'] as unknown[]).length).toBe(5)
+  })
+
+  it('withholds pane.recent unless the request asked for it, as the server does', () => {
+    // `handle_pane_list` (src/app/api/panes.rs) reads no pane at all without `recent_lines`, and
+    // `PaneInfo::recent` is `skip_serializing_if = "Option::is_none"` — so the field is simply not
+    // on the wire. A mock that always shipped it would let a screen depend on data the server
+    // withholds from every caller that did not opt in.
+    const panes = panesFrom(handleMockApiRequest({ id: 'ts-1', method: 'pane.list' }))
+    expect(panes.length).toBeGreaterThan(0)
+    for (const pane of panes) {
+      expect('recent' in pane).toBe(false)
+    }
+  })
+
+  it('serves the last N rows, newest last, when recent_lines is asked for', () => {
+    const asked = 2
+    const panes = panesFrom(
+      handleMockApiRequest({ id: 'ts-1', method: 'pane.list', params: { recent_lines: asked } })
+    )
+    const full = mockPanes()
+    for (const [index, pane] of panes.entries()) {
+      const recent = pane['recent'] as string[]
+      expect(recent).toHaveLength(asked)
+      expect(recent).toEqual((full[index]!.recent as string[]).slice(-asked))
+    }
+  })
+
+  it('clamps recent_lines to the server ceiling instead of serving more than herdr would', () => {
+    const panes = panesFrom(
+      handleMockApiRequest({
+        id: 'ts-1',
+        method: 'pane.list',
+        params: { recent_lines: MOCK_PANE_LIST_MAX_RECENT_LINES + 1000 }
+      })
+    )
+    // The fixture is shorter than the ceiling, so what this pins is that nothing throws and the
+    // answer stays the pane's whole `recent` rather than a padded one.
+    for (const pane of panes) {
+      expect((pane['recent'] as string[]).length).toBeLessThanOrEqual(
+        MOCK_PANE_LIST_MAX_RECENT_LINES
+      )
+    }
   })
 })
 
@@ -107,6 +163,30 @@ describe('mock fixture invariants', () => {
         }
       }
     }
+  })
+
+  it('names itself in every recent line, so a screenshot tells mock from live', () => {
+    // The QA discriminator on this app is a fixture-unique string on screen, never a count or a
+    // shape. The pane row's summary line reads the newest non-blank entry of `recent`
+    // (`../../agents/agent-display.ts`), so that entry in particular has to be unmistakable.
+    for (const seed of [0, 1, 2, 3]) {
+      for (const pane of mockPanes({ ...DEFAULT_SCENARIO, seed })) {
+        const recent = pane.recent ?? []
+        expect(recent.length).toBeGreaterThan(0)
+        const newest = recent.findLast((line) => line.trim().length > 0)
+        expect(newest).toContain('mock-fixture')
+      }
+    }
+  })
+
+  it('keeps a blank row inside the window, because the real field counts terminal rows', () => {
+    // A pane's cursor rests on a blank row and that row is inside `recent_lines`
+    // (`src/app/api/panes.rs`, `pane_recent_lines`). A fixture with no blank entry would never
+    // exercise the branch that scans past it, and the summary line would look fine here and render
+    // empty on a device.
+    expect(mockPanes().some((pane) => (pane.recent ?? []).some((line) => line.trim() === ''))).toBe(
+      true
+    )
   })
 
   it('carries the pane state label onto the agent row, as src/app/agents.rs:392 does', () => {

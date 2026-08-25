@@ -105,6 +105,13 @@ export type PaneInfo = {
   scroll?: PaneScrollInfo | null
   state_labels?: Record<string, string>
   tokens?: Record<string, string>
+  /**
+   * The pane's last N lines of recent output, oldest first — **only** when the request asked for
+   * it with {@link PaneListParams.recent_lines}; absent on every other producer of a `PaneInfo`
+   * (`src/api/schema/panes.rs`, `PaneInfo::recent`). Read from the same source `pane.read
+   * {source: recent}` reads, so the batch field and the per-pane read cannot disagree.
+   */
+  recent?: string[] | null
 }
 
 /**
@@ -147,7 +154,19 @@ export type RemoteListResult = { type: 'remote_list'; remotes: RemoteDefinition[
 /** `workspace.list` result. */
 export type WorkspaceListResult = { type: 'workspace_list'; workspaces: WorkspaceInfo[] }
 
-/** `pane.list` result. Params: `{ workspace_id?: string | null }`. */
+/**
+ * `pane.list` params — `#/schemas/request/$defs/PaneListParams`.
+ *
+ * `recent_lines` is opt-in and counts terminal ROWS the way `pane.read`'s `lines` does, so a pane
+ * whose cursor rests on a blank row spends one of them on that blank row: ask for a couple more
+ * rows than you intend to render. Clamped server-side (`PANE_LIST_MAX_RECENT_LINES` = 80).
+ */
+export type PaneListParams = {
+  workspace_id?: string | null
+  recent_lines?: number | null
+}
+
+/** `pane.list` result. Params: {@link PaneListParams}. */
 export type PaneListResult = { type: 'pane_list'; panes: PaneInfo[] }
 
 /** `agent.list` result. Params: none (`EmptyParams`). */
