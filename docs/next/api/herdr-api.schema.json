@@ -808,6 +808,16 @@
             "pane_id": {
               "type": "string"
             },
+            "recent": {
+              "description": "The pane's last N lines of recent output, oldest first. Present only when `pane.list`\nwas asked for it via [`PaneListParams::recent_lines`]; every other producer of a\n`PaneInfo` leaves it absent. Additive + optional.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "revision": {
               "format": "uint64",
               "minimum": 0,
@@ -2616,6 +2626,16 @@
         },
         "PaneListParams": {
           "properties": {
+            "recent_lines": {
+              "description": "Opt-in: also fill every returned pane's [`PaneInfo::recent`] with its last N lines of\nrecent output, read from the same source `pane.read` reads. Absent = the pane list\nbehaves and serializes exactly as before, so existing callers pay nothing.\n\nThis exists so a client can render a per-pane \"last output line\" summary in ONE round\ntrip instead of one `pane.read` per pane (mobile/.prd/06-open-decisions.md decision 9:\na mobile client gets one remote herdr process per ssh exec, so N panes = N execs).\nCounts terminal ROWS exactly as `pane.read`'s `lines` does, so a pane whose cursor\nsits on a blank row spends one of them on that blank row and the caller sees one\nfewer text line — ask for a couple more rows than you intend to display.\nClamped server-side, see `PANE_LIST_MAX_RECENT_LINES`.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "workspace_id": {
               "type": [
                 "string",
@@ -7778,6 +7798,16 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "recent": {
+              "description": "The pane's last N lines of recent output, oldest first. Present only when `pane.list`\nwas asked for it via [`PaneListParams::recent_lines`]; every other producer of a\n`PaneInfo` leaves it absent. Additive + optional.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "revision": {
               "format": "uint64",

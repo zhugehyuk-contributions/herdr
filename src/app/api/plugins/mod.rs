@@ -1997,6 +1997,7 @@ command = ["sh", "-c", "printf %s ${{HERDR_PANE_ID-unset}} > '{}'; sleep 1"]
             id: "pane-list-popup".into(),
             method: Method::PaneList(PaneListParams {
                 workspace_id: Some(app.public_workspace_id(0)),
+                recent_lines: None,
             }),
         });
         let ResponseResult::PaneList { panes } = response_result(&pane_list) else {

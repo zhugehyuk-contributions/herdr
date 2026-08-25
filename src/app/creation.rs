@@ -465,6 +465,9 @@ impl App {
             tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),
             scroll,
+            // Opt-in only: `pane.list` fills this in afterwards when asked. Every other caller
+            // of `pane_info` keeps the previous payload byte for byte.
+            recent: None,
             revision: terminal.revision,
         })
     }

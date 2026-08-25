@@ -28,6 +28,17 @@ use super::super::api_helpers::{
 use super::super::api_helpers::{METADATA_SOURCE_MAX_CHARS, METADATA_TTL_MAX_MS};
 use super::responses::{encode_error, encode_success};
 
+/// Upper bound on `pane.list`'s `recent_lines`; larger requests are clamped, not rejected
+/// (same shape as `pane.read`, which silently caps its own `lines` at 1000 in
+/// `api_helpers::read_terminal_snapshot`).
+///
+/// Why lower than `pane.read`'s 1000: `pane.list` reads EVERY pane in one request, so its cost
+/// is O(panes x lines) while `pane.read` pays O(lines) for one pane. 80 is exactly the recent
+/// window `pane.read` already uses when its `lines` is omitted, so a batched list can never
+/// cost more per pane than a default `pane.read` would — and the caller this field exists for
+/// (a mobile pane-list summary line) needs 1. Anything deeper is a per-pane `pane.read`.
+pub(crate) const PANE_LIST_MAX_RECENT_LINES: u16 = 80;
+
 impl App {
     pub(super) fn handle_pane_split(&mut self, id: String, params: PaneSplitParams) -> String {
         let target = if let Some(target_pane_id) = params.target_pane_id.as_deref() {
@@ -133,10 +144,49 @@ impl App {
     }
 
     pub(super) fn handle_pane_list(&mut self, id: String, params: PaneListParams) -> String {
-        match self.collect_panes_for_workspace(params.workspace_id.as_deref()) {
-            Ok(panes) => encode_success(id, ResponseResult::PaneList { panes }),
-            Err((code, message)) => encode_error(id, &code, message),
+        let mut panes = match self.collect_panes_for_workspace(params.workspace_id.as_deref()) {
+            Ok(panes) => panes,
+            Err((code, message)) => return encode_error(id, &code, message),
+        };
+        // Opt-in. Without `recent_lines` no pane is read at all, so the response is identical
+        // to what every existing caller already gets (`recent` stays `None` and is skipped).
+        if let Some(requested) = params.recent_lines {
+            let lines = requested.min(PANE_LIST_MAX_RECENT_LINES);
+            for pane in &mut panes {
+                let recent = self.pane_recent_lines(&pane.pane_id, lines);
+                pane.recent = Some(recent);
+            }
         }
+
+        encode_success(id, ResponseResult::PaneList { panes })
+    }
+
+    /// The last `lines` ROWS of a pane's recent output as text lines, oldest first. Blank
+    /// terminal rows (including the one the cursor rests on) count against `lines` and drop
+    /// out of the result, which is why the caller can get back fewer entries than it asked
+    /// for — the same thing `pane.read` does with the same argument.
+    ///
+    /// Reads through the SAME helper `handle_pane_read` uses
+    /// (`api_helpers::read_terminal_snapshot` with `ReadSource::Recent` + `ReadFormat::Text`),
+    /// so `pane.list { recent_lines: n }` and `pane.read { source: "recent", lines: n }` can
+    /// never disagree about what a pane's recent output is.
+    ///
+    /// A pane whose runtime cannot be resolved yields an empty vec rather than dropping the
+    /// field, so the batch answer stays one entry per pane.
+    fn pane_recent_lines(&self, public_pane_id: &str, lines: u16) -> Vec<String> {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(public_pane_id) else {
+            return Vec::new();
+        };
+        let Some((runtime, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
+            return Vec::new();
+        };
+        let snapshot = crate::app::api_helpers::read_terminal_snapshot(
+            runtime,
+            crate::api::schema::ReadSource::Recent,
+            crate::api::schema::ReadFormat::Text,
+            Some(u32::from(lines)),
+        );
+        snapshot.text.lines().map(str::to_string).collect()
     }
 
     pub(super) fn handle_pane_current(&mut self, id: String, params: PaneCurrentParams) -> String {
@@ -2151,6 +2201,128 @@ mod tests {
         assert_eq!(scroll.offset_from_bottom, 3);
         assert!(scroll.max_offset_from_bottom >= scroll.offset_from_bottom);
         assert_eq!(scroll.viewport_rows, 5);
+    }
+
+    /// Distinct, column-0 output lines. CRLF on purpose: the bare-`\n` fixture next door
+    /// staircases in a real VT (`"      line 18"`), which is fine for a `contains` assertion
+    /// but not for asserting the exact lines a client would render.
+    fn app_with_numbered_scrollback_runtime(line_count: usize) -> (App, String) {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let lines = (0..line_count)
+            .map(|line| format!("line {line:03}\r\n"))
+            .collect::<String>();
+        let runtime = crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+            20,
+            5,
+            1_000_000,
+            lines.as_bytes(),
+        );
+        app.state.insert_test_runtime(pane_id, runtime);
+        (app, public_pane_id)
+    }
+
+    fn pane_list_panes(response: &str) -> Vec<PaneInfo> {
+        let success: SuccessResponse = serde_json::from_str(response).unwrap();
+        let ResponseResult::PaneList { panes } = success.result else {
+            panic!("expected pane list response: {response}");
+        };
+        panes
+    }
+
+    #[tokio::test]
+    async fn api_pane_list_omits_recent_output_without_the_opt_in() {
+        let (mut app, _public_pane_id) = app_with_numbered_scrollback_runtime(20);
+
+        let response = app.handle_pane_list("req".into(), PaneListParams::default());
+
+        // The wire payload, not just the decoded struct: an existing caller must not even see
+        // the key, so the opt-in costs nothing on the default path.
+        assert!(
+            !response.contains("\"recent\""),
+            "default pane.list leaked a recent key: {response}"
+        );
+        let panes = pane_list_panes(&response);
+        assert!(!panes.is_empty());
+        assert!(panes.iter().all(|pane| pane.recent.is_none()));
+    }
+
+    #[tokio::test]
+    async fn api_pane_list_returns_recent_output_when_asked() {
+        let (mut app, public_pane_id) = app_with_numbered_scrollback_runtime(20);
+
+        let response = app.handle_pane_list(
+            "req".into(),
+            PaneListParams {
+                workspace_id: None,
+                recent_lines: Some(3),
+            },
+        );
+
+        let panes = pane_list_panes(&response);
+        let pane = panes
+            .iter()
+            .find(|pane| pane.pane_id == public_pane_id)
+            .expect("pane in list");
+        let recent = pane.recent.as_ref().expect("recent output");
+        assert_eq!(
+            recent.last().map(String::as_str),
+            Some("line 019"),
+            "recent should end on the pane's last output line: {recent:?}"
+        );
+        // Three ROWS, and the third is the blank row the cursor rests on after the final
+        // CRLF -- so two text lines come back. Asserted, not worked around: `pane.read`
+        // spends its `lines` budget the same way and the two must not diverge.
+        assert_eq!(recent, &vec!["line 018".to_string(), "line 019".into()]);
+
+        // Same source as pane.read: the two APIs must never disagree about recent output.
+        let read_response = app.handle_pane_read(
+            "read".into(),
+            PaneReadParams {
+                pane_id: public_pane_id,
+                source: crate::api::schema::ReadSource::Recent,
+                lines: Some(3),
+                format: crate::api::schema::ReadFormat::Text,
+                strip_ansi: true,
+                intent: crate::api::schema::ReadIntent::Interactive,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&read_response).unwrap();
+        let ResponseResult::PaneRead { read } = success.result else {
+            panic!("expected pane read response");
+        };
+        let read_lines: Vec<String> = read.text.lines().map(str::to_string).collect();
+        assert_eq!(recent, &read_lines);
+    }
+
+    #[tokio::test]
+    async fn api_pane_list_clamps_recent_lines_to_the_server_cap() {
+        let (mut app, public_pane_id) = app_with_numbered_scrollback_runtime(200);
+
+        let response = app.handle_pane_list(
+            "req".into(),
+            PaneListParams {
+                workspace_id: None,
+                recent_lines: Some(u16::MAX),
+            },
+        );
+
+        let panes = pane_list_panes(&response);
+        let pane = panes
+            .iter()
+            .find(|pane| pane.pane_id == public_pane_id)
+            .expect("pane in list");
+        let recent = pane.recent.as_ref().expect("recent output");
+        // 200 output rows plus the blank cursor row. Clamping to the cap keeps the last
+        // `cap` ROWS, one of which is that blank row, so `cap - 1` text lines survive.
+        // Unclamped, u16::MAX rows would have returned all 200.
+        let text_lines = usize::from(PANE_LIST_MAX_RECENT_LINES) - 1;
+        assert_eq!(recent.len(), text_lines);
+        assert_eq!(recent.last().map(String::as_str), Some("line 199"));
+        assert_eq!(
+            recent.first().map(String::as_str),
+            Some(format!("line {:03}", 200 - text_lines).as_str())
+        );
     }
 
     #[tokio::test]

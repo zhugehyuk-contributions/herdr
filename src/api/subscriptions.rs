@@ -744,6 +744,7 @@ mod tests {
             tokens: HashMap::new(),
             agent_session: None,
             scroll,
+            recent: None,
             revision: 0,
         }
     }

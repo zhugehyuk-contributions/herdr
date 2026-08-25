@@ -75,7 +75,10 @@ fn pane_list(args: &[String]) -> std::io::Result<i32> {
 
     super::print_response(&super::send_request(&Request {
         id: "cli:pane:list".into(),
-        method: Method::PaneList(PaneListParams { workspace_id }),
+        method: Method::PaneList(PaneListParams {
+            workspace_id,
+            recent_lines: None,
+        }),
     })?)
 }
 

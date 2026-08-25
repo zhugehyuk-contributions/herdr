@@ -235,6 +235,19 @@ pub struct PaneResizeParams {
 pub struct PaneListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// Opt-in: also fill every returned pane's [`PaneInfo::recent`] with its last N lines of
+    /// recent output, read from the same source `pane.read` reads. Absent = the pane list
+    /// behaves and serializes exactly as before, so existing callers pay nothing.
+    ///
+    /// This exists so a client can render a per-pane "last output line" summary in ONE round
+    /// trip instead of one `pane.read` per pane (mobile/.prd/06-open-decisions.md decision 9:
+    /// a mobile client gets one remote herdr process per ssh exec, so N panes = N execs).
+    /// Counts terminal ROWS exactly as `pane.read`'s `lines` does, so a pane whose cursor
+    /// sits on a blank row spends one of them on that blank row and the caller sees one
+    /// fewer text line — ask for a couple more rows than you intend to display.
+    /// Clamped server-side, see `PANE_LIST_MAX_RECENT_LINES`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_lines: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -476,6 +489,11 @@ pub struct PaneInfo {
     pub agent_session: Option<AgentSessionInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<PaneScrollInfo>,
+    /// The pane's last N lines of recent output, oldest first. Present only when `pane.list`
+    /// was asked for it via [`PaneListParams::recent_lines`]; every other producer of a
+    /// `PaneInfo` leaves it absent. Additive + optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent: Option<Vec<String>>,
     pub revision: u64,
 }
 

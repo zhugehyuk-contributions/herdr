@@ -827,6 +827,7 @@ fn worktree_request_and_response_round_trip() {
                 tokens: HashMap::new(),
                 agent_session: None,
                 scroll: None,
+                recent: None,
                 revision: 0,
             },
             worktree: WorktreeInfo {
@@ -1257,6 +1258,7 @@ fn create_response_round_trips_with_root_pane() {
                 tokens: HashMap::new(),
                 agent_session: None,
                 scroll: None,
+                recent: None,
                 revision: 0,
             },
         },
