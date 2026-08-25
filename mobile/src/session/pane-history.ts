@@ -191,10 +191,12 @@ export class PaneHistoryReader {
         source: PANE_HISTORY_SOURCE,
         lines: PANE_HISTORY_LINES,
         format: PANE_HISTORY_FORMAT
-        // `strip_ansi` is deliberately not sent. It defaults to true
-        // (`src/api/schema/panes.rs:283`) and `handle_pane_read` never reads it
-        // (`src/app/api/panes.rs:1189-1228`) — `format` alone selects text or ANSI — so sending it
-        // would state a parameter that decides nothing.
+        // `strip_ansi` is deliberately not sent: the parameter is gone. It was never read by
+        // `handle_pane_read` (`src/app/api/panes.rs:1239`), so it was removed from
+        // `PaneReadParams` (`src/api/schema/panes.rs:300`) — `format` alone selects text or ANSI,
+        // because `read_terminal_snapshot` (`src/app/api_helpers.rs:109`) dispatches on
+        // `(format, source)` and nothing else. Old servers ignored it; new ones drop it as an
+        // unknown field, so either way sending it would state a parameter that decides nothing.
       })
     } catch (error) {
       // A server error envelope is an answer: `pane_not_found` for a pane that has gone, and so on.
