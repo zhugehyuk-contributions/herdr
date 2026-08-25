@@ -1313,7 +1313,8 @@
           "properties": {
             "format": {
               "$ref": "#/schemas/request/$defs/ReadFormat",
-              "default": "text"
+              "default": "text",
+              "description": "The only ANSI knob, exactly as in `pane.read`: `text` returns the stripped screen text,\n`ansi` returns the escape-preserving snapshot. `handle_agent_read`\n(src/app/api/agents.rs) hands `(source, format, lines)` straight to\n`app::api_helpers::read_terminal_snapshot`, which dispatches on `(format, source)` alone.\nA separate `strip_ansi` flag used to sit here and was never read by the handler.\nLegacy clients may keep sending it: these params are not `deny_unknown_fields`, so it is\nignored exactly as it always was in practice."
             },
             "lines": {
               "format": "uint32",
@@ -1325,10 +1326,6 @@
             },
             "source": {
               "$ref": "#/schemas/request/$defs/ReadSource"
-            },
-            "strip_ansi": {
-              "default": true,
-              "type": "boolean"
             },
             "target": {
               "type": "string"
@@ -3209,6 +3206,7 @@
           "type": "object"
         },
         "PaneWaitForOutputParams": {
+          "description": "The wait loop reads the pane as `format: text` and matches against that stripped text\n(`api::wait::wait_for_output`), so these params carry no ANSI knob. A `strip_ansi` field used\nto sit here and was forwarded into `PaneReadParams::strip_ansi`, which no handler ever read --\n`herdr pane wait-output --raw` has therefore always been a no-op. Legacy clients may keep\nsending it: these params are not `deny_unknown_fields`, so it is ignored as it always was.",
           "properties": {
             "lines": {
               "format": "uint32",
@@ -3226,10 +3224,6 @@
             },
             "source": {
               "$ref": "#/schemas/request/$defs/ReadSource"
-            },
-            "strip_ansi": {
-              "default": true,
-              "type": "boolean"
             },
             "timeout_ms": {
               "format": "uint64",
@@ -4133,6 +4127,7 @@
               "type": "object"
             },
             {
+              "description": "The subscription always polls the pane as `format: text` and matches against that\nstripped text (see `api::subscriptions`), so there is no ANSI knob here. A `strip_ansi`\nfield used to sit in this variant; its only consumer was the equally dead\n`PaneReadParams::strip_ansi`, so it never changed a byte. Legacy clients may keep sending\nit: subscriptions are not `deny_unknown_fields`, so it is ignored as it always was.",
               "properties": {
                 "lines": {
                   "format": "uint32",
@@ -4150,10 +4145,6 @@
                 },
                 "source": {
                   "$ref": "#/schemas/request/$defs/ReadSource"
-                },
-                "strip_ansi": {
-                  "default": true,
-                  "type": "boolean"
                 },
                 "type": {
                   "const": "pane.output_matched",

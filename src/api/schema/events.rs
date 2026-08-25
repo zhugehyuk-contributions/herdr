@@ -62,6 +62,11 @@ pub enum Subscription {
     PaneExited {},
     #[serde(rename = "pane.agent_detected")]
     PaneAgentDetected {},
+    /// The subscription always polls the pane as `format: text` and matches against that
+    /// stripped text (see `api::subscriptions`), so there is no ANSI knob here. A `strip_ansi`
+    /// field used to sit in this variant; its only consumer was the equally dead
+    /// `PaneReadParams::strip_ansi`, so it never changed a byte. Legacy clients may keep sending
+    /// it: subscriptions are not `deny_unknown_fields`, so it is ignored as it always was.
     #[serde(rename = "pane.output_matched")]
     PaneOutputMatched {
         pane_id: String,
@@ -69,8 +74,6 @@ pub enum Subscription {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lines: Option<u32>,
         r#match: OutputMatch,
-        #[serde(default = "super::common::default_true")]
-        strip_ansi: bool,
     },
     #[serde(rename = "pane.agent_status_changed")]
     PaneAgentStatusChanged {
@@ -94,6 +97,11 @@ pub struct EventsWaitParams {
     pub timeout_ms: Option<u64>,
 }
 
+/// The wait loop reads the pane as `format: text` and matches against that stripped text
+/// (`api::wait::wait_for_output`), so these params carry no ANSI knob. A `strip_ansi` field used
+/// to sit here and was forwarded into `PaneReadParams::strip_ansi`, which no handler ever read --
+/// `herdr pane wait-output --raw` has therefore always been a no-op. Legacy clients may keep
+/// sending it: these params are not `deny_unknown_fields`, so it is ignored as it always was.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneWaitForOutputParams {
     pub pane_id: String,
@@ -103,8 +111,6 @@ pub struct PaneWaitForOutputParams {
     pub r#match: OutputMatch,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
-    #[serde(default = "super::common::default_true")]
-    pub strip_ansi: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -63,8 +63,9 @@ pub(super) fn wait_for_output(
                 source: output_match_read_source(&params.source),
                 lines: params.lines,
                 // The matcher always matches against stripped text, so this read is pinned to
-                // `text`. `params.strip_ansi` has nowhere to go: `pane.read` derives ANSI from
-                // `format`, and the flag it used to be forwarded into was never read.
+                // `text`. That is why `PaneWaitForOutputParams` has no ANSI knob left: the
+                // `strip_ansi` it used to carry was forwarded into a `pane.read` field that no
+                // handler ever read.
                 format: crate::api::schema::ReadFormat::Text,
                 intent: crate::api::schema::ReadIntent::Passive,
             }),

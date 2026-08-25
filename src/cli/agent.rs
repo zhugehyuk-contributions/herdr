@@ -850,7 +850,6 @@ fn agent_read(args: &[String]) -> std::io::Result<i32> {
     let mut source = ReadSource::Recent;
     let mut lines = None;
     let mut format = ReadFormat::Text;
-    let mut strip_ansi = true;
 
     let mut index = 1;
     while index < args.len() {
@@ -877,12 +876,12 @@ fn agent_read(args: &[String]) -> std::io::Result<i32> {
                     return Ok(2);
                 };
                 format = super::parse_read_format(value)?;
-                strip_ansi = !matches!(format, ReadFormat::Ansi);
                 index += 2;
             }
+            // `--ansi` is just `--format ansi`: the format is the whole ANSI switch. Both used to
+            // also clear a `strip_ansi` request flag that the server never read.
             "--ansi" => {
                 format = ReadFormat::Ansi;
-                strip_ansi = false;
                 index += 1;
             }
             other => {
@@ -899,7 +898,6 @@ fn agent_read(args: &[String]) -> std::io::Result<i32> {
             source,
             lines,
             format,
-            strip_ansi,
         }),
     })?;
     super::print_read_response(&response)

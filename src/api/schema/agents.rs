@@ -10,10 +10,15 @@ pub struct AgentReadParams {
     pub source: ReadSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<u32>,
+    /// The only ANSI knob, exactly as in `pane.read`: `text` returns the stripped screen text,
+    /// `ansi` returns the escape-preserving snapshot. `handle_agent_read`
+    /// (src/app/api/agents.rs) hands `(source, format, lines)` straight to
+    /// `app::api_helpers::read_terminal_snapshot`, which dispatches on `(format, source)` alone.
+    /// A separate `strip_ansi` flag used to sit here and was never read by the handler.
+    /// Legacy clients may keep sending it: these params are not `deny_unknown_fields`, so it is
+    /// ignored exactly as it always was in practice.
     #[serde(default)]
     pub format: ReadFormat,
-    #[serde(default = "super::common::default_true")]
-    pub strip_ansi: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

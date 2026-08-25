@@ -1077,7 +1077,7 @@ fn pane_wait_output(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn parse_pane_wait_output_args(args: &[String]) -> Result<PaneWaitForOutputParams, String> {
-    const USAGE: &str = "usage: herdr pane wait-output <pane_id> (--match TEXT | --regex PATTERN) [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS] [--raw]";
+    const USAGE: &str = "usage: herdr pane wait-output <pane_id> (--match TEXT | --regex PATTERN) [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS]";
 
     let args = super::expand_equals_args(
         args,
@@ -1087,7 +1087,6 @@ fn parse_pane_wait_output_args(args: &[String]) -> Result<PaneWaitForOutputParam
     let mut source = ReadSource::Recent;
     let mut lines = None;
     let mut timeout_ms = None;
-    let mut strip_ansi = true;
     let mut matcher = None;
     let mut index = 0;
     while index < args.len() {
@@ -1133,8 +1132,10 @@ fn parse_pane_wait_output_args(args: &[String]) -> Result<PaneWaitForOutputParam
                     Some(super::parse_u64_flag("--timeout", value).map_err(|err| err.to_string())?);
                 index += 2;
             }
+            // Accepted for old invocations, dropped on the floor: the wait loop matches against
+            // stripped text, so this only ever set a request flag the server never read. It is
+            // out of the usage line because there is nothing left for it to do.
             "--raw" => {
-                strip_ansi = false;
                 index += 1;
             }
             option if option.starts_with('-') => {
@@ -1161,7 +1162,6 @@ fn parse_pane_wait_output_args(args: &[String]) -> Result<PaneWaitForOutputParam
         lines,
         r#match: matcher,
         timeout_ms,
-        strip_ansi,
     })
 }
 
@@ -1655,7 +1655,7 @@ fn print_pane_help() {
     eprintln!("  herdr pane close <pane_id>");
     eprintln!("  herdr pane send-text <pane_id> <text>");
     eprintln!("  herdr pane send-keys <pane_id> <key> [key ...]");
-    eprintln!("  herdr pane wait-output <pane_id> (--match TEXT | --regex PATTERN) [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS] [--raw]");
+    eprintln!("  herdr pane wait-output <pane_id> (--match TEXT | --regex PATTERN) [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS]");
     eprintln!("  herdr pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
     eprintln!("  herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
     eprintln!("  herdr pane release-agent <pane_id> --source ID --agent LABEL [--seq N]");
@@ -2047,7 +2047,20 @@ mod tests {
         );
         assert_eq!(params.timeout_ms, Some(5000));
         assert_eq!(params.source, ReadSource::Recent);
-        assert!(params.strip_ansi);
+    }
+
+    #[test]
+    fn parse_pane_wait_output_args_still_accepts_a_legacy_raw_flag() {
+        // `--raw` only ever set the server-ignored `strip_ansi` request flag, and the wait loop
+        // matches on stripped text regardless. The flag is gone from the usage line but must not
+        // start erroring on scripts that still pass it -- and it must change nothing.
+        let with_raw =
+            parse_pane_wait_output_args(&args(&["issue-1", "--match", "ready", "--raw"])).unwrap();
+
+        assert_eq!(
+            with_raw,
+            parse_pane_wait_output_args(&args(&["issue-1", "--match", "ready"])).unwrap()
+        );
     }
 
     #[test]

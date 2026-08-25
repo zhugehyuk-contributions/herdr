@@ -244,9 +244,6 @@ impl ActiveSubscription {
                 source,
                 lines,
                 r#match,
-                // `pane.read` gets its ANSI behaviour from `format` alone; this subscription
-                // always reads stripped text, so the client's flag has no read to influence.
-                strip_ansi: _,
             } => {
                 let regex = match &r#match {
                     crate::api::schema::OutputMatch::Regex { value } => match Regex::new(value) {
@@ -609,6 +606,8 @@ fn pane_read(
                 pane_id: pane_id.to_string(),
                 source,
                 lines,
+                // The matcher only ever runs against stripped text, so this read is pinned to
+                // `text`. That is why `pane.output_matched` carries no ANSI knob of its own.
                 format: crate::api::schema::ReadFormat::Text,
                 intent: crate::api::schema::ReadIntent::Passive,
             }),

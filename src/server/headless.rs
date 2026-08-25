@@ -6982,7 +6982,6 @@ next_tab = ""
                         source: api::schema::ReadSource::Recent,
                         lines: Some(200),
                         format: api::schema::ReadFormat::Text,
-                        strip_ansi: true,
                     }),
                 };
 

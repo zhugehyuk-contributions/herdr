@@ -473,7 +473,10 @@ fn pane_send_input_defaults_to_empty_text_and_keys() {
 }
 
 #[test]
-fn pane_wait_for_output_defaults_strip_ansi_to_true() {
+fn pane_wait_for_output_ignores_a_legacy_strip_ansi_flag() {
+    // `strip_ansi` was forwarded into the equally dead `PaneReadParams::strip_ansi`, so
+    // `--raw` never changed a byte of the matched text. The field is gone; clients pinned to the
+    // old shape must still parse, and the removed flag must not reappear on the wire.
     let json = r#"
     {
         "id": "req_1",
@@ -481,16 +484,25 @@ fn pane_wait_for_output_defaults_strip_ansi_to_true() {
         "params": {
             "pane_id": "p_1",
             "source": "recent",
-            "match": { "type": "substring", "value": "ready" }
+            "match": { "type": "substring", "value": "ready" },
+            "strip_ansi": false
         }
     }
     "#;
 
     let request: Request = serde_json::from_str(json).unwrap();
+    let serialized = serde_json::to_value(&request).unwrap();
+    assert!(serialized["params"].get("strip_ansi").is_none());
     let Method::PaneWaitForOutput(params) = request.method else {
         panic!("wrong method parsed");
     };
-    assert!(params.strip_ansi);
+    assert_eq!(params.pane_id, "p_1");
+    assert_eq!(
+        params.r#match,
+        OutputMatch::Substring {
+            value: "ready".into()
+        }
+    );
 }
 
 #[test]
@@ -541,6 +553,35 @@ fn pane_read_ignores_a_legacy_strip_ansi_flag() {
         panic!("wrong method parsed");
     };
     assert_eq!(params.format, ReadFormat::Text);
+}
+
+#[test]
+fn agent_read_ignores_a_legacy_strip_ansi_flag() {
+    // Same dead param, same removal: `handle_agent_read` (src/app/api/agents.rs) only ever
+    // passes `(source, format, lines)` to `read_terminal_snapshot`, so the flag the CLI used to
+    // compute was discarded server-side. Old clients keep parsing; `format` is the whole knob.
+    let json = r#"
+    {
+        "id": "req_1",
+        "method": "agent.read",
+        "params": {
+            "target": "claude",
+            "source": "recent",
+            "format": "ansi",
+            "strip_ansi": true
+        }
+    }
+    "#;
+
+    let request: Request = serde_json::from_str(json).unwrap();
+    let serialized = serde_json::to_value(&request).unwrap();
+    assert!(serialized["params"].get("strip_ansi").is_none());
+    let Method::AgentRead(params) = request.method else {
+        panic!("wrong method parsed");
+    };
+    // `strip_ansi: true` next to `format: ansi` is exactly the self-contradiction the field made
+    // expressible; the format wins, as it always did in the handler.
+    assert_eq!(params.format, ReadFormat::Ansi);
 }
 
 #[test]
@@ -689,7 +730,6 @@ fn subscribe_request_parses_parameterized_subscriptions() {
             source: ReadSource::Recent,
             lines: Some(200),
             r#match: OutputMatch::Substring { value },
-            strip_ansi: true,
         } if pane_id == "p_1_1" && value == "auth: received"
     ));
     assert!(matches!(
@@ -702,6 +742,48 @@ fn subscribe_request_parses_parameterized_subscriptions() {
     assert!(matches!(
         &params.subscriptions[2],
         Subscription::PaneScrollChanged { pane_id } if pane_id == "p_1_1"
+    ));
+}
+
+#[test]
+fn output_matched_subscription_ignores_a_legacy_strip_ansi_flag() {
+    // The subscription polls `pane.read` with `format: text` and matches on that stripped text
+    // (src/api/subscriptions.rs), so the removed flag had no read to influence. A client still
+    // sending it must subscribe successfully, and the field must not come back on the wire.
+    let json = r#"
+    {
+        "id": "sub_1",
+        "method": "events.subscribe",
+        "params": {
+            "subscriptions": [
+                {
+                    "type": "pane.output_matched",
+                    "pane_id": "p_1_1",
+                    "source": "recent",
+                    "match": { "type": "substring", "value": "ready" },
+                    "strip_ansi": false
+                }
+            ]
+        }
+    }
+    "#;
+
+    let request: Request = serde_json::from_str(json).unwrap();
+    let serialized = serde_json::to_value(&request).unwrap();
+    assert!(serialized["params"]["subscriptions"][0]
+        .get("strip_ansi")
+        .is_none());
+    let Method::EventsSubscribe(params) = request.method else {
+        panic!("wrong method parsed");
+    };
+    assert!(matches!(
+        &params.subscriptions[0],
+        Subscription::PaneOutputMatched {
+            pane_id,
+            source: ReadSource::Recent,
+            lines: None,
+            r#match: OutputMatch::Substring { value },
+        } if pane_id == "p_1_1" && value == "ready"
     ));
 }
 
