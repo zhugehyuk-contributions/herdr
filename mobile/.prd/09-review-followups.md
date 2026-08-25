@@ -2332,3 +2332,22 @@ postinstall 생성물 2종(엔진 624KB + 폰트 306KB) 확인 후 시작.
 - **회귀 PASS** — 요약줄 유지(그 `0`도 dotted), 스와이프, 입력 왕복(`echo QA9INPUT0K` 실행+출력),
   클리핑 신규 0, logcat 치명 0. live 판별 = 일회용 키 `Accepted publickey … ED25519` + 토큰
   `ZQ9-LIVE-66b8e50f` 실렌더 + `demo data` 배지 소멸.
+
+## ZZ. iOS UI QA 13차 (표적) — **5/5 전 항목 PASS** (2026-08-25, 별도 에이전트, `qa-ios-13` @ `16248702`)
+
+빌드 15:23:07(BUILD SUCCEEDED, pods-install.sh 경유) · **§HH 결속**: 앱 PID의 ESTABLISHED TCP 전부
+`127.0.0.1:8252`(단독 리스너), 8081/8251 부재 — 타 트리 JS 혼입 불가능.
+
+- **1 웹뷰 내부 서체 PASS (머리기사)** — 글리프 라인 심고 4배 줌: `0O0O`에서 0 전부 중앙 점·O 무점,
+  `1lI` 세리프 = JBMono. **칩 전환 + 스와이프 왕복 2회 후에도 유지.** fit 정상.
+  §P 관찰: `cellW:7.667, paintedCellW:0, cols:80, scale:0.655` (U7 주석 7.80 예측 대비 실측 7.667).
+- **2 U6 무회귀 PASS** — 12차 PASS 표면 + 신규 500/600 표본 전부 JBMono.
+- **3 splash 게이트 PASS** — ~1.5s 첫 콘텐츠 프레임부터 모노, 산세리프 프레임 0.
+- **4 회귀 PASS + 관찰 1** — 요약줄 3행·스와이프 2/2·크래시 0. **관찰(비차단, 판정 불가로 기재)**:
+  XCUITest `typeText` 26자 중 pty에 "ec" 2자만 도달, 2/2 결정적 재현 — 키스트로크→pty→실행→에코
+  경로 자체는 생존. 하네스 타이핑 경로 vs RN controlled-input 동기화 미판별 → **다음 라운드 표적**.
+  (12차 "입력 왕복"과의 방법 차이 미기록이라 회귀 단정 불가.)
+- **5 클리핑 신규 0 PASS.**
+- live 판별 = 토큰 `ZQ13-LIVE-acf9be7e` 실렌더 + lsof ESTABLISHED + herdr 로그 `client connected`.
+- 리그 함정 기록: **랩 unix socket을 긴 scratchpad 경로에 두면 104바이트 초과로 herdr 서버가
+  조용히 못 뜬다** — `/tmp/<lab>` 단경로가 해법.

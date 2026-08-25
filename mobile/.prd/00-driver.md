@@ -28,18 +28,17 @@ orca가 이긴다(`06-open-decisions.md` 결정 8이 그 적용례).
 
 ## 지금 상태 (2026-08-25 오후 — 서버 작업 3건 전부 닫힘, 조건 4는 재QA 필요로 재개방)
 
-**서버 작업 3건 + 위생 1건이 이 날 오후 스윕으로 닫혔고**(아래 §N-A), 같은 스윕이 **조건 4를
-다시 열었다**: iOS가 7라운드 내내 산세리프로 렌더되고 있었다(타이포 결함, `.prd/09` §SS —
-`'monospace'`는 Android 전용 generic). 수리는 착지(`fd42c472`), **기기 확증은 미완**. 여기에
-신규 UI 표면 3종(요약줄 소스 전환·keybindings 세그먼트·show qr 오버레이)이 추가됐으므로
-**재QA 라운드(Android 8차 · iOS 12차)가 최우선이다** (§N-QA).
+**서버 작업 3건 + 위생 1건 + 타이포 결함(발견→수리→기계화)이 이 날 하루에 닫혔고, 재QA
+4라운드(§VV·§WW·§YY·§ZZ)가 전부 완주됐다.** 최종: **Android 9차 5/5 PASS · iOS 13차 5/5 PASS** —
+전면 JBMono 계약(RN 층 + 웹뷰 터미널 내부)이 양 플랫폼에서 실증됐다. 에이전트가 닫을 수 있는
+항목은 소진 상태이며, 남은 것은 **유저 게이트 3건**(§N-B)과 소형 후속(아래 §다음 행동)뿐이다.
 
 | 조건 | Android | iOS | 남은 것 |
 |---|---|---|---|
 | 1 폰으로 원격 에이전트 사용 | ✅ 라이브 확증 | ✅ 라이브 확증 (`ZQ11-LIVE-PROOF`) | — |
 | 2 orca 와꾸 | ✅ 이식 지도 15/15 | ✅ | — |
 | 3 별도 에이전트 QA | ✅ 7차 PASS | ✅ 11차 PASS | 재QA(아래) 후 재판정 |
-| 4 목업 대조 UI QA | **9차 5/5 PASS**(§YY — 볼드 수리·웹뷰 dotted zero·ConnectionStatusLine 라이브 확증) | 12차 5/5 PASS(§WW) → **13차**(U6·U7 표적) 진행 | iOS 13차 판정 대기 |
+| 4 목업 대조 UI QA | **9차 5/5 PASS**(§YY — 볼드 수리·웹뷰 dotted zero·ConnectionStatusLine 라이브 확증) | **13차 5/5 PASS**(§ZZ — 웹뷰 dotted zero·U6 무회귀·splash) | — (서체 축 완결) |
 | 5 QR 로그인 | ✅ **실제 스캔 실측** | 화면·권한·폴백 ✅ / **실제 스캔 판정불가** | **실기기** (+데스크톱 show qr 실서버 실측) |
 
 | 마일스톤 | 코드 | Android | iOS |
@@ -135,14 +134,19 @@ orca가 이긴다(`06-open-decisions.md` 결정 8이 그 적용례).
 **clippy는 툴체인 bin PATH 선두 고정**(Homebrew clippy 누수, `01-spec.md` 함정). 최종 리시트:
 nextest 4019/4019 · clippy 0err · fmt clean · 모바일 1035 tests + typecheck/lint/format/bundle.
 
-### N-QA. **재QA 라운드 — 최우선** (Android 8차 · iOS 12차, 각각 별도 에이전트)
+### N-QA. ~~재QA 라운드~~ — **완주 (2026-08-25, 4라운드)**
 
-**Android 8차 판정 도착 (2026-08-25, `.prd/09` §VV): 서체 1 FAIL / 4 PASS.** FAIL = 볼드 5곳
-Roboto 폴백(합성/잔존 `fontWeight` 페어 — Android는 커스텀 패밀리 weight 합성이 없다).
-2(클리핑)·3(요약줄 recent)·4(keybindings 세그)·5(회귀)는 PASS. **수리 착지 (`d2c696b7`)**:
-fontWeight 34곳 전수→페이스 토큰(400/500/600/700), discipline 소스 스캔 테스트로 재발 차단,
-ConnectionStatusLine(라이브 pane 헤더의 family 부재 산세리프 — 별개 사이트) 동반 수리.
-→ **Android 9차 표적 재QA 진행** (볼드 5곳 + 500/600 사이트 + pane 헤더 상태줄 줌 확인).
+8차(§VV, 서체 1 FAIL/4 PASS) → 수리 `d2c696b7`(fontWeight 34곳 전수 + discipline 테스트) →
+**9차 5/5 PASS**(§YY). iOS: 12차 5/5 PASS(§WW, JBMono 첫 실증) → 웹뷰 임베드 `16248702` →
+**13차 5/5 PASS**(§ZZ). 전면 JBMono 계약이 양 플랫폼 실기 스크린샷 글리프 대조로 실증됨.
+
+### N-후속 (소형, 에이전트 가능 — 다음 세션 후보)
+
+1. **iOS 입력바 typeText 절단 판별** — §ZZ 관찰: XCUITest `typeText` 26자 중 pty에 2자만 도달,
+   2/2 재현. 하네스 결함인지 RN controlled-input 동기화 결함인지 판별부터(문자 단위 왕복은 생존).
+2. 포팅 orca 모달 5종의 monotone 팔레트 위반(§SS 수리 유닛 발견) — 마운트 시점에 함께.
+3. Agents 홈 요약줄은 여전히 근사(`AgentInfo`에 recent 없음, 결정 9 잔여).
+4. TUI `show qr`(`e559e7e9`)의 실서버 실측(TUI에서 띄워 폰 스캔까지).
 
 대상(전부 08-25 오후 변경분):
 1. **JetBrains Mono 실렌더** — iOS는 첫 실증(지금까지 산세리프였다), Android는
