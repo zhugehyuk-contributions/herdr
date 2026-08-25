@@ -169,57 +169,64 @@ struct ResolvedTarget {
 }
 
 fn resolve_target(args: &PairArgs) -> std::io::Result<Result<ResolvedTarget, i32>> {
+    Ok(resolve_target_message(args)?.map_err(|(message, code)| {
+        eprintln!("{message}");
+        code
+    }))
+}
+
+/// The resolution itself: which machine the code points at, or `(message, exit code)`. Split out of
+/// [`resolve_target`] so the TUI's `show qr` row resolves through the SAME code — it renders the
+/// message on its overlay instead of writing it to a stderr it does not have.
+fn resolve_target_message(
+    args: &PairArgs,
+) -> std::io::Result<Result<ResolvedTarget, (String, i32)>> {
     let Some(query) = args.remote.as_deref() else {
         return Ok(
-            resolve_local(args, None, None, env_user(), crate::platform::hostname()).map_err(
-                |message| {
-                    eprintln!("{message}");
-                    2
-                },
-            ),
+            resolve_local(args, None, None, env_user(), crate::platform::hostname())
+                .map_err(|message| (message, 2)),
         );
     };
 
     let remotes = match remote_definitions()? {
         Ok(remotes) => remotes,
-        Err(code) => return Ok(Err(code)),
+        Err(error) => return Ok(Err((error, 1))),
     };
     let Some(remote) = remotes
         .iter()
         .find(|remote| remote.id == query)
         .or_else(|| remotes.iter().find(|remote| remote.name == query))
     else {
-        eprintln!("herdr pair: no remote named {query}.");
+        let mut message = format!("herdr pair: no remote named {query}.");
         if remotes.is_empty() {
-            eprintln!("This server has no remotes; run `herdr pair` with no argument to pair with this machine.");
+            message.push_str("\nThis server has no remotes; run `herdr pair` with no argument to pair with this machine.");
         } else {
-            eprintln!("Known remotes:");
+            message.push_str("\nKnown remotes:");
             for remote in &remotes {
-                eprintln!("  {} ({})", remote.name, remote.id);
+                message.push_str(&format!("\n  {} ({})", remote.name, remote.id));
             }
         }
-        return Ok(Err(2));
+        return Ok(Err((message, 2)));
     };
 
     Ok(
-        resolve_remote(remote, args, env_user(), crate::platform::hostname()).map_err(|message| {
-            eprintln!("{message}");
-            2
-        }),
+        resolve_remote(remote, args, env_user(), crate::platform::hostname())
+            .map_err(|message| (message, 2)),
     )
 }
 
 /// The remotes this desktop already knows, straight from the running server — the same list the
-/// sidebar shows. `Err(code)` is a server that answered with an error, which is not the same thing
-/// as "no remotes" and must not be reported as one.
-fn remote_definitions() -> std::io::Result<Result<Vec<RemoteDefinitionSnapshot>, i32>> {
+/// sidebar shows. `Err(message)` is a server that answered with an error, which is not the same
+/// thing as "no remotes" and must not be reported as one. The message is handed BACK rather than
+/// printed: the CLI writes it to stderr, and the TUI's `show qr` row (which has no stderr) renders
+/// it on the overlay.
+fn remote_definitions() -> std::io::Result<Result<Vec<RemoteDefinitionSnapshot>, String>> {
     let response = super::send_request(&Request {
         id: "cli:pair:remote:list".into(),
         method: Method::RemoteList(EmptyParams::default()),
     })?;
     if let Some(error) = response.get("error") {
-        eprintln!("{error}");
-        return Ok(Err(1));
+        return Ok(Err(error.to_string()));
     }
     serde_json::from_value(response["result"]["remotes"].clone())
         .map(Ok)
@@ -767,6 +774,69 @@ fn terminal_width() -> Option<u16> {
         .ok()
         .map(|(columns, _)| columns)
         .filter(|columns| *columns > 0)
+}
+
+/// One rendered pairing code, for a caller that draws it itself instead of writing to a terminal.
+/// The TUI sidebar's `show qr` row is that caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PairingCode {
+    /// The half-block QR, one text row per two QR rows — exactly what `herdr pair` prints.
+    pub(crate) qr: String,
+    /// The `name — user@host:port` line printed under the code.
+    pub(crate) caption: String,
+    /// The `authorized_keys` line the user still has to place. The overlay path NEVER writes it:
+    /// `--authorize` is a deliberate opt-in of the command, and a context-menu row is not one.
+    pub(crate) public_key_line: String,
+    /// What had to be guessed to name the target (hostname / `$USER` / an ssh-config user), said
+    /// out loud rather than presented as fact.
+    pub(crate) notes: Vec<String>,
+}
+
+impl PairingCode {
+    /// The rendered code's `(columns, rows)`. The caller sizes its popup with this and says so when
+    /// the code does not fit — a cut-off QR does not scan (`herdr pair` warns for the same reason).
+    pub(crate) fn qr_size(&self) -> (u16, u16) {
+        (
+            rendered_width(&self.qr).min(u16::MAX as usize) as u16,
+            self.qr.lines().count().min(u16::MAX as usize) as u16,
+        )
+    }
+}
+
+/// Mint + render a pairing code for `remote` (`None` = this machine, the no-argument `herdr pair`).
+/// This is `herdr pair`'s own path — [`resolve_target_message`], [`mint_pairing_key`],
+/// [`build_payload`], [`render_qr`] — with the CLI's stdout/stderr and `--authorize` left out, so a
+/// code shown in the TUI carries the SAME payload as one printed by the command.
+pub(crate) fn pairing_code_for(remote: Option<&str>) -> Result<PairingCode, String> {
+    let args = PairArgs {
+        remote: remote.map(str::to_string),
+        ..PairArgs::default()
+    };
+    let target = match resolve_target_message(&args).map_err(|err| format!("herdr pair: {err}"))? {
+        Ok(target) => target,
+        Err((message, _code)) => return Err(message),
+    };
+
+    let key = mint_pairing_key(DEFAULT_DEVICE)
+        .map_err(|err| format!("herdr pair: could not mint a key with ssh-keygen: {err}"))?;
+    let payload = build_payload(&target, Some(key.private));
+    let text = serde_json::to_string(&payload).map_err(|err| err.to_string())?;
+    let qr = render_qr(&text).map_err(|err| {
+        format!("herdr pair: could not encode this payload as a QR code ({err}); run `herdr pair --json` and carry it another way.")
+    })?;
+
+    Ok(PairingCode {
+        qr,
+        caption: format!(
+            "{} — {}@{}:{}",
+            target.name.as_deref().unwrap_or("this machine"),
+            target.user,
+            target.host,
+            target.port
+        ),
+        public_key_line: key.public_line,
+        notes: target.notes,
+    })
 }
 
 #[cfg(test)]

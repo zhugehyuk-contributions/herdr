@@ -29,7 +29,9 @@ mod completion;
 mod integration;
 mod live_handoff;
 mod notification;
-mod pair;
+// `pub(crate)` for one item: the TUI sidebar's `show qr` row mints its code through
+// `pair::pairing_code_for`, so the command and the menu emit the same payload.
+pub(crate) mod pair;
 mod pane;
 mod plugin;
 mod protocol_guard;

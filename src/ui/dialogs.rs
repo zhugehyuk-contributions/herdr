@@ -1975,6 +1975,160 @@ pub(crate) fn render_new_session_overlay(
     );
 }
 
+/// Condition 5: the ui-owned view of the host menu's `show qr` overlay. Borrowed strings only (the
+/// one-way `ui` <- `client` layering) — the compositor maps the model's pairing code into this.
+pub(crate) struct PairingQrView<'a> {
+    /// The host the code pairs with, for the header while there is nothing else to show yet.
+    pub host: &'a str,
+    /// True while the worker is minting (`ssh-keygen` + target resolution).
+    pub loading: bool,
+    pub error: Option<&'a str>,
+    /// The half-block QR exactly as `herdr pair` renders it. `None` while loading / on error.
+    pub qr: Option<&'a str>,
+    /// The `name — user@host:port` line the code encodes.
+    pub caption: Option<&'a str>,
+    /// The `authorized_keys` line the user still has to place; this overlay never writes it.
+    pub public_key_line: Option<&'a str>,
+    /// What had to be guessed to name the target (hostname / `$USER` / ssh-config user).
+    pub notes: &'a [String],
+    /// The code's `(columns, rows)`, `(0, 0)` when there is none.
+    pub qr_size: (u16, u16),
+}
+
+/// Condition 5: rows of chrome the pairing overlay needs around the code itself — the panel border
+/// (2), the header, the caption, the `authorized_keys` label + its line, and the key hint.
+const PAIRING_QR_CHROME_ROWS: u16 = 7;
+/// Condition 5: the narrowest the panel is worth drawing — the caption / key / warning lines still
+/// have to read when there is no code yet (loading, or a failed mint).
+const PAIRING_QR_MIN_CONTENT_WIDTH: u16 = 58;
+
+/// Condition 5: the pairing-QR popup rect, sized to the code plus its chrome and CENTERED — unlike
+/// the footer-anchored forms. At ~85x39 (measured, `mobile/.prd/12-qr-pairing.md`) this is by far
+/// the biggest overlay herdr draws, so anchoring it at the sidebar footer would push it off-screen.
+/// `centered_popup_rect` clamps it to what the window has; the renderer refuses to paint a code that
+/// does not fit rather than painting a cut-off one that cannot scan.
+pub(crate) fn pairing_qr_popup_rect(area: Rect, qr_size: (u16, u16), notes: usize) -> Option<Rect> {
+    let width = qr_size
+        .0
+        .max(PAIRING_QR_MIN_CONTENT_WIDTH)
+        .saturating_add(2);
+    let height = qr_size
+        .1
+        .saturating_add(PAIRING_QR_CHROME_ROWS)
+        .saturating_add(notes.min(4) as u16);
+    centered_popup_rect(area, width, height)
+}
+
+/// Condition 5: render the host menu's `show qr` overlay — the `herdr pair` code, the target it
+/// encodes, and the `authorized_keys` line the user still has to place.
+///
+/// Two deliberate choices:
+/// - The code is painted **dark-on-light**, not in the panel's theme. `Dense1x2` draws DARK modules
+///   as filled block glyphs and light ones as spaces, so a themed panel (light glyph on dark bg)
+///   renders the code INVERTED, which many scanners refuse.
+/// - When the code does not fit, nothing is painted in its place but a measurement. A clipped QR
+///   looks scannable and is not (`herdr pair` warns for the same reason at `pair.rs`'s width check).
+pub(crate) fn render_pairing_qr_overlay(
+    palette: &Palette,
+    view: &PairingQrView<'_>,
+    frame: &mut Frame,
+    popup: Rect,
+) {
+    let Some(inner) = render_panel_shell(frame, popup, palette.accent, palette.panel_bg) else {
+        return;
+    };
+    if inner.height < 2 {
+        return;
+    }
+
+    render_modal_header(
+        frame,
+        Rect::new(inner.x, inner.y, inner.width, 1),
+        &format!("pair phone — {}", view.host),
+        palette,
+    );
+
+    let dim = Style::default().fg(palette.overlay0);
+    let red = Style::default().fg(palette.red);
+    let hint_y = inner.y + inner.height.saturating_sub(1);
+    let mut y = inner.y.saturating_add(1);
+    // The text under the code (or in place of it), collected first so only the code block below
+    // walks `y` itself.
+    let mut lines: Vec<(String, Style)> = Vec::new();
+
+    if view.loading {
+        lines.push((" minting a pairing key…".to_string(), dim));
+    } else if let Some(error) = view.error {
+        lines.extend(error.lines().map(|text| (format!(" {text}"), red)));
+    } else if let Some(qr) = view.qr {
+        let (qr_width, qr_height) = view.qr_size;
+        let rows_for_code = hint_y.saturating_sub(y);
+        if qr_width > inner.width || qr_height > rows_for_code {
+            lines.push((
+                format!(
+                    " the code needs {qr_width}x{qr_height} and this panel has {}x{rows_for_code}.",
+                    inner.width
+                ),
+                red,
+            ));
+            lines.push((
+                " widen the window or shrink the font — a cut-off code does not scan.".to_string(),
+                dim,
+            ));
+        } else {
+            // Dark-on-light, centered: see the note above on why this ignores the palette.
+            let x = inner.x + inner.width.saturating_sub(qr_width) / 2;
+            let code_style = Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(ratatui::style::Color::White);
+            for text in qr.lines() {
+                if y >= hint_y {
+                    break;
+                }
+                frame.render_widget(
+                    Paragraph::new(text.to_string()).style(code_style),
+                    Rect::new(x, y, qr_width.min(inner.width), 1),
+                );
+                y = y.saturating_add(1);
+            }
+        }
+
+        if let Some(caption) = view.caption {
+            lines.push((
+                format!(" scan with the herdr app: {caption}"),
+                Style::default().fg(palette.text),
+            ));
+        }
+        if let Some(key) = view.public_key_line {
+            // The key gets its OWN row: it is the one string here the user has to copy by hand, and
+            // sharing a row with a label truncates the part that matters.
+            lines.push((
+                " nothing was written — add this line to authorized_keys:".to_string(),
+                dim,
+            ));
+            lines.push((format!(" {key}"), Style::default().fg(palette.text)));
+        }
+        lines.extend(view.notes.iter().map(|note| (format!(" {note}"), red)));
+    }
+
+    for (text, style) in lines {
+        if y >= hint_y {
+            break;
+        }
+        frame.render_widget(
+            Paragraph::new(truncate_end(&text, inner.width as usize)).style(style),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y = y.saturating_add(1);
+    }
+
+    frame.render_widget(
+        Paragraph::new(" esc close   the code carries a private key — close it once scanned")
+            .style(Style::default().fg(palette.overlay0)),
+        Rect::new(inner.x, hint_y, inner.width, 1),
+    );
+}
+
 /// #47: render the one client menu (launcher / workspace context / host context) as an
 /// anchor-anchored accent panel — a title header, an optional target sub-header, then a selectable
 /// list of rows. Geometry comes from `client_menu_inner_rect_at` / `client_menu_row_rect` (the SAME
@@ -2667,5 +2821,121 @@ mod tests {
             worktree_overlay_caret("あい"),
             Position::new(input.x + 5, input.y)
         );
+    }
+
+    // ----- Condition 5: the pairing-QR overlay ---------------------------------------------------
+
+    /// A three-row, five-column stand-in for the real ~85x39 code.
+    const TEST_QR: &str = "█▀███\n█ ▄ █\n█████";
+
+    fn pairing_qr_buffer(area: Rect, view: &super::PairingQrView<'_>) -> Buffer {
+        let palette = AppState::test_new().palette;
+        let popup = super::pairing_qr_popup_rect(area, view.qr_size, view.notes.len())
+            .expect("pairing popup fits");
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal
+            .draw(|frame| super::render_pairing_qr_overlay(&palette, view, frame, popup))
+            .expect("pairing overlay should render");
+        terminal.backend().buffer().clone()
+    }
+
+    fn rendered_text(buffer: &Buffer) -> String {
+        buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    fn pairing_view<'a>(qr: Option<&'a str>, notes: &'a [String]) -> super::PairingQrView<'a> {
+        super::PairingQrView {
+            host: "alpha",
+            loading: qr.is_none(),
+            error: None,
+            qr,
+            caption: qr.map(|_| "alpha — z@alpha:22"),
+            public_key_line: qr.map(|_| "ssh-ed25519 AAAA herdr-mobile/phone"),
+            notes,
+            qr_size: qr.map(|_| (5u16, 3u16)).unwrap_or((0, 0)),
+        }
+    }
+
+    #[test]
+    fn pairing_qr_overlay_paints_the_code_dark_on_light() {
+        // `Dense1x2` draws DARK modules as filled glyphs, so the glyph colour must be the DARK one:
+        // painted in the panel theme (light glyph on a dark panel) the code renders inverted.
+        let notes = Vec::new();
+        let view = pairing_view(Some(TEST_QR), &notes);
+        let buffer = pairing_qr_buffer(Rect::new(0, 0, 80, 24), &view);
+        let text = rendered_text(&buffer);
+
+        assert!(text.contains("pair phone — alpha"), "{text}");
+        assert!(text.contains("█▀███"), "the code itself is painted: {text}");
+        assert!(text.contains("scan with the herdr app: alpha — z@alpha:22"));
+        // The overlay never writes authorized_keys, so it must hand the line over.
+        assert!(text.contains("ssh-ed25519 AAAA herdr-mobile/phone"));
+
+        let module = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "▀")
+            .expect("a half-block module cell");
+        assert_eq!(module.fg, ratatui::style::Color::Black);
+        assert_eq!(module.bg, ratatui::style::Color::White);
+    }
+
+    #[test]
+    fn pairing_qr_overlay_measures_instead_of_clipping_a_code_that_does_not_fit() {
+        // The real code is ~85x39; on a small window it must NOT be painted half-drawn — a clipped
+        // QR looks scannable and is not.
+        let notes = Vec::new();
+        let mut view = pairing_view(Some(TEST_QR), &notes);
+        view.qr_size = (85, 39);
+        let buffer = pairing_qr_buffer(Rect::new(0, 0, 60, 14), &view);
+        let text = rendered_text(&buffer);
+
+        assert!(text.contains("the code needs 85x39"), "{text}");
+        assert!(!text.contains("█▀███"), "no half-drawn code: {text}");
+        // The target it WOULD have encoded still reads, so the user can fall back to `herdr pair`.
+        assert!(text.contains("alpha — z@alpha:22"), "{text}");
+    }
+
+    #[test]
+    fn pairing_qr_overlay_shows_loading_then_a_failed_mint() {
+        let notes = Vec::new();
+        let loading = pairing_qr_buffer(Rect::new(0, 0, 80, 24), &pairing_view(None, &notes));
+        assert!(rendered_text(&loading).contains("minting a pairing key…"));
+
+        let failed = super::PairingQrView {
+            host: "alpha",
+            loading: false,
+            error: Some("herdr pair: no remote named r1."),
+            qr: None,
+            caption: None,
+            public_key_line: None,
+            notes: &notes,
+            qr_size: (0, 0),
+        };
+        let text = rendered_text(&pairing_qr_buffer(Rect::new(0, 0, 80, 24), &failed));
+        assert!(text.contains("herdr pair: no remote named r1."), "{text}");
+    }
+
+    #[test]
+    fn pairing_qr_popup_rect_grows_with_the_code_and_gives_up_on_a_tiny_host() {
+        // Room for the code plus its chrome; the minimum width keeps the caption/key lines readable
+        // while there is no code yet.
+        let popup = super::pairing_qr_popup_rect(Rect::new(0, 0, 120, 60), (85, 39), 1)
+            .expect("popup fits on a big window");
+        assert_eq!(popup.width, 87);
+        assert!(
+            popup.height >= 39 + super::PAIRING_QR_CHROME_ROWS,
+            "the code plus its chrome: {popup:?}"
+        );
+        let loading = super::pairing_qr_popup_rect(Rect::new(0, 0, 120, 60), (0, 0), 0)
+            .expect("the loading state still gets a panel");
+        assert_eq!(loading.width, super::PAIRING_QR_MIN_CONTENT_WIDTH + 2);
+
+        assert!(super::pairing_qr_popup_rect(Rect::new(0, 0, 4, 4), (85, 39), 0).is_none());
     }
 }

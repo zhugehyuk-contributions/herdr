@@ -426,6 +426,13 @@ enum ClientInputDispatch {
         server_id: supervisor::ServerId,
         remote_id: String,
     },
+    /// Condition 5: the pairing-QR overlay opened in its loading state; mint the `herdr pair` code
+    /// off the UI loop (it shells out to `ssh-keygen` and does a `remote.list` round-trip) and fill
+    /// the overlay. `remote_id: None` is the argument-less `herdr pair` — this machine.
+    FetchPairingCode {
+        server_id: supervisor::ServerId,
+        remote_id: Option<String>,
+    },
     /// Worktree-menu parity: flip the group's client-local collapsed state — the same set the
     /// sidebar chevron toggles; handled where `&mut compositor` is in scope.
     ToggleWorktreeGroup {
@@ -549,6 +556,15 @@ fn dispatch_for_client_menu_outcome(
             server_id,
             remote_id,
         } => ClientInputDispatch::FetchSessionList {
+            server_id,
+            remote_id,
+        },
+        // Condition 5: the pairing-QR overlay is open in its loading state; mint the code off the
+        // UI loop (the worker is spawned in the loop, like the two fetches above).
+        supervisor::ClientMenuOutcome::FetchPairingCode {
+            server_id,
+            remote_id,
+        } => ClientInputDispatch::FetchPairingCode {
             server_id,
             remote_id,
         },
@@ -1120,6 +1136,7 @@ fn dispatch_requires_loop_handling(dispatch: &ClientInputDispatch) -> bool {
             | ClientInputDispatch::UpdateRemote { .. }
             | ClientInputDispatch::FetchWorktreeList { .. }
             | ClientInputDispatch::FetchSessionList { .. }
+            | ClientInputDispatch::FetchPairingCode { .. }
             | ClientInputDispatch::ToggleWorktreeGroup { .. }
             | ClientInputDispatch::ApiRequest { .. }
             | ClientInputDispatch::ServerControl { .. }
@@ -1212,6 +1229,12 @@ fn dispatch_client_overlay_input(
             }
             crate::raw_input::RawInputEvent::Key(key) if model.new_session_form().is_some() => {
                 dispatch_for_new_session_outcome(model.handle_new_session_key(key))
+            }
+            // Condition 5: the pairing-QR overlay is a readout with one action (dismiss), so it has
+            // no outcome enum — it either closed or it did not, and either way the frame repaints.
+            crate::raw_input::RawInputEvent::Key(key) if model.pairing_qr().is_some() => {
+                model.handle_pairing_qr_key(key);
+                ClientInputDispatch::Redraw
             }
             crate::raw_input::RawInputEvent::Paste(text) if model.new_session_form().is_some() => {
                 dispatch_for_new_session_outcome(model.append_new_session_paste(&text))
@@ -2657,6 +2680,13 @@ enum ClientLoopEvent {
         server_id: supervisor::ServerId,
         result: Result<Vec<supervisor::SessionPickerItem>, String>,
     },
+    /// Condition 5: a `herdr pair` code was minted for the open pairing-QR overlay. Filled via
+    /// `fill_pairing_qr` (stale/closed overlays drop it there — it carries a private key, so it
+    /// must never land on a host it was not minted for).
+    PairingCodeFetched {
+        server_id: supervisor::ServerId,
+        result: Result<crate::cli::pair::PairingCode, String>,
+    },
     /// item 3 (Area 5): a remote-management `remote.set_enabled`/`remote.remove` request finished
     /// off the UI loop. The handler branches on `action` to apply teardown / reconnect.
     RemoteManageRequestFinished {
@@ -3883,6 +3913,22 @@ fn fetch_session_picker_items(
             "session.list returned unexpected result: {other:?}"
         )),
     }
+}
+
+/// Condition 5: mint the open overlay's `herdr pair` code off the UI loop. Reuses the command's own
+/// path (`cli::pair::pairing_code_for`) so the TUI and the command emit the SAME payload; it shells
+/// out to `ssh-keygen` and does a `remote.list` round-trip, neither of which may block the render
+/// loop. `remote_id: None` is the argument-less form — this machine.
+fn spawn_pairing_code_fetch(
+    server_id: supervisor::ServerId,
+    remote_id: Option<String>,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+) {
+    let event_tx = event_tx.clone();
+    std::thread::spawn(move || {
+        let result = crate::cli::pair::pairing_code_for(remote_id.as_deref());
+        let _ = event_tx.blocking_send(ClientLoopEvent::PairingCodeFetched { server_id, result });
+    });
 }
 
 fn spawn_client_add_remote_submission(
@@ -5713,6 +5759,17 @@ async fn run_client_loop(
                                 render_cached_composited_frame(&mut state);
                                 continue;
                             }
+                            // Condition 5: mint this host's pairing code off the UI loop; the
+                            // result lands as `PairingCodeFetched` and fills the open overlay.
+                            ClientInputDispatch::FetchPairingCode {
+                                server_id,
+                                remote_id,
+                            } => {
+                                spawn_pairing_code_fetch(server_id, remote_id, &event_tx);
+                                state.request_full_redraw();
+                                render_cached_composited_frame(&mut state);
+                                continue;
+                            }
                             // Worktree-menu parity: the menu's expand/collapse row flips the SAME
                             // client-local set the sidebar chevron toggles.
                             ClientInputDispatch::ToggleWorktreeGroup { group_key } => {
@@ -6527,6 +6584,15 @@ async fn run_client_loop(
             ClientLoopEvent::SessionListFetched { server_id, result } => {
                 if let Some(model) = &mut state.supervisor_model {
                     model.fill_session_picker(&server_id, result);
+                }
+                state.request_full_redraw();
+                render_cached_composited_frame(&mut state);
+            }
+            // Condition 5: fill the open pairing-QR overlay (stale/closed overlays drop the code
+            // inside `fill_pairing_qr`).
+            ClientLoopEvent::PairingCodeFetched { server_id, result } => {
+                if let Some(model) = &mut state.supervisor_model {
+                    model.fill_pairing_qr(&server_id, result);
                 }
                 state.request_full_redraw();
                 render_cached_composited_frame(&mut state);
@@ -9977,6 +10043,12 @@ mod tests {
             ClientInputDispatch::DeleteRemote {
                 remote_id: "remote-1".into(),
             },
+            // Condition 5: the `show qr` row is the same shape of bug waiting to happen — the
+            // overlay would sit on "minting a pairing key…" forever if this were coalesced.
+            ClientInputDispatch::FetchPairingCode {
+                server_id: sid.clone(),
+                remote_id: Some("remote-1".into()),
+            },
         ];
         for dispatch in &commands {
             assert!(
@@ -11301,6 +11373,47 @@ mod tests {
             Some("demo"),
             "the typed name lands in the field, not in the user's shell"
         );
+    }
+
+    #[test]
+    fn show_qr_row_dispatches_the_mint_and_the_overlay_owns_the_keyboard() {
+        // Condition 5: the sidebar host row's `show qr` (last row) opens the overlay in its loading
+        // state and hands the mint to the loop — the same shape as the session picker's fetch.
+        let (mut model, remote_id) = mixed_remote_model();
+        model.open_host_context_menu(remote_id.clone(), "x".into(), 0, 0);
+        let last = model.client_menu().expect("host menu open").items.len() - 1;
+        let dispatch = dispatch_for_client_menu_outcome(
+            &mut model,
+            supervisor::ClientMenuOutcome::FetchPairingCode {
+                server_id: remote_id.clone(),
+                remote_id: Some(remote_id.registry_id().to_string()),
+            },
+        );
+        assert!(
+            matches!(dispatch, ClientInputDispatch::FetchPairingCode { .. }),
+            "the row routes to the mint: {dispatch:?}"
+        );
+
+        // …and the same outcome is what activating the row actually produces.
+        assert_eq!(
+            model.select_client_menu_item(last),
+            supervisor::ClientMenuOutcome::FetchPairingCode {
+                server_id: remote_id.clone(),
+                remote_id: Some(remote_id.registry_id().to_string()),
+            }
+        );
+        assert!(model.pairing_qr().is_some(), "overlay replaced the menu");
+
+        // The overlay owns the keyboard (the D1 leak class): keys repaint, never reach the pane.
+        let mut compositor = compositor::ClientCompositor::new(26);
+        let dispatch =
+            dispatch_composited_input(b"x".to_vec(), &mut compositor, &mut model, (60, 16));
+        assert_eq!(dispatch, ClientInputDispatch::Redraw);
+        assert!(model.pairing_qr().is_some(), "a stray key leaves it open");
+        let dispatch =
+            dispatch_composited_input(b"\x1b".to_vec(), &mut compositor, &mut model, (60, 16));
+        assert_eq!(dispatch, ClientInputDispatch::Redraw);
+        assert!(model.pairing_qr().is_none(), "esc closes the overlay");
     }
 
     #[test]

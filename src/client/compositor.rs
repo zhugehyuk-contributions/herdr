@@ -483,6 +483,8 @@ struct ClientSidebarSnapshot {
     // C4/C5/C6: the host-menu session follow-on overlays (picker + new-session input).
     session_picker: Option<crate::client::supervisor::SessionPicker>,
     new_session: Option<crate::client::supervisor::NewSessionForm>,
+    // Condition 5: the host menu's `show qr` overlay (the `herdr pair` code for that host).
+    pairing_qr: Option<crate::client::supervisor::PairingQrOverlay>,
     // #47: the one drag offset (cols, rows) shared by EVERY overlay, cloned from the model. Render,
     // hit-test, and the content-exclusion rect shift the open overlay's default popup by this.
     overlay_drag_offset: (i16, i16),
@@ -1621,6 +1623,9 @@ impl ClientCompositor {
             || snapshot.worktree_picker.is_some()
             || snapshot.session_picker.is_some()
             || snapshot.new_session.is_some()
+            // Condition 5: the QR readout is keyboard-only (esc closes) and modal like the rest —
+            // a click while it is up must not reach a sidebar row under it.
+            || snapshot.pairing_qr.is_some()
         {
             return None;
         }
@@ -2390,6 +2395,7 @@ impl ClientSidebarSnapshot {
             worktree_picker: model.worktree_picker().cloned(),
             session_picker: model.session_picker().cloned(),
             new_session: model.new_session_form().cloned(),
+            pairing_qr: model.pairing_qr().cloned(),
         };
         // #53: ONE computation of the open overlay's geometry, from the just-built view. Every read
         // site (render / hit-test / hover-test / exclusion / drag / #56 hover overlay) reads this
@@ -2666,6 +2672,29 @@ fn render_client_shell(
                         picker.error.as_deref(),
                         &rows,
                         picker.selected,
+                        frame,
+                        popup,
+                    );
+                }
+            }
+            // Condition 5: the pairing-QR readout. Mapped into a ui-owned view here (the one-way
+            // `ui` <- `client` layering) — the renderer never sees the model's `PairingCode`.
+            if let Some(overlay) = &snapshot.pairing_qr {
+                if let Some(popup) = overlay_popup {
+                    let code = overlay.code.as_ref();
+                    let view = crate::ui::PairingQrView {
+                        host: &overlay.display_name,
+                        loading: overlay.loading,
+                        error: overlay.error.as_deref(),
+                        qr: code.map(|code| code.qr.as_str()),
+                        caption: code.map(|code| code.caption.as_str()),
+                        public_key_line: code.map(|code| code.public_key_line.as_str()),
+                        notes: code.map(|code| code.notes.as_slice()).unwrap_or(&[]),
+                        qr_size: code.map(|code| code.qr_size()).unwrap_or((0, 0)),
+                    };
+                    crate::ui::render_pairing_qr_overlay(
+                        &snapshot.app.palette,
+                        &view,
                         frame,
                         popup,
                     );
@@ -3023,6 +3052,15 @@ fn open_overlay_popup_rect(
         crate::ui::session_picker_popup_rect(anchor_area, picker.row_count())
     } else if snapshot.new_session.is_some() {
         crate::ui::new_session_popup_rect(anchor_area)
+    } else if let Some(overlay) = snapshot.pairing_qr.as_ref() {
+        // Condition 5: the code is the biggest overlay herdr draws, so this one is CENTERED on the
+        // whole host rect rather than anchored at the sidebar footer like the forms above.
+        let code = overlay.code.as_ref();
+        crate::ui::pairing_qr_popup_rect(
+            Rect::new(0, 0, host_width, host_height),
+            code.map(|code| code.qr_size()).unwrap_or((0, 0)),
+            code.map(|code| code.notes.len()).unwrap_or(0),
+        )
     } else {
         None
     }?;
@@ -7122,10 +7160,11 @@ mod tests {
         use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
         let (mut model, remote_id) = mixed_supervisor_model();
         let mut compositor = ClientCompositor::new(26);
-        // C3 grew the host menu by one row (the session readout), so the host needs one more row of
-        // headroom for the +2 drag below to land unclamped — the assertion here is that a drag moves
-        // the popup by EXACTLY the delta, not that it hits the bottom clamp.
-        let host = (60u16, 17u16);
+        // C3 grew the host menu by one row (the session readout) and condition 5 by another
+        // (`show qr`), so the host needs that much more headroom for the +2 drag below to land
+        // unclamped — the assertion here is that a drag moves the popup by EXACTLY the delta, not
+        // that it hits the bottom clamp.
+        let host = (60u16, 18u16);
         // a cursor-anchored host context menu, anchored well inside the screen so it can move freely.
         model.open_host_context_menu(remote_id, "x".into(), 10, 4);
 

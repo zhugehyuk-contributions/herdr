@@ -313,6 +313,8 @@ pub(crate) enum ClientMenuAction {
     /// Enter, a left-click, OR a right-click on that row (the one row that survives the
     /// right-click-dismisses-the-menu rule, matching the user's literal wording).
     OpenSessionPicker,
+    /// Condition 5 (mobile pairing): show this host's `herdr pair` QR in an overlay.
+    HostShowQr,
 }
 
 /// #47: the typed outcome of activating a [`ClientMenu`] row, mapped by the client loop into a
@@ -359,6 +361,14 @@ pub(crate) enum ClientMenuOutcome {
     FetchSessionList {
         server_id: ServerId,
         remote_id: String,
+    },
+    /// Condition 5: the pairing-QR overlay opened in its loading state; the loop must mint the code
+    /// off the UI thread (`ssh-keygen` + a `remote.list` round-trip) and fill it via
+    /// [`ClientSupervisorModel::fill_pairing_qr`]. `remote_id` is `None` for the local main server —
+    /// the argument-less `herdr pair`, which pairs with THIS machine.
+    FetchPairingCode {
+        server_id: ServerId,
+        remote_id: Option<String>,
     },
 }
 
@@ -426,6 +436,8 @@ enum ClientOverlayState {
     // remote's session list, and the free-text "new session" input its last row opens.
     SessionPicker(SessionPicker),
     NewSession(NewSessionForm),
+    // Condition 5: the host menu's `show qr` row — the `herdr pair` code for this host.
+    PairingQr(PairingQrOverlay),
 }
 
 /// #23: the inline rename text overlay. Mirrors `AddRemoteForm` (a single editable text field +
@@ -583,6 +595,22 @@ impl SessionPicker {
     pub(crate) fn is_new_session_row(&self, index: usize) -> bool {
         index >= self.items.len()
     }
+}
+
+/// Condition 5: the host menu's `show qr` overlay — this host's `herdr pair` code on the glass.
+/// `loading` while the worker mints it off the UI thread (`ssh-keygen` runs a process and the target
+/// resolution is a `remote.list` round-trip, neither of which may block the render loop), then holds
+/// exactly what the command would have printed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PairingQrOverlay {
+    pub(crate) server_id: ServerId,
+    /// The `herdr pair <remote>` argument for this host: `None` for the local main server (the
+    /// argument-less form, which pairs with THIS machine), else its registry id.
+    pub(crate) remote_id: Option<String>,
+    pub(crate) display_name: String,
+    pub(crate) loading: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) code: Option<crate::cli::pair::PairingCode>,
 }
 
 /// C5/C6: the typed outcome of activating a session-picker row. The trailing `new session…` row
@@ -1568,7 +1596,8 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmDeleteWorktree(_)
             | ClientOverlayState::WorktreePicker(_)
             | ClientOverlayState::SessionPicker(_)
-            | ClientOverlayState::NewSession(_) => None,
+            | ClientOverlayState::NewSession(_)
+            | ClientOverlayState::PairingQr(_) => None,
         }
     }
 
@@ -1584,7 +1613,8 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmDeleteWorktree(_)
             | ClientOverlayState::WorktreePicker(_)
             | ClientOverlayState::SessionPicker(_)
-            | ClientOverlayState::NewSession(_) => None,
+            | ClientOverlayState::NewSession(_)
+            | ClientOverlayState::PairingQr(_) => None,
         }
     }
 
@@ -1609,7 +1639,8 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmDeleteWorktree(_)
             | ClientOverlayState::WorktreePicker(_)
             | ClientOverlayState::SessionPicker(_)
-            | ClientOverlayState::NewSession(_) => true,
+            | ClientOverlayState::NewSession(_)
+            | ClientOverlayState::PairingQr(_) => true,
         }
     }
 
@@ -1867,6 +1898,16 @@ impl ClientSupervisorModel {
                     })
                     .unwrap_or(ClientMenuOutcome::Redraw)
             }
+            // Condition 5: open the QR overlay in its loading state and hand the mint to the loop
+            // (`ssh-keygen` + a `remote.list` round-trip must stay off the UI thread) — the same
+            // shape as `OpenSessionPicker`.
+            ClientMenuAction::HostShowQr => match self.open_pairing_qr() {
+                Some((server_id, remote_id)) => ClientMenuOutcome::FetchPairingCode {
+                    server_id,
+                    remote_id,
+                },
+                None => ClientMenuOutcome::Redraw,
+            },
         }
     }
 
@@ -1896,7 +1937,8 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmDeleteWorktree(_)
             | ClientOverlayState::WorktreePicker(_)
             | ClientOverlayState::SessionPicker(_)
-            | ClientOverlayState::NewSession(_) => None,
+            | ClientOverlayState::NewSession(_)
+            | ClientOverlayState::PairingQr(_) => None,
         }
     }
 
@@ -2047,7 +2089,8 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmDeleteWorktree(_)
             | ClientOverlayState::WorktreePicker(_)
             | ClientOverlayState::SessionPicker(_)
-            | ClientOverlayState::NewSession(_) => None,
+            | ClientOverlayState::NewSession(_)
+            | ClientOverlayState::PairingQr(_) => None,
         }
     }
 
@@ -2063,7 +2106,8 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmDeleteWorktree(_)
             | ClientOverlayState::WorktreePicker(_)
             | ClientOverlayState::SessionPicker(_)
-            | ClientOverlayState::NewSession(_) => None,
+            | ClientOverlayState::NewSession(_)
+            | ClientOverlayState::PairingQr(_) => None,
         }
     }
 
@@ -2527,6 +2571,14 @@ impl ClientSupervisorModel {
                     auto_update: !auto_update,
                 },
             },
+            // Condition 5: `herdr pair` for this host, on the glass. Selectable even when
+            // disconnected — the code is minted from the LOCAL registry entry (the same
+            // `remote.list` the command reads), so it never needs the host's live stream.
+            ClientMenuItem {
+                label: "show qr".to_string(),
+                selectable: true,
+                action: ClientMenuAction::HostShowQr,
+            },
         ];
         self.new_workspace_picker = None;
         // #47: a freshly opened overlay starts unshifted (mirrors every other open_* path), so a
@@ -2586,7 +2638,8 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmDeleteWorktree(_)
             | ClientOverlayState::WorktreePicker(_)
             | ClientOverlayState::SessionPicker(_)
-            | ClientOverlayState::NewSession(_) => None,
+            | ClientOverlayState::NewSession(_)
+            | ClientOverlayState::PairingQr(_) => None,
         }
     }
 
@@ -2602,7 +2655,8 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmDeleteWorktree(_)
             | ClientOverlayState::WorktreePicker(_)
             | ClientOverlayState::SessionPicker(_)
-            | ClientOverlayState::NewSession(_) => None,
+            | ClientOverlayState::NewSession(_)
+            | ClientOverlayState::PairingQr(_) => None,
         }
     }
 
@@ -3316,6 +3370,96 @@ impl ClientSupervisorModel {
         NewSessionOutcome::Redraw
     }
 
+    // ----- Condition 5: the host menu's `show qr` overlay ---------------------------------------
+
+    /// Promote the open HOST menu into the pairing-QR overlay (loading state). Returns the
+    /// `(server_id, remote_id)` the loop must mint the code for; `remote_id` is `None` for the main
+    /// server, which is the argument-less `herdr pair` (this machine). Mirrors
+    /// `open_session_picker`; a no-op (`None`) when the open menu is not a host menu.
+    pub(crate) fn open_pairing_qr(&mut self) -> Option<(ServerId, Option<String>)> {
+        let (server_id, display_name) = match self.client_menu() {
+            Some(menu) => match &menu.kind {
+                ClientMenuKind::Host { server_id } => (
+                    server_id.clone(),
+                    menu.subheader
+                        .clone()
+                        .unwrap_or_else(|| server_id.registry_id().to_string()),
+                ),
+                _ => return None,
+            },
+            None => return None,
+        };
+        let remote_id =
+            (server_id != ServerId::main()).then(|| server_id.registry_id().to_string());
+        self.new_workspace_picker = None;
+        self.overlay_drag_offset = (0, 0);
+        self.client_overlay = ClientOverlayState::PairingQr(PairingQrOverlay {
+            server_id: server_id.clone(),
+            remote_id: remote_id.clone(),
+            display_name,
+            loading: true,
+            error: None,
+            code: None,
+        });
+        Some((server_id, remote_id))
+    }
+
+    pub(crate) fn pairing_qr(&self) -> Option<&PairingQrOverlay> {
+        match &self.client_overlay {
+            ClientOverlayState::PairingQr(overlay) => Some(overlay),
+            _ => None,
+        }
+    }
+
+    fn pairing_qr_mut(&mut self) -> Option<&mut PairingQrOverlay> {
+        match &mut self.client_overlay {
+            ClientOverlayState::PairingQr(overlay) => Some(overlay),
+            _ => None,
+        }
+    }
+
+    /// Apply the off-thread mint to the open overlay. Ignored when it has been closed or re-targeted
+    /// meanwhile — a stale code must never resurrect the overlay, and (unlike a picker's list) it
+    /// carries a private key, so showing it against the wrong host would be worse than showing
+    /// nothing.
+    pub(crate) fn fill_pairing_qr(
+        &mut self,
+        server_id: &ServerId,
+        result: Result<crate::cli::pair::PairingCode, String>,
+    ) {
+        let Some(overlay) = self.pairing_qr_mut() else {
+            return;
+        };
+        if &overlay.server_id != server_id {
+            return;
+        }
+        overlay.loading = false;
+        match result {
+            Ok(code) => {
+                overlay.code = Some(code);
+                overlay.error = None;
+            }
+            Err(error) => {
+                overlay.code = None;
+                overlay.error = Some(error);
+            }
+        }
+    }
+
+    /// The overlay is a readout, so every key closes it except the navigation ones a terminal emits
+    /// by accident. Esc / q / Enter dismiss it — the code is on the screen only while it is open,
+    /// which is the point (it carries a private key).
+    pub(crate) fn handle_pairing_qr_key(&mut self, key: crate::input::TerminalKey) {
+        use crossterm::event::{KeyCode, KeyEventKind};
+
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return;
+        }
+        if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+            self.close_client_overlay();
+        }
+    }
+
     pub(crate) fn choose_new_workspace_destination(
         &mut self,
         server_id: &ServerId,
@@ -3747,7 +3891,8 @@ impl ClientSupervisorModel {
             | ClientOverlayState::ConfirmDeleteWorktree(_)
             | ClientOverlayState::WorktreePicker(_)
             | ClientOverlayState::SessionPicker(_)
-            | ClientOverlayState::NewSession(_) => None,
+            | ClientOverlayState::NewSession(_)
+            | ClientOverlayState::PairingQr(_) => None,
         }
     }
 
@@ -7470,7 +7615,7 @@ mod tests {
         assert_eq!(menu.anchor_row, 5);
         // #44/#61: a non-selectable version-readout row leads; C3 puts the session readout right
         // under it; then add/disable/disconnect; then update; then the per-remote auto-update
-        // toggle (off -> "enable auto-update").
+        // toggle (off -> "enable auto-update"); condition 5 appends the pairing row last.
         assert_eq!(
             menu_labels(&model),
             [
@@ -7480,7 +7625,8 @@ mod tests {
                 "disable",
                 "disconnect",
                 "update",
-                "enable auto-update"
+                "enable auto-update",
+                "show qr"
             ]
         );
         // C4: activating that row opens the picker (asserted in full below).
@@ -7495,7 +7641,8 @@ mod tests {
             .unwrap();
         model.open_host_context_menu(remote.clone(), "beta".into(), 0, 0);
         // A disabled + disconnected host flips both toggle labels ("enable" / "reconnect"); the
-        // auto-update row stays (off -> "enable auto-update").
+        // auto-update row stays (off -> "enable auto-update"), and so does `show qr` — the code is
+        // minted from the local registry, so a down host still pairs.
         assert_eq!(
             menu_labels(&model),
             [
@@ -7505,7 +7652,8 @@ mod tests {
                 "enable",
                 "reconnect",
                 "update",
-                "enable auto-update"
+                "enable auto-update",
+                "show qr"
             ]
         );
     }
@@ -7597,9 +7745,9 @@ mod tests {
             .unwrap();
         model.open_host_context_menu(remote, "alpha".into(), 0, 0);
 
-        // #44/#61/C3: Down advances through the 7-row menu (version/session/add/toggle/disconnect/
-        // update/auto-update), clamped at the last row (index 6). #46: the menu OPENS on row 1
-        // (the session readout), skipping the non-actionable version readout.
+        // #44/#61/C3: Down advances through the 8-row menu (version/session/add/toggle/disconnect/
+        // update/auto-update/show-qr), clamped at the last row (index 7). #46: the menu OPENS on
+        // row 1 (the session readout), skipping the non-actionable version readout.
         assert_eq!(model.client_menu().unwrap().selected, 1);
         assert_eq!(
             model.handle_client_menu_key(press(KeyCode::Down)),
@@ -7611,12 +7759,13 @@ mod tests {
         model.handle_client_menu_key(press(KeyCode::Down));
         model.handle_client_menu_key(press(KeyCode::Down));
         model.handle_client_menu_key(press(KeyCode::Down));
-        assert_eq!(model.client_menu().unwrap().selected, 6);
         model.handle_client_menu_key(press(KeyCode::Down));
-        assert_eq!(model.client_menu().unwrap().selected, 6);
+        assert_eq!(model.client_menu().unwrap().selected, 7);
+        model.handle_client_menu_key(press(KeyCode::Down));
+        assert_eq!(model.client_menu().unwrap().selected, 7);
         // k moves back up.
         model.handle_client_menu_key(press(KeyCode::Char('k')));
-        assert_eq!(model.client_menu().unwrap().selected, 5);
+        assert_eq!(model.client_menu().unwrap().selected, 6);
 
         // Esc dismisses.
         model.handle_client_menu_key(press(KeyCode::Esc));
@@ -7904,6 +8053,147 @@ mod tests {
                 session: None,
             }
         );
+    }
+
+    // ----- Condition 5: the host menu's `show qr` row -------------------------------------------
+
+    fn pairing_code(caption: &str) -> crate::cli::pair::PairingCode {
+        crate::cli::pair::PairingCode {
+            // Three 5-column rows, so `qr_size` is a value the popup geometry can be asserted on.
+            qr: "█▀███\n█ ▄ █\n█████".to_string(),
+            caption: caption.to_string(),
+            public_key_line: "ssh-ed25519 AAAA herdr-mobile/phone".to_string(),
+            notes: vec!["herdr pair: guessed host=alpha".to_string()],
+        }
+    }
+
+    #[test]
+    fn host_menu_show_qr_row_opens_the_pairing_overlay() {
+        // The row is LAST (index 7) and carries this remote's registry id — the same argument
+        // `herdr pair <remote>` takes.
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        assert_eq!(menu_labels(&model)[7], "show qr");
+
+        assert_eq!(
+            model.select_client_menu_item(7),
+            ClientMenuOutcome::FetchPairingCode {
+                server_id: remote.clone(),
+                remote_id: Some("r1".into()),
+            }
+        );
+        // The menu is gone and the overlay is up in its loading state (the mint is the loop's job).
+        assert!(model.client_menu().is_none());
+        let overlay = model.pairing_qr().expect("overlay open");
+        assert!(overlay.loading);
+        assert_eq!(overlay.error, None);
+        assert_eq!(overlay.code, None);
+        assert_eq!(overlay.display_name, "alpha");
+        assert_eq!(overlay.server_id, remote);
+    }
+
+    #[test]
+    fn show_qr_on_the_local_host_pairs_with_this_machine() {
+        // `herdr pair` with NO argument is the local machine, so the main server must not be
+        // addressed by its "main" pseudo-id — no remote in the registry is called that.
+        let mut model = ClientSupervisorModel::new("local");
+        model.open_host_context_menu(ServerId::main(), "local".into(), 0, 0);
+        assert_eq!(
+            model.select_client_menu_item(7),
+            ClientMenuOutcome::FetchPairingCode {
+                server_id: ServerId::main(),
+                remote_id: None,
+            }
+        );
+        assert_eq!(model.pairing_qr().expect("overlay open").remote_id, None);
+    }
+
+    #[test]
+    fn show_qr_is_offered_on_a_disconnected_host() {
+        // The code is minted from the LOCAL registry entry, so a host that is down still pairs —
+        // unlike `add new space` / `update`, which degrade to a no-op when disconnected.
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        model
+            .set_connection_state(&remote, ConnectionState::Disconnected)
+            .unwrap();
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        assert!(model.client_menu().unwrap().items[7].selectable);
+        assert_eq!(
+            model.select_client_menu_item(7),
+            ClientMenuOutcome::FetchPairingCode {
+                server_id: remote,
+                remote_id: Some("r1".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn fill_pairing_qr_applies_the_code_and_drops_a_stale_one() {
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        let other = model.add_secondary(ssh_remote("r2", "beta", "beta"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(7);
+
+        // A code minted for ANOTHER host must not land here — it carries a private key, so showing
+        // it against the wrong host would be worse than showing nothing.
+        model.fill_pairing_qr(&other, Ok(pairing_code("beta — z@beta:22")));
+        let overlay = model.pairing_qr().expect("overlay open");
+        assert!(overlay.loading, "a stale code leaves the overlay loading");
+        assert_eq!(overlay.code, None);
+
+        model.fill_pairing_qr(&remote, Ok(pairing_code("alpha — z@alpha:22")));
+        let overlay = model.pairing_qr().expect("overlay open");
+        assert!(!overlay.loading);
+        assert_eq!(overlay.error, None);
+        let code = overlay.code.as_ref().expect("code applied");
+        assert_eq!(code.caption, "alpha — z@alpha:22");
+        assert_eq!(code.qr_size(), (5, 3));
+    }
+
+    #[test]
+    fn fill_pairing_qr_shows_a_failed_mint_inline() {
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(7);
+
+        model.fill_pairing_qr(&remote, Err("herdr pair: no remote named r1.".into()));
+        let overlay = model.pairing_qr().expect("overlay stays open on failure");
+        assert!(!overlay.loading);
+        assert_eq!(overlay.code, None);
+        assert_eq!(
+            overlay.error.as_deref(),
+            Some("herdr pair: no remote named r1.")
+        );
+    }
+
+    #[test]
+    fn pairing_qr_overlay_owns_the_keyboard_until_it_is_dismissed() {
+        use crossterm::event::KeyCode;
+
+        let mut model = ClientSupervisorModel::new("local");
+        let remote = model.add_secondary(ssh_remote("r1", "alpha", "alpha"));
+        model.open_host_context_menu(remote.clone(), "alpha".into(), 0, 0);
+        model.select_client_menu_item(7);
+        // The overlay is classified as keyboard-owning, so typing cannot leak to the focused pane.
+        assert!(model.client_overlay_open());
+
+        // A key that is not a dismissal leaves it up…
+        model.handle_pairing_qr_key(press(KeyCode::Char('x')));
+        assert!(model.pairing_qr().is_some());
+        // …and esc closes it (the code is on the glass only while it is open).
+        model.handle_pairing_qr_key(press(KeyCode::Esc));
+        assert!(model.pairing_qr().is_none());
+        assert!(!model.client_overlay_open());
+
+        // q closes it too, from the loading state.
+        model.open_host_context_menu(remote, "alpha".into(), 0, 0);
+        model.select_client_menu_item(7);
+        model.handle_pairing_qr_key(press(KeyCode::Char('q')));
+        assert!(model.pairing_qr().is_none());
     }
 
     #[test]
