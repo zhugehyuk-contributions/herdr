@@ -2198,3 +2198,34 @@ RNGH가 제공하는 JS 레버는 **둘 다 소진**됐다(문서 안 `passive`/
 `WKWebView.scrollView.panGestureRecognizer`(및 `UIWebTouchEventsGestureRecognizer`)에 대해
 RNGH의 pan을 `require(toFail:)` 시키거나 `shouldRecognizeSimultaneouslyWith`를 여는 Swift 코드.
 Expo config plugin 또는 소형 네이티브 모듈이 그릇이다.
+
+## SS. 타이포 계약이 iOS에서 한 번도 성립한 적이 없었다 — 7라운드가 못 본 채로 (2026-08-25, 수리 `fd42c472`)
+
+**결함**: 목업의 단 하나의 비타협 타이포 사실은 JetBrains Mono 전면 적용인데
+(`assets/mockup.html:14,863`), 앱에는 폰트 에셋도 로더도 **없었다**. orca에서 온
+`typography.monoFamily = 'monospace'`는 **Android generic family명**이라 iOS엔 대응 항목이
+없고, RN이 조용히 SF Pro(산세리프)로 떨어진다. **모든 iOS 화면이 산세리프로 렌더되고 있었다.**
+
+**7라운드의 목업 대조 QA가 왜 못 봤나**: Android에선 `'monospace'`가 Roboto Mono로 풀려
+*보기에* 맞았고, 스크린샷 기반 판정자는 "모노스페이스인가"를 화면에서 읽지 값 자체를 읽지 않는다.
+1차 QA가 "일반 Material 다크로 읽힘"이라 한 것의 절반은 사실 이 결함의 냄새였다(그때는 2개
+컴포넌트의 서체 누락으로 좁혀 닫았다). **스크린샷 대조는 '어느 플랫폼에서 찍었나'에 종속인
+판별자다** — 이번 것은 값을 직접 검사하는 유닛 테스트(`herdr-typography.test.ts`)로 기계화했다.
+
+**수리 (`fd42c472`)**: expo-font + @expo-google-fonts/jetbrains-mono 정확 핀,
+`_layout.tsx`가 splash를 잡고 로드를 기다린다(`fontsError`는 비차단 — 서체 실패는 플랫폼
+기본으로 강등이지 백지가 아니다). orca의 `mobile-theme.ts`는 byte-identical 계약이라
+`herdr-typography.ts` shim으로 override. Android는 커스텀 패밀리에 weight 합성이 없으므로
+bold 콜사이트는 `monoFamilyBold`를 이름으로 갖는다.
+
+**잔여**: 기기 확증 필요 — 양 플랫폼 재QA 라운드에서 ①iOS가 실제로 JetBrains Mono로 렌더
+②Android가 Roboto Mono→JetBrains Mono 전환 후에도 클리핑 회귀 없음(1·2차가 잡던 클래스)을 본다.
+
+## TT. 게이트 하네스 오염 2종 — `cargo test` 금지의 근거 (2026-08-25)
+
+`cargo test` 전량 실행이 signal 13(SIGPIPE)으로 죽거나 `manifest_action_invoke_injects_plugin_paths`가
+실유저 `~/.config/herdr-dev` 경로를 읽으며 실패한다. 둘 다 **단독 실행은 PASS** — libtest가
+한 프로세스에서 스레드로 도는 탓에 ①`begin_cli_output()`(`src/platform/unix_common.rs:15`)이
+바꾼 전역 SIGPIPE disposition ②`std::env` 변이가 테스트 경계를 넘는다. 제품 결함 아님.
+**전량 판정은 nextest로만** — 같은 트리에서 `cargo nextest run --all-features --retries 2
+--no-fail-fast` = **4003/4003 green**(flaky 1건 재시도 통과). `01-spec.md` 함정 목록에 승격.

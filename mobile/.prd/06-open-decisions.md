@@ -395,16 +395,20 @@ mobile에서 결정한 내용을 사용**"*. 그리고 `01-spec.md:55`는 키 �
 
 뒤집는 조건: 유저가 목업의 6개를 검증했다고 말하는 순간. 그때는 목업이 이긴다(조건 4).
 
-### 결정 9 — pane 요약줄 소스는 **`terminal_title_stripped` 유지**
+### 결정 9 — pane 요약줄 소스는 목업 원의미(마지막 출력 줄)로 **되돌아갔다** (2026-08-25 갱신)
 
-목업 acceptance(`:555`)는 `pane.read {recent, lines:1}`(마지막 출력 줄)이지만, **B8이 그것을
-pane당 ssh exec 1회로 만든다** — pane 12개 워크스페이스는 목록 한 번 그리는 데 exec 12회다.
-`terminal_title_stripped`는 `pane.list` 페이로드에 이미 실려 온다(`herdr-api-types.ts:104`).
-비용비가 성립하지 않는다.
+원판(2026-08-25 오전): 목업 acceptance(`:555`)는 `pane.read {recent, lines:1}`이지만 B8이
+그것을 pane당 ssh exec 1회로 만들어(pane 12개 = exec 12회) `terminal_title_stripped` 근사를
+유지했고, **올바른 수리는 서버 배치**라고 등록했다.
 
-**올바른 수리는 클라이언트가 아니라 서버다**: `pane.list`가 마지막 줄을 배치로 실어 보내면
-목업 의미론을 exec 1회로 얻는다. → 서버 follow-up으로 등록(`09-review-followups.md`).
-`pane.read`는 History 버튼(온디맨드 1회)에서 계속 쓴다 — 거기선 비용이 정당하다.
+**그 서버 배치가 착지했다**: `pane.list {recent_lines}` → `PaneInfo.recent` (`6b8c9846`,
+pane.read와 같은 스냅샷 헬퍼라 두 API가 어긋날 수 없음, 서버 클램프 80). 클라이언트도
+전환 완료(`848f5c37`): 요약줄 후보 체인 맨 앞이 `recent`의 마지막 비어있지 않은 줄이고,
+`terminal_title_stripped`는 **폴백으로 유지** — 구 서버는 opt-in 파라미터를 무시할 뿐이라
+`recent` 부재 시 종전 동작에 착지한다. `pane.read`는 History 버튼(온디맨드 1회)에서 계속 쓴다.
+
+**잔여**: Agents 홈은 `agent.list` 기반이고 `AgentInfo`엔 `recent`가 없어 여전히 근사다 —
+같은 패턴의 서버 필드가 필요해지면 이 결정을 따른다.
 
 ### 결정 10 — 터미널 사이징은 **observe + `userScale` 유지**
 

@@ -63,9 +63,22 @@ rustup run 1.96.1 cargo nextest run --locked --retries 2
 ```
 
 - PATH의 Homebrew cargo(1.97.x)가 `rust-toolchain.toml`(1.96.1)을 무시한다 → `rustup run 1.96.1`을 명시한다.
+- **`rustup run 1.96.1 cargo clippy`도 새는 길이 있다** — cargo의 서브커맨드 해석이 PATH의
+  `/opt/homebrew/bin/cargo-clippy`(0.1.98)를 집어 upstream 원본 파일 3곳에서 가짜 `-D warnings`
+  에러(`chunks_exact`→`as_chunks` 신형 lint)를 낸다. 2026-08-25 실측: 툴체인 실물은 0.1.96이고
+  거기선 안 난다. clippy는 `PATH="$HOME/.rustup/toolchains/1.96.1-aarch64-apple-darwin/bin:$PATH"`를
+  앞세워 돌린다.
 - **`cargo fmt --check`는 이 레포에서 신뢰할 수 없는 신호다.** 고정 툴체인에서도 12개 파일이 어긋나는데
   그 파일들은 fork가 건드리지 않은 upstream 원본과 바이트 동일하다. 근인 미규명. **판단은 clippy + nextest로 한다.**
 - `live_*`는 부하 민감 플레이크가 있다 → `--retries 2`.
+- **`cargo test`로 전량을 돌리지 마라 — nextest만.** libtest는 한 프로세스에서 스레드로 돌려서
+  ①어떤 테스트가 SIGPIPE disposition을 `SIG_DFL`로 바꾸면(`src/platform/unix_common.rs:15`,
+  `begin_cli_output`) 무관한 테스트가 signal 13으로 즉사하고 ②`std::env` 변이가 테스트끼리 새어
+  `manifest_action_invoke_injects_plugin_paths`가 실유저 config 경로를 읽는다. 둘 다 2026-08-25
+  실측(단독 실행은 전부 PASS). nextest는 프로세스 격리라 이 클래스가 없다.
+- herdr 세션 셸 안에서 돌리면 `HERDR_SESSION` 등이 유출돼 가짜 실패 7건 —
+  `env -u HERDR_SESSION -u HERDR_PANE_ID -u HERDR_WORKSPACE_ID -u HERDR_SOCKET -u HERDR_BIN -u HERDR_CONFIG`로
+  벗기고 돌린다 ([`09-review-followups.md`](./09-review-followups.md) §판별 실측).
 
 ### 레퍼런스 (벤더링하지 않는다)
 
