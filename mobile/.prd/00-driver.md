@@ -26,18 +26,21 @@ orca가 이긴다(`06-open-decisions.md` 결정 8이 그 적용례).
 
 ---
 
-## 지금 상태 (2026-08-25)
+## 지금 상태 (2026-08-25 오후 — 서버 작업 3건 전부 닫힘, 조건 4는 재QA 필요로 재개방)
 
-**조건 1~5가 전부 양 플랫폼에서 판정을 받았다.** 남은 것은 **유저 게이트 3건**과 **서버 작업 3건**뿐이고,
-구현 측에 "폰만으로 닫을 수 있는" 항목은 없다.
+**서버 작업 3건 + 위생 1건이 이 날 오후 스윕으로 닫혔고**(아래 §N-A), 같은 스윕이 **조건 4를
+다시 열었다**: iOS가 7라운드 내내 산세리프로 렌더되고 있었다(타이포 결함, `.prd/09` §SS —
+`'monospace'`는 Android 전용 generic). 수리는 착지(`fd42c472`), **기기 확증은 미완**. 여기에
+신규 UI 표면 3종(요약줄 소스 전환·keybindings 세그먼트·show qr 오버레이)이 추가됐으므로
+**재QA 라운드(Android 8차 · iOS 12차)가 최우선이다** (§N-QA).
 
 | 조건 | Android | iOS | 남은 것 |
 |---|---|---|---|
 | 1 폰으로 원격 에이전트 사용 | ✅ 라이브 확증 | ✅ 라이브 확증 (`ZQ11-LIVE-PROOF`) | — |
 | 2 orca 와꾸 | ✅ 이식 지도 15/15 | ✅ | — |
-| 3 별도 에이전트 QA | ✅ **7차 PASS** | ✅ **11차 PASS** (라벨 없음) | — |
-| 4 목업 대조 UI QA | ✅ 7라운드, 누락 0 | ✅ 11차 | 서버 API 2건 · 사이드바 메뉴 |
-| 5 QR 로그인 | ✅ **실제 스캔 실측** | 화면·권한·폴백 ✅ / **실제 스캔 판정불가** | **실기기** |
+| 3 별도 에이전트 QA | ✅ 7차 PASS | ✅ 11차 PASS | 재QA(아래) 후 재판정 |
+| 4 목업 대조 UI QA | 7라운드 PASS·누락 0 — 단 서체 축은 우연 통과(§SS) | 11차 PASS가 **서체 축에서 무효**(§SS) | **재QA 라운드** — 타이포 실렌더 + 신규 표면 3종 |
+| 5 QR 로그인 | ✅ **실제 스캔 실측** | 화면·권한·폴백 ✅ / **실제 스캔 판정불가** | **실기기** (+데스크톱 show qr 실서버 실측) |
 
 | 마일스톤 | 코드 | Android | iOS |
 |---|---|---|---|
@@ -115,16 +118,32 @@ orca가 이긴다(`06-open-decisions.md` 결정 8이 그 적용례).
 취소선 항목이 쌓이면 이 절이 "다음 행동"이기를 그만두기 때문이다.
 (2026-08-23 재작성: 구 1·1b·2는 전부 닫혔다 — iOS M3 PASS §BB, `init()` 근인 수리 §Y, M4 Android PASS §Z.)
 
-### N-A. 서버 작업 3건 — 폰에서는 못 닫는다
+### N-A. ~~서버 작업 3건~~ — **전부 닫혔다 (2026-08-25 오후)**
 
-목업 대조가 남긴 전부가 여기다. **폰 코드로 닫을 수 있는 목업 누락은 0건이다.**
+1. ✅ **`remote.set_keybindings`** (`98b40b07`, set_auto_update 패턴 복제, nextest 4008) +
+   폰 세그먼트 컨트롤 (`e7a30fba`, 목업 `:455-458` 그대로, 1035 tests). **한계 기록 = `.prd/09` §UU**:
+   폰이 직접 다이얼한 박스(레지스트리에 자기 미등재)에는 `remote_not_found`일 수 있어 컨트롤이
+   서버 판정 4상태를 그대로 표시하고 로컬 저장은 항상 살아남는다. nodes 행 확장 노출은 안 한다.
+2. ✅ **`pane.list {recent_lines}` 배치** (`6b8c9846`) + 클라이언트 전환 (`848f5c37`) —
+   요약줄이 목업 원의미(마지막 출력 줄)로 복귀, `terminal_title_stripped`는 구서버 폴백.
+   결정 9 갱신됨. Agents 홈(`agent.list`)만 근사 잔존(`AgentInfo`에 recent 없음).
+3. ✅ **TUI 호스트 메뉴 `show qr`** (`e559e7e9`) — 사이드바 호스트 메뉴 마지막 행, `herdr pair`와
+   같은 발행 경로(`pairing_code_for`), 중앙 오버레이 dark-on-light 렌더, nextest 4019.
+   **잔여**: 실서버에서 TUI로 띄워 폰 스캔까지의 실측은 안 했다(리시트는 렌더버퍼 단언까지).
 
-1. **`keybindings local|server` 변경 메서드 신설** (목업 #7). 서버에 **쓰기 경로가 없다** —
-   `RemoteKeybindingsSnapshot`은 읽기 타입이고 `RemoteSet*Params` 계열에 keybindings가 없다.
-   폰에 필드만 넣으면 **아무 데도 안 간다**(무동작 컨트롤). 서버 선행.
-2. **`pane.list`에 마지막 출력 줄을 배치로** — 목업 #13의 요약줄 의미론을 exec 1회로 얻는 유일한 길.
-   지금은 `terminal_title_stripped`로 근사한다(`06-open-decisions.md` 결정 9).
-3. **데스크톱 사이드바 `show qr` 컨텍스트 메뉴** — 명령 자체는 `herdr pair`로 이미 있다. TUI 작업.
+부수: 게이트 정본이 이 날 확정됐다 — **nextest만**(`cargo test`는 하네스 오염 2종, §TT) +
+**clippy는 툴체인 bin PATH 선두 고정**(Homebrew clippy 누수, `01-spec.md` 함정). 최종 리시트:
+nextest 4019/4019 · clippy 0err · fmt clean · 모바일 1035 tests + typecheck/lint/format/bundle.
+
+### N-QA. **재QA 라운드 — 최우선** (Android 8차 · iOS 12차, 각각 별도 에이전트)
+
+대상(전부 08-25 오후 변경분):
+1. **JetBrains Mono 실렌더** — iOS는 첫 실증(지금까지 산세리프였다), Android는
+   Roboto Mono→JetBrains Mono 전환에 따른 **클리핑 회귀**(1·2차 QA가 잡던 클래스) 확인.
+2. **pane 요약줄** — mock 경로에서 `mock-fixture` 접두 문자열이 요약줄에 뜨는 것(= recent 소비 증거),
+   live 경로에서 실제 마지막 출력 줄.
+3. **settings keybindings 세그먼트**(목업 #7 위치·반전 표현) + 값 변경 시 결과 줄 표시.
+4. 기존 회귀 스윕은 `.prd/10` 절차대로 (고정 워크트리 + 플랫폼별 Metro 포트, iOS는 포트 결속 확증 §HH).
 
 ### N-B. 유저 게이트 3건 — 내가 못 넘는다
 
@@ -179,12 +198,14 @@ P2 #3 섹션 · #5 dot 4종 · #6 `reconnecting… · last seen` · FAB 반전 �
   **예산 초과한 행에서 항목 하나를 빼면 무엇이 잘리는지만 바뀐다** — 이게 3라운드의 교훈이다.
   ⚠️ 이 수리는 **기기 미검증** — 4차 1순위.
 
-**남은 누락과 그 성격** — 전부 "코드를 더 쓰면 되는 일"이 아니다:
-| # | 왜 안 닫혔나 |
+**남은 누락과 그 성격** (08-25 오후 갱신):
+| # | 상태 |
 |---|---|
-| #1 QR · #2 수동추가 진입점 | 데스크톱 herdr의 `show qr` 동반 작업. 앱만으론 반쪽 |
-| #7 keybindings · #8 auto-update | `RemoteDefinition`엔 필드가 **있다**(`keybindings`/`auto_update`) — 폼에 없을 뿐. 값을 쓰는 순간 원격 동작이 바뀌므로 유저 판정 |
+| #1 QR · #2 수동추가 진입점 | 데스크톱 `show qr`이 **생겼다**(`e559e7e9`) — 남은 것은 실서버 실측뿐 |
+| #7 keybindings | **닫힘** — 서버 `98b40b07` + 폰 `e7a30fba` (§N-A, 한계는 09 §UU) |
+| #8 auto-update | **배선 안 함 확정** (2026-08-25, `11-mockup-conformance.md` — 같은 라벨 다른 동작) |
 | #12 워크스페이스 `+` | **무엇을 만드는 버튼인지가 미정**. 동작 없는 `+`는 없느니만 못하다 |
+| #13 요약줄 | **닫힘** — `6b8c9846`+`848f5c37`. 경과시간 표기만 #16으로 잔존 |
 | #16 경과시간 | 서버 API에 타임스탬프가 없다 — 클라이언트로 안 닫힌다 |
 
 ### N1. ~~iOS M6a~~ — **닫혔다** (2026-08-24, 9차 기기 판정 PASS)
@@ -264,10 +285,18 @@ handle 기반 `key`가 없어(`src/session/TerminalPaneView.tsx`) 컴포넌트 �
 
 게이트 전에 닫을 수 있는 것은 M5의 degraded 경로 QA뿐이다(설정 화면이 `no-token`을 읽히는 문장으로 표시).
 
-### N4. 서버 위생 1건
+### N4. ~~서버 위생 1건~~ — **닫혔다 + 같은 클래스 2건 추가 발견 (2026-08-25)**
 
-`pane.read`의 `strip_ansi`가 **죽은 파라미터**다 — `src/api/schema/panes.rs:283`에 기본값 `true`로
-선언돼 있는데 `handle_pane_read`(`src/app/api/panes.rs:1189-1228`)가 한 번도 읽지 않는다(참조 0건, 직접 확인).
+`pane.read`의 `strip_ansi`는 **제거됐다**(`240019fd`) — `read_terminal_snapshot`의 분기는
+`(format, source)` 하나뿐이라 `strip_ansi`가 표현할 상태를 `format`(Text/Ansi)이 전부 표현한다
+(완전 중복; 배선하면 "format=text인데 본문은 ANSI"인 자기모순이 표현 가능해진다).
+`deny_unknown_fields` 부재로 구 클라이언트의 `strip_ansi` 송신은 종전과 동일하게 무시된다(테스트 고정).
+
+**같은 클래스 잔여 2건** (제거로 죽음이 증명됨, 후속 유닛):
+- `AgentReadParams.strip_ansi` (`src/api/schema/agents.rs:15-16`) — 핸들러 참조 0건, CLI가 보내고 서버가 버린다
+- `PaneWaitForOutputParams.strip_ansi` + `Subscription::PaneOutputMatched.strip_ansi` (`src/api/schema/events.rs`) —
+  유일 소비처가 방금 지운 죽은 필드였다. `herdr pane wait-output --raw`는 예전부터 no-op
+- 모바일 주석 stale 1건: `mobile/src/session/pane-history.ts:190-197`이 없어진 필드를 서술
 
 **병렬 금지 아님**: N1·N2·N4는 서로 독립이다. per-unit dispatch(rules/DEV.md §3) 유지 —
 **단, QA는 각자 고정 워크트리 + 각자 Metro 포트를 받는다**(§QA 게이트). 두 QA가 `app.json` 하나를

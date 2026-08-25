@@ -2229,3 +2229,21 @@ bold 콜사이트는 `monoFamilyBold`를 이름으로 갖는다.
 바꾼 전역 SIGPIPE disposition ②`std::env` 변이가 테스트 경계를 넘는다. 제품 결함 아님.
 **전량 판정은 nextest로만** — 같은 트리에서 `cargo nextest run --all-features --retries 2
 --no-fail-fast` = **4003/4003 green**(flaky 1건 재시도 통과). `01-spec.md` 함정 목록에 승격.
+
+## UU. `remote.set_keybindings`는 폰의 자기-원격에는 닿지 않는다 — 알고 배선했다 (2026-08-25, `e7a30fba`)
+
+**발견 (폰 절반 구현 에이전트)**: 핸들러는 응답한 서버 **자신의 레지스트리**에서 `remote_id`를
+찾는데(`src/app/api/remotes.rs` → `src/remote_registry.rs:244-256`, 없으면 `remote_not_found`),
+서버는 자기 자신을 레지스트리에 등재하지 않는다 — 멀티리모트 클라이언트가 자기 박스를
+`ServerId::main()`으로 레지스트리 밖에서 합성한다(`src/client/supervisor.rs:911-919`). 폰의
+settings 폼이 편집하는 대상(키스토어 원격 = 폰이 ssh로 붙는 그 박스)에 이 호출은
+`remote_not_found`일 수 있다. 실제로 값이 바뀌는 대상은 허브 레지스트리의 **listed 원격**뿐.
+
+**배선 방식**: 성공을 가정하지 않는다 — 서버 답 4상태(미연결/거부/다른 값 에코/적용)를
+`keybindings-push.ts`가 판정해 화면에 그대로 적고, **로컬 키스토어 저장은 어느 경우에도
+살아남는다**(그 값은 `app-connections.ts`의 `RemoteDefinition`으로 폰 자신의 접속에 운반된다).
+"무동작 컨트롤 금지"는 이렇게 지켜진다.
+
+**확장 안 함 (디스패처 판정)**: nodes 행(listed 원격)으로 컨트롤을 옮기거나 복제하지 않는다 —
+목업 #7이 지정한 자리는 settings 폼뿐이고(조건 4), 목업에 없는 표면 신설은 초과다. 허브
+listed 원격의 keybindings 편집이 실제로 필요해지는 순간 이 절이 그 근거 문서다.

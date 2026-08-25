@@ -29,13 +29,13 @@ phone 밖 후속 섹션뿐. **두 판이 충돌하는 화면 설계는 없다.**
 | 4 | ② | FAB `+ add remote` | 없음 |
 | 5 | ② | 노드 dot 4종(ok/working/blocked/off) | `app/nodes.tsx:95` **2상태 고정** |
 | 6 | ② | `reconnecting… · last seen 2m ago` | #5와 같은 원인 |
-| 7 | ③ | `keybindings local\|server` | `src/settings/remote-form.ts:19-30` 필드 부재 |
+| 7 | ③ | `keybindings local\|server` | ~~필드 부재~~ **닫힘 08-25**: 서버 `remote.set_keybindings`(`98b40b07`) + 폰 세그먼트 컨트롤(`e7a30fba`). §레지스트리 한계는 09 §UU |
 | 8 | ③ | `auto-update to this client` | 없음 |
 | 9 | ③ | 프로브 `✓ reachable · herdr 0.34.1 · protocol 12 · 41ms` | `advisories`는 키 포맷 경고이지 프로브가 아님 |
 | 10 | ④⑤⑥ | **back 브레드크럼 전무** (`‹ nodes`/`‹ iq-64`/`‹ llmux`) | `app/h/_layout.tsx:56` `headerShown:false` + 화면 미렌더 |
 | 11 | ④ | 워크스페이스 경로 `~/2lab.ai/llmux` | `WorkspaceListRow.tsx:107-118`은 repo/branch만 |
 | 12 | ④ | `+` 아이콘 | 없음 |
-| 13 | ⑤ | **pane 요약 줄 `└ Running cargo nextest… · 2m41s`** | 목업 acceptance 명시(`:555` *"요약 줄 = `pane.read` {recent, lines:1}"*). `pane.read` 소비자는 히스토리 오버레이뿐 |
+| 13 | ⑤ | **pane 요약 줄 `└ Running cargo nextest… · 2m41s`** | ~~근사~~ **목업 원의미로 닫힘 08-25**: `pane.list {recent_lines}` 배치(`6b8c9846`) + 클라이언트 전환(`848f5c37`). 경과시간(`· 2m41s`)만 #16(서버 타임스탬프 부재)으로 잔존 |
 | 14 | ⑤ | pane 행 blocked 반전 뱃지 | ⑦에만 있음 |
 | 15 | ⑥ | 헤더 우측 **노드명** | `pane/[paneId].tsx:320-322` 삼항 else — **pane이 잡히는 정상 경로에서 소실** |
 | 16 | ⑤⑥⑦ | 경과시간 `2m41s`/`4m` 일체 + ⑥ `esc to interrupt` | **서버측 제약** — `agent-display.ts:22-28`: *"herdr's `AgentInfo` carries no timestamp of any kind"* |
@@ -641,7 +641,7 @@ settings 모노 · 핀치 후 `.xterm` 610×777 불변 · `FATAL EXCEPTION` 0 ·
 
 | # | 항목 | 판별 |
 |---|---|---|
-| #7 | `keybindings local\|server` | **서버에 변경 메서드가 없다.** `RemoteKeybindingsSnapshot`은 읽기 타입이고 `RemoteSet*Params` 계열에 keybindings가 없다(`RemoteAdd`/`Rename`/`SetEnabled`/`SetSession`/`SetAutoUpdate`만). 폰에 필드를 넣으면 **아무 데도 안 간다** — 목업을 맞추려고 무동작 컨트롤을 그리는 것이고, 6차가 `camera blocked`으로 이미 그 대가를 보여줬다. **서버 작업 선행** |
+| #7 | `keybindings local\|server` | ~~서버에 변경 메서드가 없다~~ → **양 절반 닫힘 (2026-08-25)**: `remote.set_keybindings` 신설(`98b40b07`, set_auto_update 패턴 복제) + 폰 settings 폼 세그먼트 컨트롤(`e7a30fba`, 목업 `:455-458` 표현 그대로). 단 **폰이 직접 다이얼한 박스에는 이 호출이 `remote_not_found`일 수 있다**(서버가 자신을 레지스트리에 미등재, 09 §UU) — 컨트롤은 서버 판정을 그대로 표시하고 로컬 저장은 항상 살아남는다. nodes 행으로의 확장 노출은 **안 한다**(목업 #7의 자리는 settings 폼뿐 — 조건 4 최소주의) |
 | #8 | `auto-update to this client` | 메서드는 **있다**(`RemoteSetAutoUpdateParams`, `src/api/schema/mx.rs:35`). 그런데 의미가 갈린다: auto-update는 **클라이언트가 자기 빌드를 원격에 밀어넣는** 동작이고, 폰엔 밀어넣을 herdr 바이너리가 없다. 폰이 붙은 **허브**의 동작을 폰이 설정하는 것으로 읽으면 말이 되지만 목업 ③의 "to this client"와는 다른 뜻이다 → **배선하지 않는다 (2026-08-25 확정)**. 같은 라벨로 다른 동작을 하는 컨트롤은 누락보다 나쁘다 — 목업의 의미를 서버가 갖게 되면 그때 배선한다 |
 | #1 QR 화면 | — | **닫혔다**(조건 5). 사이드바 `show qr` 컨텍스트 메뉴만 별도 UI 작업으로 남음 — 명령은 `herdr pair` |
 | #2 수동추가 · #3 배치 · #11 경로 · #12 | — | 5·6차가 **기기에서 구현 확인** → 원장 재분류 완료 |
