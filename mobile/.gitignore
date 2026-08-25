@@ -2,6 +2,9 @@
 # The repo-root .gitignore already covers mobile/{node_modules,.expo,dist,ios/Pods,android/.gradle};
 # this file adds the build products that live inside src/.
 src/terminal/terminal-webview-engine.generated.ts
+# The embedded JetBrains Mono faces (~300 KB of base64). Same postinstall step, same reason not to
+# commit it: it is a copy of a file that node_modules already pins.
+src/terminal/terminal-webview-font.generated.ts
 /android/
 /ios/
 web-build/

@@ -12,6 +12,7 @@ import type { RuntimeMobileTerminalTheme } from '../shared/runtime-terminal-them
 import { colors } from '../theme/mobile-theme'
 import { TERMINAL_TEXT_SCALES } from '../storage/terminal-text-scales'
 import { TERMINAL_PATH_TAP_JS } from './terminal-path-tap-injected'
+import { TERMINAL_FONT_FACE_CSS, TERMINAL_FONT_LOADER_JS } from './terminal-webview-font-injected'
 import { TERMINAL_KEYBOARD_AVOIDANCE_METRICS_JS } from './terminal-keyboard-avoidance-metrics-injected'
 import { TERMINAL_TOUCH_PAN_JS } from './terminal-webview-touch-pan-injected'
 import { XTERM_ENGINE_CSS, XTERM_ENGINE_JS } from './terminal-webview-engine.generated'
@@ -73,6 +74,7 @@ window.onerror = function(msg) {
   if (window.__engineErrors.length < 20) window.__engineErrors.push(String(msg));
 };
 </script>
+<style>${TERMINAL_FONT_FACE_CSS}</style>
 <style>${XTERM_ENGINE_CSS}</style>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -301,7 +303,15 @@ window.onerror = function(msg) {
   // Why: iOS WebKit does not reliably resolve "SF Mono" by CSS family name and can
   // fall to a non-monospace face; lead with the ui-monospace generic to avoid that.
   var TERMINAL_FONT_FALLBACKS = '"Menlo", "Monaco", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Liberation Mono", "Symbols Nerd Font Mono", monospace';
-  var terminalFontFamily = (isIOSWebView() ? 'ui-monospace, ' : '"SF Mono", ') + TERMINAL_FONT_FALLBACKS;
+  // JetBrains Mono leads because this document embeds it (terminal-webview-font-injected.ts) — it
+  // is the only family here that is guaranteed to exist rather than hoped for, and it is the one
+  // the rest of the app renders in. The whole stack below it stays exactly as it was: it is what
+  // paints if the embedded face fails to decode, and what the terminal falls through to for a glyph
+  // JetBrains Mono has no coverage for. The name is spelled out rather than interpolated so this
+  // block stays plain JS that a test can lift out and run; TERMINAL_FONT_FAMILY pins the pairing.
+  var terminalFontFamily = '"JetBrains Mono", ' + (isIOSWebView() ? 'ui-monospace, ' : '"SF Mono", ') + TERMINAL_FONT_FALLBACKS;
+${TERMINAL_FONT_LOADER_JS}
+  beginTerminalFontLoad();
   // Why: this changes the rasterisation size only, never the grid. orca re-gridded here to
   // floor(innerWidth / cellW), correct *there* because RN answered by resizing the desktop PTY to
   // that same width (measure -> updateViewport). herdr deleted that second half on purpose, so
@@ -782,8 +792,10 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
       minimumContrastRatio: terminalMinimumContrastRatio,
       fontFamily: terminalFontFamily,
       fontSize: fontPxForScale(currentTextScale),
-      fontWeight: '300',
-      fontWeightBold: '500',
+      // The two weights the loader above waited for, by construction: an embedded family
+      // synthesises nothing, so a weight nobody decoded would paint the fallback stack instead.
+      fontWeight: TERMINAL_FONT_WEIGHT,
+      fontWeightBold: TERMINAL_FONT_WEIGHT_BOLD,
       scrollback: 5000,
       // Why: xterm suppresses parser-generated query replies when disableStdin
       // is true. Native accepts only validated reply grammars from onData.
@@ -1870,7 +1882,15 @@ ${TERMINAL_TOUCH_PAN_JS}
   });
 
   if (window.Terminal) {
-    notify({ type: 'web-ready' });
+    // Why the wait sits on this one message and nowhere else: web-ready is what releases every
+    // native message the RN side is holding — init among them, and init is deliberately held rather
+    // than queued (TerminalWebView.tsx:60-74). So there is exactly one edge between "the document
+    // exists" and "the document is asked to build a terminal", and putting the font behind it needs
+    // no queue of its own and cannot reorder anything. Announcing readiness first is how the cell
+    // box gets measured against the fallback stack and stays there.
+    whenTerminalFontReady(function() {
+      notify({ type: 'web-ready' });
+    });
   } else {
     reportEngineError('terminal engine missing', 'xterm failed to load', true);
   }

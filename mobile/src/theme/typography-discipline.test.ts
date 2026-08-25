@@ -26,10 +26,18 @@ const SCANNED_DIRS = ['app', 'src']
 
 /**
  * The rule is about React Native styles, and these files are not that — three of them are the
- * xterm WebView's own document (a real browser, where `fontWeight` is CSS and synthesis works),
- * one is the test that pins those strings, and one is this file, which has to name the property to
- * look for it. Listed explicitly, and checked below to still carry a `fontWeight`, so an exception
- * cannot outlive its reason.
+ * xterm WebView's own document (a real browser, where `fontWeight` is CSS), one is the test that
+ * pins those strings, and one is this file, which has to name the property to look for it. Listed
+ * explicitly, and checked below to still carry a `fontWeight`, so an exception cannot outlive its
+ * reason.
+ *
+ * The exception used to rest on "and synthesis works there". It does not any more, and the 12차 iOS
+ * round is why: that document was rendering in the WebView's own monospace stack, so it now embeds
+ * JetBrains Mono itself (`../terminal/terminal-webview-font-injected.ts`) — and an embedded family
+ * synthesises no weight either, exactly like a custom family on Android. What earns the exception
+ * instead is that the document declares one `@font-face` per weight *range*, so every number these
+ * files ask for lands on a face that is really there. Same rule as the rest of the app — a weight
+ * is a face, not a wish — written in the one dialect where CSS is allowed to say it.
  */
 const ALLOWED = [
   'src/terminal/terminal-webview-engine.generated.ts',

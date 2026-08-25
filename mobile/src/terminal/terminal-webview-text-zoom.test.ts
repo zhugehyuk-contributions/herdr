@@ -4,6 +4,11 @@
 import { readFileSync } from 'node:fs'
 import { Script } from 'node:vm'
 import { describe, expect, it } from 'vitest'
+import {
+  TERMINAL_FONT_FAMILY,
+  TERMINAL_FONT_WEIGHT,
+  TERMINAL_FONT_WEIGHT_BOLD
+} from './terminal-webview-font-injected'
 
 const terminalWebViewSource = readFileSync(
   new URL('./TerminalWebView.tsx', import.meta.url),
@@ -158,8 +163,13 @@ describe('TerminalWebView text zoom', () => {
     expect(terminalWebglRecoverySource).toContain('window.WebglAddon.WebglAddon')
     expect(terminalHtmlSource).toContain('function isIOSWebView()')
     expect(terminalHtmlSource).toContain('fontFamily: terminalFontFamily')
-    expect(terminalHtmlSource).toContain("fontWeight: '300'")
-    expect(terminalHtmlSource).toContain("fontWeightBold: '500'")
+    // The weights are named rather than spelled since the document started embedding its own
+    // family: `./terminal-webview-font-injected.ts` owns them because the loader there has to wait
+    // for exactly the faces these two options ask for. The values themselves are unchanged.
+    expect(terminalHtmlSource).toContain('fontWeight: TERMINAL_FONT_WEIGHT')
+    expect(terminalHtmlSource).toContain('fontWeightBold: TERMINAL_FONT_WEIGHT_BOLD')
+    expect(TERMINAL_FONT_WEIGHT).toBe('300')
+    expect(TERMINAL_FONT_WEIGHT_BOLD).toBe('500')
     expect(terminalWebglRecoverySource).toContain('new window.WebglAddon.WebglAddon()')
   })
 
@@ -174,9 +184,14 @@ describe('TerminalWebView text zoom', () => {
     maxTouchPoints: 5
   }
 
-  it('starts iOS WebViews on ui-monospace, never SF Mono, still ending in a generic monospace guarantee', () => {
+  // The leads gained a family in front of them once the document started embedding JetBrains Mono
+  // (`./terminal-webview-font-injected.ts`): the platform generic is no longer the first thing
+  // asked for, it is the first thing asked for *among the faces this document does not carry*. Both
+  // guarantees these tests were written for are unchanged and still asserted — iOS never leads with
+  // the SF Mono name, and every chain terminates in the generic.
+  it('starts iOS WebViews on ui-monospace behind the embedded face, never SF Mono, still ending in a generic monospace guarantee', () => {
     const fontFamily = resolveTerminalFontFamily(IOS_IPHONE_NAVIGATOR)
-    expect(fontFamily.startsWith('ui-monospace, "Menlo"')).toBe(true)
+    expect(fontFamily.startsWith(`"${TERMINAL_FONT_FAMILY}", ui-monospace, "Menlo"`)).toBe(true)
     expect(fontFamily.startsWith('"SF Mono"')).toBe(false)
     // The chain must always terminate in the generic so it can never fall back to
     // a script/proportional system face — the actual iOS bug being fixed.
@@ -189,14 +204,14 @@ describe('TerminalWebView text zoom', () => {
       platform: 'MacIntel',
       maxTouchPoints: 5
     })
-    expect(fontFamily.startsWith('ui-monospace, "Menlo"')).toBe(true)
+    expect(fontFamily.startsWith(`"${TERMINAL_FONT_FAMILY}", ui-monospace, "Menlo"`)).toBe(true)
     expect(fontFamily.startsWith('"SF Mono"')).toBe(false)
     expect(fontFamily.endsWith(', monospace')).toBe(true)
   })
 
   it('keeps the SF Mono lead outside iOS WebViews and shares the identical fallback tail', () => {
     const androidFontFamily = resolveTerminalFontFamily(ANDROID_NAVIGATOR)
-    expect(androidFontFamily.startsWith('"SF Mono", "Menlo"')).toBe(true)
+    expect(androidFontFamily.startsWith(`"${TERMINAL_FONT_FAMILY}", "SF Mono", "Menlo"`)).toBe(true)
     expect(androidFontFamily.endsWith(', monospace')).toBe(true)
     // Only the lead family may differ across platforms; the rest of the chain is
     // shared so the two platforms cannot silently drift apart.
