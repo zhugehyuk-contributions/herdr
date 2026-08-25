@@ -2271,3 +2271,11 @@ APK 14:11:39(커밋 13:58 이후, 대조 통과) · Metro 8241 결속을 번들 
 **교훈**: "fontWeight 페어 전부 교체" 주장은 같은-객체 페어만 봤다 — **스타일 배열 합성 페어**가
 빠졌다. 수리 유닛은 fontWeight 전수 스윕 + weight별 실물 페이스(600 SemiBold 포함) +
 **소스 스캔 discipline 테스트**(monotone-discipline 선례)로 기계화한다.
+
+**수리 착지 (`d2c696b7`)**: fontWeight 34곳 전수 처분('700'×15→Bold, '600'×13→SemiBold,
+'500'×6→Medium — 강등 0), 페이스 4종 로드, allowlist 5(웹뷰 xterm 문서 — 진짜 브라우저라 CSS
+합성 정상). `typography-discipline.test.ts` 신설: RED(34곳)→GREEN + 단일 사이트 복원 시 그
+파일:라인으로 재실패 증명 + allowlist 유통기한·페이스 실로드 검사 동반. 1042 tests green.
+**추가 발견 겸 수리**: `ConnectionStatusLine`은 family 자체가 없어 라이브 pane 헤더에서
+산세리프였다(fd42c472도 8차 QA도 놓친 별개 사이트) — 9차 줌 확인 대상. 미착수 잔존:
+포팅 orca 모달 5종의 monotone 팔레트 위반(`statusRed`/`'#fff'` — 아직 어느 화면도 마운트 안 함).

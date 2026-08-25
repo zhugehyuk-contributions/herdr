@@ -139,8 +139,10 @@ nextest 4019/4019 · clippy 0err · fmt clean · 모바일 1035 tests + typechec
 
 **Android 8차 판정 도착 (2026-08-25, `.prd/09` §VV): 서체 1 FAIL / 4 PASS.** FAIL = 볼드 5곳
 Roboto 폴백(합성/잔존 `fontWeight` 페어 — Android는 커스텀 패밀리 weight 합성이 없다).
-2(클리핑)·3(요약줄 recent)·4(keybindings 세그)·5(회귀)는 PASS. 수리 유닛(fontWeight 전수 스윕 +
-600 SemiBold 페이스 + 소스 스캔 discipline 테스트) 진행 → **Android 9차 표적 재QA 필요**.
+2(클리핑)·3(요약줄 recent)·4(keybindings 세그)·5(회귀)는 PASS. **수리 착지 (`d2c696b7`)**:
+fontWeight 34곳 전수→페이스 토큰(400/500/600/700), discipline 소스 스캔 테스트로 재발 차단,
+ConnectionStatusLine(라이브 pane 헤더의 family 부재 산세리프 — 별개 사이트) 동반 수리.
+→ **Android 9차 표적 재QA 진행** (볼드 5곳 + 500/600 사이트 + pane 헤더 상태줄 줌 확인).
 
 대상(전부 08-25 오후 변경분):
 1. **JetBrains Mono 실렌더** — iOS는 첫 실증(지금까지 산세리프였다), Android는
